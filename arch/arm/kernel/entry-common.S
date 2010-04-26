@@ -380,6 +380,12 @@ sys_clone_wrapper:
 		b	sys_clone
 ENDPROC(sys_clone_wrapper)
 
+sys_eclone_wrapper:
+		add	ip, sp, #S_OFF
+		str	ip, [sp, #0]
+		b	sys_eclone
+ENDPROC(sys_eclone_wrapper)
+
 sys_sigreturn_wrapper:
 		add	r0, sp, #S_OFF
 		b	sys_sigreturn
