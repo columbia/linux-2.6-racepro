@@ -204,6 +204,22 @@ struct ustat {
 	char			f_fpack[6];
 };
 
+struct clone_args {
+	u64 clone_flags_high;
+	/*
+	 * Architectures can use child_stack for either the stack pointer or
+	 * the base of of stack. If child_stack is used as the stack pointer,
+	 * child_stack_size must be 0. Otherwise child_stack_size must be
+	 * set to size of allocated stack.
+	 */
+	u64 child_stack;
+	u64 child_stack_size;
+	u64 parent_tid_ptr;
+	u64 child_tid_ptr;
+	u32 nr_pids;
+	u32 reserved0;
+};
+
 #endif	/* __KERNEL__ */
 #endif /*  __ASSEMBLY__ */
 #endif /* _LINUX_TYPES_H */

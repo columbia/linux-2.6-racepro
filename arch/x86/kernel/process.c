@@ -259,6 +259,45 @@ sys_clone(unsigned long clone_flags, unsigned long newsp,
 	return do_fork(clone_flags, newsp, regs, 0, parent_tid, child_tid);
 }
 
+long
+sys_eclone(unsigned flags_low, struct clone_args __user *uca,
+	   int args_size, pid_t __user *pids, struct pt_regs *regs)
+{
+	int rc;
+	struct clone_args kca;
+	unsigned long flags;
+	int __user *parent_tidp;
+	int __user *child_tidp;
+	unsigned long __user stack;
+	unsigned long stack_size;
+
+	rc = fetch_clone_args_from_user(uca, args_size, &kca);
+	if (rc)
+		return rc;
+
+	/*
+	 * TODO: Convert 'clone-flags' to 64-bits on all architectures.
+	 * TODO: When ->clone_flags_high is non-zero, copy it in to the
+	 *	 higher word(s) of 'flags':
+	 *
+	 *	 flags = (kca.clone_flags_high << 32) | flags_low;
+	 */
+	flags = flags_low;
+	parent_tidp = (int *)(unsigned long)kca.parent_tid_ptr;
+	child_tidp = (int *)(unsigned long)kca.child_tid_ptr;
+
+	stack_size = (unsigned long)kca.child_stack_size;
+	if (stack_size)
+		return -EINVAL;
+
+	stack = (unsigned long)kca.child_stack;
+	if (!stack)
+		stack = regs->sp;
+
+	return do_fork_with_pids(flags, stack, regs, stack_size, parent_tidp,
+				child_tidp, kca.nr_pids, pids);
+}
+
 /*
  * This gets run with %si containing the
  * function to call, and %di containing
@@ -702,4 +741,3 @@ unsigned long arch_randomize_brk(struct mm_struct *mm)
 	unsigned long range_end = mm->brk + 0x02000000;
 	return randomize_range(mm->brk, range_end, 0) ? : mm->brk;
 }
-

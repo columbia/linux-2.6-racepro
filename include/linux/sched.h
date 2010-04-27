@@ -2127,6 +2127,8 @@ extern int disallow_signal(int);
 
 extern int do_execve(char *, char __user * __user *, char __user * __user *, struct pt_regs *);
 extern long do_fork(unsigned long, unsigned long, struct pt_regs *, unsigned long, int __user *, int __user *);
+extern int fetch_clone_args_from_user(struct clone_args __user *, int,
+				struct clone_args *);
 extern long do_fork_with_pids(unsigned long, unsigned long, struct pt_regs *,
 				unsigned long, int __user *, int __user *,
 				unsigned int, pid_t __user *);

@@ -477,6 +477,7 @@ quiet_ni_syscall:
 	PTREGSCALL stub32_clone, sys32_clone, %rdx
 	PTREGSCALL stub32_vfork, sys_vfork, %rdi
 	PTREGSCALL stub32_iopl, sys_iopl, %rsi
+	PTREGSCALL stub32_eclone, sys_eclone, %r8
 
 ENTRY(ia32_ptregs_common)
 	popq %r11
@@ -842,4 +843,5 @@ ia32_sys_call_table:
 	.quad compat_sys_rt_tgsigqueueinfo	/* 335 */
 	.quad sys_perf_event_open
 	.quad compat_sys_recvmmsg
+	.quad stub32_eclone
 ia32_syscall_end:

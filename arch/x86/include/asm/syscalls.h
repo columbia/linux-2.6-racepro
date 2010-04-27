@@ -27,6 +27,8 @@ long sys_execve(char __user *, char __user * __user *,
 		char __user * __user *, struct pt_regs *);
 long sys_clone(unsigned long, unsigned long, void __user *,
 	       void __user *, struct pt_regs *);
+long sys_eclone(unsigned flags_low, struct clone_args __user *uca,
+		int args_size, pid_t __user *pids, struct pt_regs *regs);
 
 /* kernel/ldt.c */
 asmlinkage int sys_modify_ldt(int, void __user *, unsigned long);

@@ -759,6 +759,19 @@ ptregs_##name: \
 	addl $4,%esp; \
 	ret
 
+#define PTREGSCALL4(name) \
+	ALIGN; \
+ptregs_##name: \
+	leal 4(%esp),%eax; \
+	pushl %eax; \
+	pushl PT_ESI(%eax); \
+	movl PT_EDX(%eax),%ecx; \
+	movl PT_ECX(%eax),%edx; \
+	movl PT_EBX(%eax),%eax; \
+	call sys_##name; \
+	addl $8,%esp; \
+	ret
+
 PTREGSCALL1(iopl)
 PTREGSCALL0(fork)
 PTREGSCALL0(vfork)
@@ -768,6 +781,7 @@ PTREGSCALL0(sigreturn)
 PTREGSCALL0(rt_sigreturn)
 PTREGSCALL2(vm86)
 PTREGSCALL1(vm86old)
+PTREGSCALL4(eclone)
 
 /* Clone is an oddball.  The 4th arg is in %edi */
 	ALIGN;
