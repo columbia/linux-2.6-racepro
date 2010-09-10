@@ -2129,4 +2129,6 @@ source "crypto/Kconfig"
 
 source "arch/x86/kvm/Kconfig"
 
+source "scribe/Kconfig"
+
 source "lib/Kconfig"

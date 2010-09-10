@@ -1,0 +1,12 @@
+#
+# Scribe configuration
+#
+
+menuconfig SCRIBE
+	bool "Scribe record/replay support"
+	default y
+
+if SCRIBE
+
+
+endif # SCRIBE
