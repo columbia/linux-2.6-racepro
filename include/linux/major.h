@@ -174,4 +174,6 @@
 #define BLOCK_EXT_MAJOR		259
 #define SCSI_OSD_MAJOR		260	/* open-osd's OSD scsi device */
 
+#define SCRIBE_MAJOR		280
+
 #endif
