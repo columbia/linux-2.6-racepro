@@ -1,6 +1,4 @@
 /*
- *  scribe/device.c - provide the scribe device
- *
  * Copyright (C) 2010 Oren Laadan <orenl@cs.columbia.edu>
  * Copyright (C) 2010 Nicolas Viennot <nicolas@viennot.biz>
  *
@@ -9,10 +7,13 @@
  *  distribution for more details.
  */
 
+#include <linux/kernel.h>
 #include <linux/fs.h>
 #include <linux/major.h>
 #include <linux/device.h>
+#include <linux/slab.h>
 #include "device.h"
+#include "context.h"
 
 static ssize_t dev_write(struct file *file,
 			 const char __user *buf, size_t count, loff_t *ppos)
@@ -28,18 +29,50 @@ static ssize_t dev_read(struct file *file,
 
 static int dev_open(struct inode *inode, struct file *file)
 {
+	int ret;
+
+	scribe_context_t *ctx = kmalloc(sizeof(*ctx), GFP_KERNEL);
+	if (!ctx)
+		return -ENOMEM;
+
+	ret = scribe_init_context(ctx);
+	if (ret)
+		goto err;
+
+	file->private_data = ctx;
+
 	return 0;
+
+err:
+	kfree(ctx);
+	return ret;
 }
 
 static int dev_release(struct inode *inode, struct file *file)
 {
+	scribe_context_t *ctx = file->private_data;
+	scribe_exit_context(ctx);
+	kfree(ctx);
 	return 0;
 }
 
 static int dev_ioctl(struct inode *inode, struct file *file,
 		     unsigned int ioctl_num, unsigned long ioctl_param)
 {
-	return 0;
+	scribe_context_t *ctx = file->private_data;
+
+	switch (ioctl_num) {
+		case SCRIBE_IO_START_RECORDING:
+			return scribe_start_action(ctx, SCRIBE_RECORD,
+						   (int)ioctl_param);
+		case SCRIBE_IO_START_REPLAYING:
+			return scribe_start_action(ctx, SCRIBE_REPLAY,
+						   (int)ioctl_param);
+		case SCRIBE_IO_REQUEST_STOP:
+			return scribe_request_stop(ctx);
+	}
+
+	return -ENOIOCTLCMD;
 }
 
 static struct file_operations scribe_fops = {
