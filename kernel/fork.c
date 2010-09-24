@@ -65,6 +65,7 @@
 #include <linux/perf_event.h>
 #include <linux/posix-timers.h>
 #include <linux/user-return-notifier.h>
+#include <linux/scribe.h>
 
 #include <asm/pgtable.h>
 #include <asm/pgalloc.h>
@@ -286,6 +287,9 @@ static struct task_struct *dup_task_struct(struct task_struct *orig)
 	tsk->btrace_seq = 0;
 #endif
 	tsk->splice_pipe = NULL;
+#ifdef CONFIG_SCRIBE
+	tsk->scribe = NULL;
+#endif
 
 	account_kernel_stack(ti, 1);
 
@@ -950,6 +954,23 @@ static void posix_cpu_timers_init(struct task_struct *tsk)
 	INIT_LIST_HEAD(&tsk->cpu_timers[2]);
 }
 
+#ifdef CONFIG_SCRIBE
+int scribe_info_init(struct task_struct *p, struct scribe_context *ctx)
+{
+	if (p->scribe)
+		return -EINVAL;
+	p->scribe = kmalloc(sizeof(*p->scribe), GFP_KERNEL);
+	if (!p->scribe)
+		return -ENOMEM;
+
+	p->scribe->flags = 0;
+	p->scribe->ctx = ctx;
+	get_scribe_context(ctx);
+
+	return 0;
+}
+#endif
+
 /*
  * This creates a new process as a copy of the old one,
  * but does not actually start it yet.
@@ -958,6 +979,8 @@ static void posix_cpu_timers_init(struct task_struct *tsk)
  * parts of the process environment (as per the clone
  * flags). The actual kick-off is left to the caller.
  */
+
+
 static struct task_struct *copy_process(unsigned long long clone_flags,
 					unsigned long stack_start,
 					struct pt_regs *regs,

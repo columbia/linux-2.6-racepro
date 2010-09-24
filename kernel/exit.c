@@ -50,6 +50,7 @@
 #include <linux/perf_event.h>
 #include <trace/events/sched.h>
 #include <linux/hw_breakpoint.h>
+#include <linux/scribe.h>
 
 #include <asm/uaccess.h>
 #include <asm/unistd.h>
@@ -886,6 +887,19 @@ static void check_stack_usage(void)
 static inline void check_stack_usage(void) {}
 #endif
 
+#ifdef CONFIG_SCRIBE
+void exit_scribe(struct task_struct *tsk)
+{
+	struct scribe_info *scribe = tsk->scribe;
+	if (!scribe)
+		return;
+
+	put_scribe_context(scribe->ctx);
+	kfree(scribe);
+	tsk->scribe = NULL;
+}
+#endif
+
 NORET_TYPE void do_exit(long code)
 {
 	struct task_struct *tsk = current;
@@ -969,6 +983,7 @@ NORET_TYPE void do_exit(long code)
 	exit_sem(tsk);
 	exit_files(tsk);
 	exit_fs(tsk);
+	exit_scribe(tsk);
 	check_stack_usage();
 	exit_thread();
 	cgroup_exit(tsk, 1);

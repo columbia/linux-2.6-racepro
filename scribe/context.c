@@ -8,31 +8,28 @@
  */
 
 #include <linux/sched.h>
-#include <linux/idr.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
-#include "context.h"
-
-DEFINE_IDR(idr);
+#include <linux/scribe.h>
 
 #ifdef CONFIG_PROC_FS
 
 static int status_seq_show(struct seq_file *seq, void *offset)
 {
-	scribe_context_t *ctx = seq->private;
+	struct scribe_context *ctx = seq->private;
 	const char *status1 = "";
 	const char *status2 = "";
 
 	if (!ctx)
 		return 0;
 
-	if (ctx->status == SCRIBE_IDLE)
+	if (ctx->flags == SCRIBE_IDLE)
 		status1 = "idle";
-	else if (ctx->status & SCRIBE_RECORD)
+	else if (ctx->flags & SCRIBE_RECORD)
 		status1 = "record";
-	else if (ctx->status & SCRIBE_REPLAY)
+	else if (ctx->flags & SCRIBE_REPLAY)
 		status1 = "replay";
-	if (ctx->status & SCRIBE_STOP)
+	if (ctx->flags & SCRIBE_STOP)
 		status2 = ", stop";
 
 	seq_printf(seq, "status: %s%s\n", status1, status2);
@@ -51,122 +48,100 @@ static const struct file_operations status_fops = {
 	.release = single_release,
 };
 
-extern struct proc_dir_entry *scribe_proc_root;
-static char *get_ctx_proc_name(scribe_context_t *ctx, char *str)
+static char *get_ctx_proc_name(struct scribe_context *ctx, char *str)
 {
 	sprintf(str, "context%d", ctx->id);
 	return str;
 }
-static void unregister_proc(scribe_context_t *ctx);
-static int register_proc(scribe_context_t *ctx)
+static int register_proc(struct scribe_context *ctx)
 {
-	struct proc_dir_entry *p;
+	struct proc_dir_entry *ctx_entry;
+	struct proc_dir_entry *entry;
 	char str[32];
 
-	p = create_proc_entry(get_ctx_proc_name(ctx, str),
-			      S_IFDIR | S_IRUGO | S_IXUGO,
-			      scribe_proc_root);
-	if (!p)
+	ctx_entry = create_proc_entry(get_ctx_proc_name(ctx, str),
+				      S_IFDIR | S_IRUGO | S_IXUGO,
+				      scribe_proc_root);
+	if (!ctx_entry)
 		return -ENOMEM;
 
-	p = proc_create_data("status", S_IRUGO, p, &status_fops, ctx);
-	if (!p)
+	entry = proc_create_data("status", S_IRUGO, ctx_entry,
+				 &status_fops, ctx);
+	if (!entry)
 		goto err;
 
-	ctx->proc_entry = p;
+	ctx->proc_entry = ctx_entry;
 	return 0;
 
 err:
-	unregister_proc(ctx);
+	remove_proc_entry(get_ctx_proc_name(ctx, str), scribe_proc_root);
 	return -ENOMEM;
 }
-static void unregister_proc(scribe_context_t *ctx)
+static void unregister_proc(struct scribe_context *ctx)
 {
 	char str[32];
+	remove_proc_entry("status", ctx->proc_entry);
 	remove_proc_entry(get_ctx_proc_name(ctx, str), scribe_proc_root);
 }
+
 #else
-static inline int register_proc(scribe_context_t *ctx) { return 0; }
-static inline void unregister_proc(scribe_context_t *ctx) { }
+static inline int register_proc(struct scribe_context *ctx) { return 0; }
+static inline void unregister_proc(struct scribe_context *ctx) { }
 #endif /* CONFIG_PROC_FS */
 
-int scribe_init_context(scribe_context_t *ctx)
+int scribe_init_context(struct scribe_context *ctx)
 {
-	int ret, id;
+	int ret;
 
-retry:
-	if (!idr_pre_get(&idr, GFP_KERNEL))
-		return -ENOMEM;
-	ret = idr_get_new(&idr, ctx, &id);
-	if (ret == -EAGAIN)
-		goto retry;
-	if (ret)
-		return -ENFILE;
-
-	ctx->id = id;
-	ctx->status = SCRIBE_IDLE;
+	atomic_set(&ctx->ref_cnt, 0);
+	ctx->id = current->pid;
+	ctx->flags = SCRIBE_IDLE;
 	INIT_LIST_HEAD(&ctx->tasks);
 
 	ret = register_proc(ctx);
-	if (ret) {
-		idr_remove(&idr, id);
+	if (ret)
 		return ret;
-	}
 
 	return 0;
 }
 
-void scribe_exit_context(scribe_context_t *ctx)
+void scribe_exit_context(struct scribe_context *ctx)
 {
-	idr_remove(&idr, ctx->id);
+	unregister_proc(ctx);
 }
 
-static int __scribe_start_action(scribe_context_t *ctx, int action,
-				 struct task_struct *p)
+int scribe_start_on_exec(struct scribe_context *ctx, int action)
 {
-	if (ctx->status != SCRIBE_IDLE)
-		return -EPERM;
-
-	if (action == SCRIBE_RECORD) {
-		ctx->status = SCRIBE_RECORD;
-	}
-	else if (action == SCRIBE_REPLAY) {
-		ctx->status = SCRIBE_REPLAY;
-	}
-	else
-		return -EINVAL;
-
-	put_task_struct(p); /* to be removed */
-	return 0;
-}
-
-int scribe_start_action(scribe_context_t *ctx, int action, pid_t pid)
-{
-	struct task_struct *p;
+	struct task_struct *p = current;
 	int ret;
 
-	rcu_read_lock();
-	p = find_task_by_vpid(pid);
-	if (p)
-		get_task_struct(p);
-	rcu_read_unlock();
+	if (action & ~(SCRIBE_RECORD | SCRIBE_REPLAY))
+		return -EINVAL;
 
-	if (!p)
-		return -ESRCH;
+	if (is_scribbed(p))
+		return -EPERM;
 
-	ret = __scribe_start_action(ctx, action, p);
+	/* XXX if a previous call to start_on_exec() has
+	 * already made, we undo the effect, even
+	 * if the current call fails
+	 */
+	exit_scribe(p);
+
+	ret = scribe_info_init(p, ctx);
 	if (ret)
-		put_task_struct(p);
-	return ret;
+		return ret;
+	p->scribe->flags = SCRIBE_START_ON_EXEC | action;
+
+	return 0;
 }
 
-int scribe_request_stop(scribe_context_t *ctx)
+int scribe_request_stop(struct scribe_context *ctx)
 {
-	if (ctx->status == SCRIBE_IDLE)
+	if (ctx->flags == SCRIBE_IDLE)
 		return -EPERM;
-	if (ctx->status & SCRIBE_STOP)
+	if (ctx->flags & SCRIBE_STOP)
 		return 0;
-	ctx->status = SCRIBE_IDLE;
+	ctx->flags = SCRIBE_IDLE;
 	return 0;
 }
 

@@ -10,7 +10,9 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/proc_fs.h>
-#include "device.h"
+#include <linux/scribe.h>
+
+extern int scribe_init_device(void);
 
 struct proc_dir_entry *scribe_proc_root;
 
