@@ -700,7 +700,7 @@ fail_nocontext:
 	return NULL;
 }
 
-static int copy_mm(unsigned long clone_flags, struct task_struct * tsk)
+static int copy_mm(unsigned long long clone_flags, struct task_struct * tsk)
 {
 	struct mm_struct * mm, *oldmm;
 	int retval;
@@ -747,7 +747,7 @@ fail_nomem:
 	return retval;
 }
 
-static int copy_fs(unsigned long clone_flags, struct task_struct *tsk)
+static int copy_fs(unsigned long long clone_flags, struct task_struct *tsk)
 {
 	struct fs_struct *fs = current->fs;
 	if (clone_flags & CLONE_FS) {
@@ -767,7 +767,7 @@ static int copy_fs(unsigned long clone_flags, struct task_struct *tsk)
 	return 0;
 }
 
-static int copy_files(unsigned long clone_flags, struct task_struct * tsk)
+static int copy_files(unsigned long long clone_flags, struct task_struct * tsk)
 {
 	struct files_struct *oldf, *newf;
 	int error = 0;
@@ -794,7 +794,7 @@ out:
 	return error;
 }
 
-static int copy_io(unsigned long clone_flags, struct task_struct *tsk)
+static int copy_io(unsigned long long clone_flags, struct task_struct *tsk)
 {
 #ifdef CONFIG_BLOCK
 	struct io_context *ioc = current->io_context;
@@ -819,7 +819,7 @@ static int copy_io(unsigned long clone_flags, struct task_struct *tsk)
 	return 0;
 }
 
-static int copy_sighand(unsigned long clone_flags, struct task_struct *tsk)
+static int copy_sighand(unsigned long long clone_flags, struct task_struct *tsk)
 {
 	struct sighand_struct *sig;
 
@@ -865,7 +865,7 @@ static void posix_cpu_timers_init_group(struct signal_struct *sig)
 	INIT_LIST_HEAD(&sig->cpu_timers[2]);
 }
 
-static int copy_signal(unsigned long clone_flags, struct task_struct *tsk)
+static int copy_signal(unsigned long long clone_flags, struct task_struct *tsk)
 {
 	struct signal_struct *sig;
 
@@ -903,7 +903,7 @@ static int copy_signal(unsigned long clone_flags, struct task_struct *tsk)
 	return 0;
 }
 
-static void copy_flags(unsigned long clone_flags, struct task_struct *p)
+static void copy_flags(unsigned long long clone_flags, struct task_struct *p)
 {
 	unsigned long new_flags = p->flags;
 
@@ -958,7 +958,7 @@ static void posix_cpu_timers_init(struct task_struct *tsk)
  * parts of the process environment (as per the clone
  * flags). The actual kick-off is left to the caller.
  */
-static struct task_struct *copy_process(unsigned long clone_flags,
+static struct task_struct *copy_process(unsigned long long clone_flags,
 					unsigned long stack_start,
 					struct pt_regs *regs,
 					unsigned long stack_size,
@@ -1466,7 +1466,7 @@ fetch_clone_args_from_user(struct clone_args __user *uca, int args_size,
 	/*
 	 * To avoid future compatibility issues, ensure unused fields are 0.
 	 */
-	if (kca->reserved0 || kca->clone_flags_high)
+	if (kca->reserved0)
 		return -EINVAL;
 
 	return 0;
@@ -1478,7 +1478,7 @@ fetch_clone_args_from_user(struct clone_args __user *uca, int args_size,
  * It copies the process, and if successful kick-starts
  * it and waits for it to finish using the VM if required.
  */
-long do_fork_with_pids(unsigned long clone_flags,
+long do_fork_with_pids(unsigned long long clone_flags,
 	      unsigned long stack_start,
 	      struct pt_regs *regs,
 	      unsigned long stack_size,
@@ -1518,7 +1518,7 @@ long do_fork_with_pids(unsigned long clone_flags,
 
 			count--;
 			printk(KERN_INFO "fork(): process `%s' used deprecated "
-					"clone flags 0x%lx\n",
+					"clone flags 0x%llx\n",
 				get_task_comm(comm, current),
 				clone_flags & CLONE_STOPPED);
 		}
@@ -1602,7 +1602,7 @@ out_free:
 	return nr;
 }
 
-long do_fork(unsigned long clone_flags,
+long do_fork(unsigned long long clone_flags,
 	      unsigned long stack_start,
 	      struct pt_regs *regs,
 	      unsigned long stack_size,

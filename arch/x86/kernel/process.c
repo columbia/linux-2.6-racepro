@@ -265,7 +265,7 @@ sys_eclone(unsigned flags_low, struct clone_args __user *uca,
 {
 	int rc;
 	struct clone_args kca;
-	unsigned long flags;
+	unsigned long long flags;
 	int __user *parent_tidp;
 	int __user *child_tidp;
 	unsigned long __user stack;
@@ -275,14 +275,7 @@ sys_eclone(unsigned flags_low, struct clone_args __user *uca,
 	if (rc)
 		return rc;
 
-	/*
-	 * TODO: Convert 'clone-flags' to 64-bits on all architectures.
-	 * TODO: When ->clone_flags_high is non-zero, copy it in to the
-	 *	 higher word(s) of 'flags':
-	 *
-	 *	 flags = (kca.clone_flags_high << 32) | flags_low;
-	 */
-	flags = flags_low;
+	flags = ((unsigned long long)kca.clone_flags_high << 32) | flags_low;
 	parent_tidp = (int *)(unsigned long)kca.parent_tid_ptr;
 	child_tidp = (int *)(unsigned long)kca.child_tid_ptr;
 

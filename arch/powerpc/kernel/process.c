@@ -665,7 +665,7 @@ void prepare_to_copy(struct task_struct *tsk)
 /*
  * Copy a thread..
  */
-int copy_thread(unsigned long clone_flags, unsigned long usp,
+int copy_thread(unsigned long long clone_flags, unsigned long usp,
 		unsigned long unused, struct task_struct *p,
 		struct pt_regs *regs)
 {
@@ -980,7 +980,7 @@ int sys_eclone(unsigned long clone_flags_low,
 	int __user *child_tidp;
 	unsigned long stack_sz;
 	unsigned int nr_pids;
-	unsigned long flags;
+	unsigned long long flags;
 	unsigned long usp;
 	int rc;
 
@@ -1002,7 +1002,9 @@ int sys_eclone(unsigned long clone_flags_low,
 	if (stack_base)
 		usp = stack_base;
 
-	flags = clone_flags_low;
+
+	flags = ((unsigned long long)kca.clone_flags_high << 32) |
+		clone_flags_low;
 
 	nr_pids = kclone_args.nr_pids;
 

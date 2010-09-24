@@ -159,7 +159,7 @@ void release_thread(struct task_struct *dead_task)
 {
 }
 
-int copy_thread(unsigned long clone_flags, unsigned long new_stackp,
+int copy_thread(unsigned long long clone_flags, unsigned long new_stackp,
 		unsigned long unused,
 		struct task_struct *p, struct pt_regs *regs)
 {
@@ -248,7 +248,7 @@ SYSCALL_DEFINE4(eclone, unsigned int, flags_low, struct clone_args __user *,
 	struct clone_args kca;
 	int __user *parent_tid_ptr;
 	int __user *child_tid_ptr;
-	unsigned long flags;
+	unsigned long long flags;
 	unsigned long __user child_stack;
 	unsigned long stack_size;
 
@@ -256,7 +256,7 @@ SYSCALL_DEFINE4(eclone, unsigned int, flags_low, struct clone_args __user *,
 	if (rc)
 		return rc;
 
-	flags = flags_low;
+	flags = ((unsigned long long)kca.clone_flags_high << 32) | flags_low;
 	parent_tid_ptr = (int __user *) kca.parent_tid_ptr;
 	child_tid_ptr =  (int __user *) kca.child_tid_ptr;
 
@@ -268,10 +268,6 @@ SYSCALL_DEFINE4(eclone, unsigned int, flags_low, struct clone_args __user *,
 	if (!child_stack)
 		child_stack = regs->gprs[15];
 
-	/*
-	 * TODO: On 32-bit systems, clone_flags is passed in as 32-bit value
-	 * to several functions. Need to convert clone_flags to 64-bit.
-	 */
 	return do_fork_with_pids(flags, child_stack, regs, stack_size,
 				parent_tid_ptr, child_tid_ptr, kca.nr_pids,
 				pids);

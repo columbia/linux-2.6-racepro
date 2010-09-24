@@ -400,7 +400,7 @@ EXPORT_SYMBOL(dump_fpu);
 
 asmlinkage void ret_from_fork(void);
 
-int copy_thread(unsigned long clone_flags, unsigned long usp,
+int copy_thread(unsigned long long clone_flags, unsigned long usp,
 		unsigned long unused,
 		struct task_struct *p, struct pt_regs *regs)
 {

@@ -2004,13 +2004,13 @@ extern void do_timer(unsigned long ticks);
 extern int wake_up_state(struct task_struct *tsk, unsigned int state);
 extern int wake_up_process(struct task_struct *tsk);
 extern void wake_up_new_task(struct task_struct *tsk,
-				unsigned long clone_flags);
+				unsigned long long clone_flags);
 #ifdef CONFIG_SMP
  extern void kick_process(struct task_struct *tsk);
 #else
  static inline void kick_process(struct task_struct *tsk) { }
 #endif
-extern void sched_fork(struct task_struct *p, int clone_flags);
+extern void sched_fork(struct task_struct *p, unsigned long long clone_flags);
 extern void sched_dead(struct task_struct *p);
 
 extern void proc_caches_init(void);
@@ -2108,7 +2108,7 @@ extern void mm_release(struct task_struct *, struct mm_struct *);
 /* Allocate a new mm structure and copy contents from tsk->mm */
 extern struct mm_struct *dup_mm(struct task_struct *tsk);
 
-extern int copy_thread(unsigned long, unsigned long, unsigned long,
+extern int copy_thread(unsigned long long, unsigned long, unsigned long,
 			struct task_struct *, struct pt_regs *);
 extern void flush_thread(void);
 extern void exit_thread(void);
@@ -2126,10 +2126,10 @@ extern int allow_signal(int);
 extern int disallow_signal(int);
 
 extern int do_execve(char *, char __user * __user *, char __user * __user *, struct pt_regs *);
-extern long do_fork(unsigned long, unsigned long, struct pt_regs *, unsigned long, int __user *, int __user *);
+extern long do_fork(unsigned long long, unsigned long, struct pt_regs *, unsigned long, int __user *, int __user *);
 extern int fetch_clone_args_from_user(struct clone_args __user *, int,
 				struct clone_args *);
-extern long do_fork_with_pids(unsigned long, unsigned long, struct pt_regs *,
+extern long do_fork_with_pids(unsigned long long, unsigned long, struct pt_regs *,
 				unsigned long, int __user *, int __user *,
 				unsigned int, pid_t __user *);
 struct task_struct *fork_idle(int);

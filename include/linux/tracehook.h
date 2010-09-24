@@ -230,7 +230,7 @@ static inline void tracehook_report_exit(long *exit_code)
  *
  * Called with no locks held.
  */
-static inline int tracehook_prepare_clone(unsigned clone_flags)
+static inline int tracehook_prepare_clone(unsigned long long clone_flags)
 {
 	if (clone_flags & CLONE_UNTRACED)
 		return 0;
@@ -259,7 +259,8 @@ static inline int tracehook_prepare_clone(unsigned clone_flags)
  * Called with current's siglock and write_lock_irq(&tasklist_lock) held.
  */
 static inline void tracehook_finish_clone(struct task_struct *child,
-					  unsigned long clone_flags, int trace)
+					  unsigned long long clone_flags,
+					  int trace)
 {
 	ptrace_init_task(child, (clone_flags & CLONE_PTRACE) || trace);
 }
@@ -282,7 +283,7 @@ static inline void tracehook_finish_clone(struct task_struct *child,
  * Called with no locks held, but the child cannot run until this returns.
  */
 static inline void tracehook_report_clone(struct pt_regs *regs,
-					  unsigned long clone_flags,
+					  unsigned long long clone_flags,
 					  pid_t pid, struct task_struct *child)
 {
 	if (unlikely(task_ptrace(child))) {
@@ -311,11 +312,12 @@ static inline void tracehook_report_clone(struct pt_regs *regs,
  *
  * Called with no locks held.
  */
-static inline void tracehook_report_clone_complete(int trace,
-						   struct pt_regs *regs,
-						   unsigned long clone_flags,
-						   pid_t pid,
-						   struct task_struct *child)
+static inline
+void tracehook_report_clone_complete(int trace,
+				     struct pt_regs *regs,
+				     unsigned long long clone_flags,
+				     pid_t pid,
+				     struct task_struct *child)
 {
 	if (unlikely(trace))
 		ptrace_event(0, trace, pid);

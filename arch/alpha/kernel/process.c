@@ -271,7 +271,7 @@ alpha_vfork(struct pt_regs *regs)
  */
 
 int
-copy_thread(unsigned long clone_flags, unsigned long usp,
+copy_thread(unsigned long long clone_flags, unsigned long usp,
 	    unsigned long unused,
 	    struct task_struct * p, struct pt_regs * regs)
 {
