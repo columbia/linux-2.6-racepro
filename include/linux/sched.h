@@ -1182,7 +1182,7 @@ struct sched_rt_entity {
 
 struct rcu_node;
 
-struct scribe_info;
+struct scribe_ps;
 
 struct task_struct {
 	volatile long state;	/* -1 unrunnable, 0 runnable, >0 stopped */
@@ -1268,7 +1268,7 @@ struct task_struct {
 #endif
 
 #ifdef CONFIG_SCRIBE
-	struct scribe_info *scribe;
+	struct scribe_ps *scribe;
 #endif
 
 	/* 

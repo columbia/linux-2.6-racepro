@@ -16,7 +16,7 @@
 
 static int status_seq_show(struct seq_file *seq, void *offset)
 {
-	struct scribe_info *scribe;
+	struct scribe_ps *scribe;
 	struct scribe_context *ctx = seq->private;
 	const char *status1 = "";
 	const char *status2 = "";
@@ -120,7 +120,7 @@ int scribe_init_context(struct scribe_context *ctx)
 
 void scribe_exit_context(struct scribe_context *ctx)
 {
-	struct scribe_info *scribe;
+	struct scribe_ps *scribe;
 
 	spin_lock(&ctx->tasks_lock);
 	/* The tasks list should be empty by now.
@@ -199,7 +199,7 @@ int scribe_set_attach_on_exec(struct scribe_context *ctx, int enable)
 	ret = init_scribe(p, ctx);
 	if (ret)
 		return ret;
-	p->scribe->attach_on_exec = 1;
+	p->scribe->flags = SCRIBE_PS_ATTACH_ON_EXEC;
 
 	return 0;
 }
@@ -208,29 +208,30 @@ int scribe_set_attach_on_exec(struct scribe_context *ctx, int enable)
  * the current process or if p is sleeping (and thus not accessing
  * scribe->flags)
  */
-void scribe_attach(struct scribe_info *scribe)
+void scribe_attach(struct scribe_ps *scribe)
 {
 	struct scribe_context *ctx = scribe->ctx;
 
 	assert_spin_locked(&ctx->tasks_lock);
 	BUG_ON(!(ctx->flags & (SCRIBE_RECORD | SCRIBE_REPLAY)));
+	BUG_ON(!list_empty(&scribe->task_node));
 
-	scribe->flags = ctx->flags;
+	scribe->flags = 0;
 	list_add_tail(&scribe->task_node, &ctx->tasks);
 
 	wake_up(&ctx->tasks_wait);
 }
 
-void scribe_detach(struct scribe_info *scribe)
+void scribe_detach(struct scribe_ps *scribe)
 {
 	struct scribe_context *ctx = scribe->ctx;
 
 	assert_spin_locked(&ctx->tasks_lock);
-	BUG_ON(scribe->flags == SCRIBE_IDLE);
+	BUG_ON(list_empty(&scribe->task_node));
 
 	list_del(&scribe->task_node);
-	scribe->flags = SCRIBE_IDLE;
 
+	/* We were the last task in the context, it's time to set it idle */
 	if (list_empty(&ctx->tasks))
 		ctx->flags = SCRIBE_IDLE;
 

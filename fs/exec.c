@@ -493,14 +493,21 @@ static int prepare_scribe(void)
 
 static void update_scribe(void)
 {
-	struct scribe_info *scribe = current->scribe;
+	struct scribe_ps *scribe = current->scribe;
+	struct scribe_context *ctx;
 
-	if (!scribe || !scribe->attach_on_exec)
+	if (!scribe || !(scribe->flags & SCRIBE_PS_ATTACH_ON_EXEC))
 		return;
 
-	spin_lock(&scribe->ctx->tasks_lock);
-	scribe_attach(scribe);
-	spin_unlock(&scribe->ctx->tasks_lock);
+	ctx = scribe->ctx;
+
+	spin_lock(&ctx->tasks_lock);
+	if (ctx->flags == SCRIBE_DEAD) {
+		/* FIXME make execve() fail */
+	}
+	else
+		scribe_attach(scribe);
+	spin_unlock(&ctx->tasks_lock);
 }
 
 static void cleanup_scribe(void)

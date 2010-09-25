@@ -890,7 +890,7 @@ static inline void check_stack_usage(void) {}
 #ifdef CONFIG_SCRIBE
 void exit_scribe(struct task_struct *p)
 {
-	struct scribe_info *scribe = p->scribe;
+	struct scribe_ps *scribe = p->scribe;
 	if (!scribe)
 		return;
 

@@ -67,28 +67,26 @@ int scribe_set_attach_on_exec(struct scribe_context *ctx, int enable);
 #define SCRIBE_IO_SET_STATE		_IOR(SCRIBE_IO_MAGIC,	1, int)
 #define SCRIBE_IO_ATTACH_ON_EXEC	_IOR(SCRIBE_IO_MAGIC,	2, int)
 
-struct scribe_info {
+
+#define SCRIBE_PS_ATTACH_ON_EXEC 0x00000001
+
+struct scribe_ps {
 	/* The two next fields should only be written to by
-	 * the current process
+	 * the current process.
 	 */
 	int flags;
-	struct task_struct *p;
 	struct scribe_context *ctx;
-
-	/* we don't want to include attach_on_exec in flags because
-	 * it would mess with the is_scribbed() functions
-	 */
-	int attach_on_exec;
+	struct task_struct *p;
 
 	struct list_head task_node;
 };
 
-static inline int __is_scribbed(struct scribe_info *scribe)
-{ return scribe != NULL && scribe->flags & (SCRIBE_RECORD | SCRIBE_REPLAY); }
-static inline int __is_recording(struct scribe_info *scribe)
-{ return scribe != NULL && scribe->flags & SCRIBE_RECORD; }
-static inline int __is_replaying(struct scribe_info *scribe)
-{ return scribe != NULL && scribe->flags & SCRIBE_REPLAY; }
+static inline int __is_scribbed(struct scribe_ps *scribe)
+{ return scribe != NULL && scribe->ctx->flags & (SCRIBE_RECORD | SCRIBE_REPLAY); }
+static inline int __is_recording(struct scribe_ps *scribe)
+{ return scribe != NULL && scribe->ctx->flags & SCRIBE_RECORD; }
+static inline int __is_replaying(struct scribe_ps *scribe)
+{ return scribe != NULL && scribe->ctx->flags & SCRIBE_REPLAY; }
 
 /* Using defines instead of inline functions so that we don't need
  * to include sched.h
@@ -97,8 +95,8 @@ static inline int __is_replaying(struct scribe_info *scribe)
 #define is_recording(t) __is_recording(t->scribe)
 #define is_replaying(t) __is_replaying(t->scribe)
 
-void scribe_attach(struct scribe_info *scribe);
-void scribe_detach(struct scribe_info *scribe);
+void scribe_attach(struct scribe_ps *scribe);
+void scribe_detach(struct scribe_ps *scribe);
 
 int init_scribe(struct task_struct *p, struct scribe_context *ctx);
 void exit_scribe(struct task_struct *p);
@@ -109,7 +107,7 @@ void exit_scribe(struct task_struct *p);
 #define is_recording(t) 0
 #define is_replaying(t) 0
 
-static inline int scribe_info_init(struct task_struct *p, struct scribe_context *ctx) { return 0; }
+static inline int init_scribe(struct task_struct *p, struct scribe_context *ctx) { return 0; }
 static inline void exit_scribe(struct task_struct *tsk) {}
 
 #endif /* CONFIG_SCRIBE */

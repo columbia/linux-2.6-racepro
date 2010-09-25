@@ -955,25 +955,46 @@ static void posix_cpu_timers_init(struct task_struct *tsk)
 }
 
 #ifdef CONFIG_SCRIBE
+
 int init_scribe(struct task_struct *p, struct scribe_context *ctx)
 {
-	struct scribe_info *scribe;
+	struct scribe_ps *scribe;
 	if (p->scribe)
 		return -EINVAL;
 	scribe = kmalloc(sizeof(*scribe), GFP_KERNEL);
 	if (!scribe)
 		return -ENOMEM;
 
-	scribe->flags = 0;
-	scribe->p = p;
-	scribe->ctx = ctx;
-	scribe->attach_on_exec = 0;
 	get_scribe_context(ctx);
+
+	scribe->flags = 0;
+	scribe->ctx = ctx;
+	scribe->p = p;
+	INIT_LIST_HEAD(&scribe->task_node);
 
 	p->scribe = scribe;
 
 	return 0;
 }
+
+int copy_scribe(unsigned long long clone_flags, struct task_struct *p)
+{
+	int ret;
+
+	if (!__is_scribbed(current->scribe))
+		return 0;
+
+	ret = init_scribe(p, current->scribe->ctx);
+	if (ret)
+		return ret;
+
+	spin_lock(&p->scribe->ctx->tasks_lock);
+	scribe_attach(p->scribe);
+	spin_unlock(&p->scribe->ctx->tasks_lock);
+
+	return 0;
+}
+
 
 #endif
 
@@ -1178,15 +1199,17 @@ static struct task_struct *copy_process(unsigned long long clone_flags,
 		goto bad_fork_cleanup_mm;
 	if ((retval = copy_io(clone_flags, p)))
 		goto bad_fork_cleanup_namespaces;
+	if ((retval = copy_scribe(clone_flags, p)))
+		goto bad_fork_cleanup_io;
 	retval = copy_thread(clone_flags, stack_start, stack_size, p, regs);
 	if (retval)
-		goto bad_fork_cleanup_io;
+		goto bad_fork_cleanup_scribe;
 
 	if (pid != &init_struct_pid) {
 		pid = alloc_pid(p->nsproxy->pid_ns, target_pids);
 		if (IS_ERR(pid)) {
 			retval = PTR_ERR(pid);
-			goto bad_fork_cleanup_io;
+			goto bad_fork_cleanup_scribe;
 		}
 
 		if (clone_flags & CLONE_NEWPID) {
@@ -1323,6 +1346,8 @@ static struct task_struct *copy_process(unsigned long long clone_flags,
 bad_fork_free_pid:
 	if (pid != &init_struct_pid)
 		free_pid(pid);
+bad_fork_cleanup_scribe:
+	exit_scribe(p);
 bad_fork_cleanup_io:
 	if (p->io_context)
 		exit_io_context(p);
