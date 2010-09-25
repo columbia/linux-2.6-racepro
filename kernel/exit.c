@@ -888,15 +888,21 @@ static inline void check_stack_usage(void) {}
 #endif
 
 #ifdef CONFIG_SCRIBE
-void exit_scribe(struct task_struct *tsk)
+void exit_scribe(struct task_struct *p)
 {
-	struct scribe_info *scribe = tsk->scribe;
+	struct scribe_info *scribe = p->scribe;
 	if (!scribe)
 		return;
 
+	if (__is_scribbed(scribe)) {
+		spin_lock(&scribe->ctx->tasks_lock);
+		scribe_detach(scribe);
+		spin_unlock(&scribe->ctx->tasks_lock);
+	}
+
 	put_scribe_context(scribe->ctx);
 	kfree(scribe);
-	tsk->scribe = NULL;
+	p->scribe = NULL;
 }
 #endif
 

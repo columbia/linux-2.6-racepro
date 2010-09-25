@@ -16,6 +16,7 @@
 
 static int status_seq_show(struct seq_file *seq, void *offset)
 {
+	struct scribe_info *scribe;
 	struct scribe_context *ctx = seq->private;
 	const char *status1 = "";
 	const char *status2 = "";
@@ -33,6 +34,15 @@ static int status_seq_show(struct seq_file *seq, void *offset)
 		status2 = ", stop";
 
 	seq_printf(seq, "status: %s%s\n", status1, status2);
+	seq_printf(seq, "tasks:\n");
+
+	spin_lock(&ctx->tasks_lock);
+	list_for_each_entry(scribe, &ctx->tasks, task_node)
+		seq_printf(seq, "  [%d]\n", task_tgid_vnr(scribe->p));
+
+	spin_unlock(&ctx->tasks_lock);
+
+
 	return 0;
 }
 
@@ -96,7 +106,10 @@ int scribe_init_context(struct scribe_context *ctx)
 	atomic_set(&ctx->ref_cnt, 0);
 	ctx->id = current->pid;
 	ctx->flags = SCRIBE_IDLE;
+
+	spin_lock_init(&ctx->tasks_lock);
 	INIT_LIST_HEAD(&ctx->tasks);
+	init_waitqueue_head(&ctx->tasks_wait);
 
 	ret = register_proc(ctx);
 	if (ret)
@@ -107,35 +120,46 @@ int scribe_init_context(struct scribe_context *ctx)
 
 void scribe_exit_context(struct scribe_context *ctx)
 {
+	struct scribe_info *scribe;
+
+	spin_lock(&ctx->tasks_lock);
+	/* The tasks list should be empty by now.
+	 * If it's not, it means that the userspace monitor process
+	 * has gone missing. We'll kill all the scribed tasks because
+	 * we cannot guarantee that they can continue (no more events)
+	 */
+
+	if (!list_empty(ctx->tasks.next)) {
+		printk(KERN_WARNING "scribe: emergency stop (context=%d)\n",
+		       ctx->id);
+		BUG_ON(ctx->flags == SCRIBE_IDLE);
+		list_for_each_entry(scribe, &ctx->tasks, task_node)
+			force_sig(SIGKILL, scribe->p);
+
+		spin_unlock(&ctx->tasks_lock);
+		wait_event(ctx->tasks_wait, ctx->flags == SCRIBE_IDLE);
+		spin_lock(&ctx->tasks_lock);
+	}
+
+	/* Setting the SCRIBE_DEAD flag has to be set with the lock,
+	 * to guards against race with attach_on_exec.
+	 */
+	ctx->flags = SCRIBE_DEAD;
+	spin_unlock(&ctx->tasks_lock);
+
 	unregister_proc(ctx);
 }
 
-int scribe_start_on_exec(struct scribe_context *ctx, int action)
+static int context_start(struct scribe_context *ctx, int action)
 {
-	struct task_struct *p = current;
-	int ret;
-
-	if (action & ~(SCRIBE_RECORD | SCRIBE_REPLAY))
-		return -EINVAL;
-
-	if (is_scribbed(p))
+	if (ctx->flags != SCRIBE_IDLE)
 		return -EPERM;
 
-	/* XXX if a previous call to start_on_exec() has
-	 * already made, we undo the effect, even
-	 * if the current call fails
-	 */
-	exit_scribe(p);
-
-	ret = scribe_info_init(p, ctx);
-	if (ret)
-		return ret;
-	p->scribe->flags = SCRIBE_START_ON_EXEC | action;
-
+	ctx->flags = action;
 	return 0;
 }
 
-int scribe_request_stop(struct scribe_context *ctx)
+static int context_stop(struct scribe_context *ctx)
 {
 	if (ctx->flags == SCRIBE_IDLE)
 		return -EPERM;
@@ -145,3 +169,70 @@ int scribe_request_stop(struct scribe_context *ctx)
 	return 0;
 }
 
+int scribe_set_state(struct scribe_context *ctx, int state)
+{
+	if (state & ~(SCRIBE_RECORD | SCRIBE_REPLAY | SCRIBE_STOP))
+		return -EINVAL;
+
+	if (state & SCRIBE_STOP)
+		return context_stop(ctx);
+
+	if (state)
+		return context_start(ctx, state);
+
+	return -EINVAL;
+}
+
+int scribe_set_attach_on_exec(struct scribe_context *ctx, int enable)
+{
+	struct task_struct *p = current;
+	int ret;
+
+	if (is_scribbed(p))
+		return -EPERM;
+
+	exit_scribe(p);
+
+	if (!enable)
+		return 0;
+
+	ret = init_scribe(p, ctx);
+	if (ret)
+		return ret;
+	p->scribe->attach_on_exec = 1;
+
+	return 0;
+}
+
+/* scribe_attach() and scribe_detach() must be called only by
+ * the current process or if p is sleeping (and thus not accessing
+ * scribe->flags)
+ */
+void scribe_attach(struct scribe_info *scribe)
+{
+	struct scribe_context *ctx = scribe->ctx;
+
+	assert_spin_locked(&ctx->tasks_lock);
+	BUG_ON(!(ctx->flags & (SCRIBE_RECORD | SCRIBE_REPLAY)));
+
+	scribe->flags = ctx->flags;
+	list_add_tail(&scribe->task_node, &ctx->tasks);
+
+	wake_up(&ctx->tasks_wait);
+}
+
+void scribe_detach(struct scribe_info *scribe)
+{
+	struct scribe_context *ctx = scribe->ctx;
+
+	assert_spin_locked(&ctx->tasks_lock);
+	BUG_ON(scribe->flags == SCRIBE_IDLE);
+
+	list_del(&scribe->task_node);
+	scribe->flags = SCRIBE_IDLE;
+
+	if (list_empty(&ctx->tasks))
+		ctx->flags = SCRIBE_IDLE;
+
+	wake_up(&ctx->tasks_wait);
+}

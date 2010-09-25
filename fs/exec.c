@@ -55,6 +55,7 @@
 #include <linux/fsnotify.h>
 #include <linux/fs_struct.h>
 #include <linux/pipe_fs_i.h>
+#include <linux/scribe.h>
 
 #include <asm/uaccess.h>
 #include <asm/mmu_context.h>
@@ -481,6 +482,37 @@ int copy_strings_kernel(int argc,char ** argv, struct linux_binprm *bprm)
 	return r;
 }
 EXPORT_SYMBOL(copy_strings_kernel);
+
+
+#ifdef CONFIG_SCRIBE
+
+static int prepare_scribe(void)
+{
+	return 0;
+}
+
+static void update_scribe(void)
+{
+	struct scribe_info *scribe = current->scribe;
+
+	if (!scribe || !scribe->attach_on_exec)
+		return;
+
+	spin_lock(&scribe->ctx->tasks_lock);
+	scribe_attach(scribe);
+	spin_unlock(&scribe->ctx->tasks_lock);
+}
+
+static void cleanup_scribe(void)
+{
+}
+
+#else
+static inline int prepare_scribe() { return 0; }
+static inline void update_scribe() {}
+static inline void cleanup_scribe() {}
+#endif /* CONFIG_SCRIBE */
+
 
 #ifdef CONFIG_MMU
 
@@ -1353,13 +1385,17 @@ int do_execve(char * filename,
 
 	sched_exec();
 
+	retval = prepare_scribe();
+	if (retval)
+		goto out_file;
+
 	bprm->file = file;
 	bprm->filename = filename;
 	bprm->interp = filename;
 
 	retval = bprm_mm_init(bprm);
 	if (retval)
-		goto out_file;
+		goto out_scribe;
 
 	bprm->argc = count(argv, MAX_ARG_STRINGS);
 	if ((retval = bprm->argc) < 0)
@@ -1386,10 +1422,13 @@ int do_execve(char * filename,
 	if (retval < 0)
 		goto out;
 
+
 	current->flags &= ~PF_KTHREAD;
 	retval = search_binary_handler(bprm,regs);
 	if (retval < 0)
 		goto out;
+
+	update_scribe();
 
 	/* execve succeeded */
 	current->fs->in_exec = 0;
@@ -1400,9 +1439,13 @@ int do_execve(char * filename,
 		put_files_struct(displaced);
 	return retval;
 
+
 out:
 	if (bprm->mm)
 		mmput (bprm->mm);
+
+out_scribe:
+	cleanup_scribe();
 
 out_file:
 	if (bprm->file) {

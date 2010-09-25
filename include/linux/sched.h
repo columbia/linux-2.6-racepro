@@ -1183,7 +1183,6 @@ struct sched_rt_entity {
 struct rcu_node;
 
 struct scribe_info;
-struct scribe_context;
 
 struct task_struct {
 	volatile long state;	/* -1 unrunnable, 0 runnable, >0 stopped */
@@ -2125,15 +2124,6 @@ extern void __cleanup_sighand(struct sighand_struct *);
 
 extern void exit_itimers(struct signal_struct *);
 extern void flush_itimer_signals(void);
-
-
-#ifdef CONFIG_SCRIBE
-extern int scribe_info_init(struct task_struct *p, struct scribe_context *ctx);
-extern void exit_scribe(struct task_struct *tsk);
-#else
-static inline int scribe_info_init(struct task_struct *p, struct scribe_context *ctx) { return 0; }
-static inline void exit_scribe(struct task_struct *tsk) {}
-#endif
 
 extern NORET_TYPE void do_group_exit(int);
 

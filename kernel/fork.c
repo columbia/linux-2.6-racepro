@@ -955,20 +955,26 @@ static void posix_cpu_timers_init(struct task_struct *tsk)
 }
 
 #ifdef CONFIG_SCRIBE
-int scribe_info_init(struct task_struct *p, struct scribe_context *ctx)
+int init_scribe(struct task_struct *p, struct scribe_context *ctx)
 {
+	struct scribe_info *scribe;
 	if (p->scribe)
 		return -EINVAL;
-	p->scribe = kmalloc(sizeof(*p->scribe), GFP_KERNEL);
-	if (!p->scribe)
+	scribe = kmalloc(sizeof(*scribe), GFP_KERNEL);
+	if (!scribe)
 		return -ENOMEM;
 
-	p->scribe->flags = 0;
-	p->scribe->ctx = ctx;
+	scribe->flags = 0;
+	scribe->p = p;
+	scribe->ctx = ctx;
+	scribe->attach_on_exec = 0;
 	get_scribe_context(ctx);
+
+	p->scribe = scribe;
 
 	return 0;
 }
+
 #endif
 
 /*

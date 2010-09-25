@@ -58,15 +58,15 @@ static int dev_release(struct inode *inode, struct file *file)
 }
 
 static int dev_ioctl(struct inode *inode, struct file *file,
-		     unsigned int ioctl_num, unsigned long ioctl_param)
+		     unsigned int num, unsigned long arg)
 {
 	struct scribe_context *ctx = file->private_data;
 
-	switch (ioctl_num) {
-	case SCRIBE_IO_START_ON_EXEC:
-		return scribe_start_on_exec(ctx, (int)ioctl_param);
-	case SCRIBE_IO_REQUEST_STOP:
-		return scribe_request_stop(ctx);
+	switch (num) {
+	case SCRIBE_IO_SET_STATE:
+		return scribe_set_state(ctx, arg);
+	case SCRIBE_IO_ATTACH_ON_EXEC:
+		return scribe_set_attach_on_exec(ctx, arg);
 	}
 
 	return -ENOIOCTLCMD;

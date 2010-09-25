@@ -17,6 +17,7 @@
 #include <linux/types.h>
 #include <linux/list.h>
 #include <linux/ioctl.h>
+#include <linux/wait.h>
 #include <asm/atomic.h>
 
 struct proc_dir_entry;
@@ -25,8 +26,8 @@ struct task_struct;
 #define SCRIBE_IDLE		0x00000000
 #define SCRIBE_RECORD		0x00000001
 #define SCRIBE_REPLAY		0x00000002
-#define SCRIBE_START_ON_EXEC	0x00000004
-#define SCRIBE_STOP		0x00000008
+#define SCRIBE_STOP		0x00000004
+#define SCRIBE_DEAD		0x80000000
 
 #ifdef CONFIG_PROC_FS
 extern struct proc_dir_entry *scribe_proc_root;
@@ -36,7 +37,10 @@ struct scribe_context {
 	atomic_t ref_cnt;
 	int id;
 	int flags;
+
+	spinlock_t tasks_lock;
 	struct list_head tasks;
+	wait_queue_head_t tasks_wait;
 
 #ifdef CONFIG_PROC_FS
 	struct proc_dir_entry *proc_entry;
@@ -55,34 +59,58 @@ static inline void put_scribe_context(struct scribe_context *ctx)
 
 int scribe_init_context(struct scribe_context *ctx);
 void scribe_exit_context(struct scribe_context *ctx);
-int scribe_start_on_exec(struct scribe_context *ctx, int action);
-int scribe_request_stop(struct scribe_context *ctx);
+int scribe_set_state(struct scribe_context *ctx, int state);
+int scribe_set_attach_on_exec(struct scribe_context *ctx, int enable);
 
-#define SCRIBE_DEVICE_NAME	"scribe"
-#define SCRIBE_IO_MAGIC		0xFF
-#define SCRIBE_IO_START_ON_EXEC	_IOR(SCRIBE_IO_MAGIC,	1, int)
-#define SCRIBE_IO_REQUEST_STOP	_IO(SCRIBE_IO_MAGIC,	2)
+#define SCRIBE_DEVICE_NAME		"scribe"
+#define SCRIBE_IO_MAGIC			0xFF
+#define SCRIBE_IO_SET_STATE		_IOR(SCRIBE_IO_MAGIC,	1, int)
+#define SCRIBE_IO_ATTACH_ON_EXEC	_IOR(SCRIBE_IO_MAGIC,	2, int)
 
 struct scribe_info {
 	/* The two next fields should only be written to by
 	 * the current process
 	 */
 	int flags;
+	struct task_struct *p;
 	struct scribe_context *ctx;
+
+	/* we don't want to include attach_on_exec in flags because
+	 * it would mess with the is_scribbed() functions
+	 */
+	int attach_on_exec;
+
+	struct list_head task_node;
 };
 
-/* Preferring defines vs inline function so that we don't need to include
- * sched.h for the overhead
+static inline int __is_scribbed(struct scribe_info *scribe)
+{ return scribe != NULL && scribe->flags & (SCRIBE_RECORD | SCRIBE_REPLAY); }
+static inline int __is_recording(struct scribe_info *scribe)
+{ return scribe != NULL && scribe->flags & SCRIBE_RECORD; }
+static inline int __is_replaying(struct scribe_info *scribe)
+{ return scribe != NULL && scribe->flags & SCRIBE_REPLAY; }
+
+/* Using defines instead of inline functions so that we don't need
+ * to include sched.h
  */
-#define is_scribbed(t)  (t->scribe != NULL && t->scribe->flags)
-#define is_recording(t) (t->scribe != NULL && t->scribe->flags & SCRIBE_RECORD)
-#define is_replaying(t) (t->scribe != NULL && t->scribe->flags & SCRIBE_REPLAY)
+#define is_scribbed(t)  __is_scribbed(t->scribe)
+#define is_recording(t) __is_recording(t->scribe)
+#define is_replaying(t) __is_replaying(t->scribe)
+
+void scribe_attach(struct scribe_info *scribe);
+void scribe_detach(struct scribe_info *scribe);
+
+int init_scribe(struct task_struct *p, struct scribe_context *ctx);
+void exit_scribe(struct task_struct *p);
 
 #else /* CONFIG_SCRIBE */
 
 #define is_scribbed(t)  0
 #define is_recording(t) 0
 #define is_replaying(t) 0
+
+static inline int scribe_info_init(struct task_struct *p, struct scribe_context *ctx) { return 0; }
+static inline void exit_scribe(struct task_struct *tsk) {}
 
 #endif /* CONFIG_SCRIBE */
 
