@@ -94,6 +94,9 @@ void exit_scribe(struct task_struct *p);
 
 /* Events */
 
+struct scribe_event_data *scribe_alloc_event_data(size_t size);
+void scribe_free_event_data(struct scribe_event_data *event);
+
 void *__scribe_alloc_event(__u8 type);
 static __always_inline void *__scribe_alloc_event_const(__u8 type)
 {
@@ -113,10 +116,12 @@ static __always_inline void *scribe_alloc_event(__u8 type)
 }
 static inline void scribe_free_event(void *event)
 {
-	kfree(event);
+	struct scribe_event_data *event_data = event;
+	if (event_data->h.type == SCRIBE_EVENT_DATA)
+		scribe_free_event_data(event_data);
+	else
+		kfree(event);
 }
-struct scribe_event_data *scribe_alloc_event_data(size_t size);
-void scribe_free_event_data(struct scribe_event_data *event);
 
 #else /* CONFIG_SCRIBE */
 
