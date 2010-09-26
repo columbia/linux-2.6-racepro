@@ -94,7 +94,8 @@ void exit_scribe(struct task_struct *p);
 
 /* Events */
 
-static __always_inline void *scribe_alloc_event(__u8 type)
+void *__scribe_alloc_event(__u8 type);
+static __always_inline void *__scribe_alloc_event_const(__u8 type)
 {
 	struct scribe_event *event;
 
@@ -103,6 +104,12 @@ static __always_inline void *scribe_alloc_event(__u8 type)
 		event->type = type;
 
 	return event;
+}
+static __always_inline void *scribe_alloc_event(__u8 type)
+{
+	if (__builtin_constant_p(type))
+		return __scribe_alloc_event_const(type);
+	return __scribe_alloc_event(type);
 }
 static inline void scribe_free_event(void *event)
 {
