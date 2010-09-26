@@ -15,19 +15,16 @@
 #ifdef CONFIG_SCRIBE
 
 #include <linux/types.h>
+#include <linux/kernel.h>
 #include <linux/list.h>
-#include <linux/ioctl.h>
 #include <linux/wait.h>
 #include <asm/atomic.h>
+#include <linux/scribe_api.h>
 
 struct proc_dir_entry;
 struct task_struct;
 
-#define SCRIBE_IDLE		0x00000000
-#define SCRIBE_RECORD		0x00000001
-#define SCRIBE_REPLAY		0x00000002
-#define SCRIBE_STOP		0x00000004
-#define SCRIBE_DEAD		0x80000000
+/* Context stuff */
 
 #ifdef CONFIG_PROC_FS
 extern struct proc_dir_entry *scribe_proc_root;
@@ -62,12 +59,6 @@ void scribe_exit_context(struct scribe_context *ctx);
 int scribe_set_state(struct scribe_context *ctx, int state);
 int scribe_set_attach_on_exec(struct scribe_context *ctx, int enable);
 
-#define SCRIBE_DEVICE_NAME		"scribe"
-#define SCRIBE_IO_MAGIC			0xFF
-#define SCRIBE_IO_SET_STATE		_IOR(SCRIBE_IO_MAGIC,	1, int)
-#define SCRIBE_IO_ATTACH_ON_EXEC	_IOR(SCRIBE_IO_MAGIC,	2, int)
-
-
 #define SCRIBE_PS_ATTACH_ON_EXEC 0x00000001
 
 struct scribe_ps {
@@ -100,6 +91,25 @@ void scribe_detach(struct scribe_ps *scribe);
 
 int init_scribe(struct task_struct *p, struct scribe_context *ctx);
 void exit_scribe(struct task_struct *p);
+
+/* Events */
+
+static __always_inline void *scribe_alloc_event(__u8 type)
+{
+	struct scribe_event *event;
+
+	event = kmalloc(sizeof_event_from_type(type), GFP_KERNEL);
+	if (event)
+		event->type = type;
+
+	return event;
+}
+static inline void scribe_free_event(void *event)
+{
+	kfree(event);
+}
+struct scribe_event_data *scribe_alloc_event_data(size_t size);
+void scribe_free_event_data(struct scribe_event_data *event);
 
 #else /* CONFIG_SCRIBE */
 
