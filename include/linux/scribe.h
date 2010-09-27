@@ -45,17 +45,17 @@ struct scribe_context {
 #endif
 };
 
-static inline void get_scribe_context(struct scribe_context *ctx)
+static inline void scribe_get_context(struct scribe_context *ctx)
 {
 	atomic_inc(&ctx->ref_cnt);
 }
-static inline void put_scribe_context(struct scribe_context *ctx)
+static inline void scribe_put_context(struct scribe_context *ctx)
 {
 	if (atomic_dec_and_test(&ctx->ref_cnt))
 		kfree(ctx);
 }
 
-int scribe_init_context(struct scribe_context *ctx);
+struct scribe_context *scribe_alloc_context(void);
 void scribe_exit_context(struct scribe_context *ctx);
 int scribe_set_state(struct scribe_context *ctx, int state);
 int scribe_set_attach_on_exec(struct scribe_context *ctx, int enable);

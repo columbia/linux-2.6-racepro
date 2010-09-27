@@ -900,7 +900,7 @@ void exit_scribe(struct task_struct *p)
 		spin_unlock(&scribe->ctx->tasks_lock);
 	}
 
-	put_scribe_context(scribe->ctx);
+	scribe_put_context(scribe->ctx);
 	kfree(scribe);
 	p->scribe = NULL;
 }

@@ -99,9 +99,13 @@ static inline int register_proc(struct scribe_context *ctx) { return 0; }
 static inline void unregister_proc(struct scribe_context *ctx) { }
 #endif /* CONFIG_PROC_FS */
 
-int scribe_init_context(struct scribe_context *ctx)
+struct scribe_context *scribe_alloc_context(void)
 {
-	int ret;
+	struct scribe_context *ctx;
+
+	ctx = kmalloc(sizeof(*ctx), GFP_KERNEL);
+	if (!ctx)
+		return NULL;
 
 	atomic_set(&ctx->ref_cnt, 0);
 	ctx->id = current->pid;
@@ -111,11 +115,14 @@ int scribe_init_context(struct scribe_context *ctx)
 	INIT_LIST_HEAD(&ctx->tasks);
 	init_waitqueue_head(&ctx->tasks_wait);
 
-	ret = register_proc(ctx);
-	if (ret)
-		return ret;
+	if (register_proc(ctx)) {
+		kfree(ctx);
+		return NULL;
+	}
 
-	return 0;
+	scribe_get_context(ctx);
+
+	return ctx;
 }
 
 void scribe_exit_context(struct scribe_context *ctx)
@@ -148,6 +155,8 @@ void scribe_exit_context(struct scribe_context *ctx)
 	spin_unlock(&ctx->tasks_lock);
 
 	unregister_proc(ctx);
+
+	scribe_put_context(ctx);
 }
 
 static int context_start(struct scribe_context *ctx, int action)

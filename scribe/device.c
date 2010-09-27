@@ -14,6 +14,10 @@
 #include <linux/slab.h>
 #include <linux/scribe.h>
 
+struct scribe_dev {
+	struct scribe_context *ctx;
+};
+
 static ssize_t dev_write(struct file *file,
 			 const char __user *buf, size_t count, loff_t *ppos)
 {
@@ -28,32 +32,28 @@ static ssize_t dev_read(struct file *file,
 
 static int dev_open(struct inode *inode, struct file *file)
 {
-	struct scribe_context *ctx;
-	int ret;
+	struct scribe_dev *dev;
 
-	ctx = kmalloc(sizeof(*ctx), GFP_KERNEL);
-	if (!ctx)
+	dev = kmalloc(sizeof(*dev), GFP_KERNEL);
+	if (!dev)
 		return -ENOMEM;
 
-	ret = scribe_init_context(ctx);
-	if (ret)
-		goto err;
-	get_scribe_context(ctx);
+	dev->ctx = scribe_alloc_context();
+	if (!dev->ctx) {
+		kfree(dev);
+		return -ENOMEM;
+	}
 
-	file->private_data = ctx;
+	file->private_data = dev;
 
 	return 0;
-
-err:
-	kfree(ctx);
-	return ret;
 }
 
 static int dev_release(struct inode *inode, struct file *file)
 {
-	struct scribe_context *ctx = file->private_data;
-	scribe_exit_context(ctx);
-	put_scribe_context(ctx);
+	struct scribe_dev *dev = file->private_data;
+
+	scribe_exit_context(dev->ctx);
 	return 0;
 }
 
