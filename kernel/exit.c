@@ -894,11 +894,8 @@ void exit_scribe(struct task_struct *p)
 	if (!scribe)
 		return;
 
-	if (__is_scribbed(scribe)) {
-		spin_lock(&scribe->ctx->tasks_lock);
+	if (is_scribbed(scribe))
 		scribe_detach(scribe);
-		spin_unlock(&scribe->ctx->tasks_lock);
-	}
 
 	scribe_put_context(scribe->ctx);
 	kfree(scribe);

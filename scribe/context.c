@@ -37,11 +37,10 @@ static int status_seq_show(struct seq_file *seq, void *offset)
 	seq_printf(seq, "tasks:\n");
 
 	spin_lock(&ctx->tasks_lock);
-	list_for_each_entry(scribe, &ctx->tasks, task_node)
+	list_for_each_entry(scribe, &ctx->tasks, node)
 		seq_printf(seq, "  [%d]\n", task_tgid_vnr(scribe->p));
 
 	spin_unlock(&ctx->tasks_lock);
-
 
 	return 0;
 }
@@ -115,6 +114,10 @@ struct scribe_context *scribe_alloc_context(void)
 	INIT_LIST_HEAD(&ctx->tasks);
 	init_waitqueue_head(&ctx->tasks_wait);
 
+	spin_lock_init(&ctx->queues_lock);
+	INIT_LIST_HEAD(&ctx->queues);
+	init_waitqueue_head(&ctx->queues_wait);
+
 	if (register_proc(ctx)) {
 		kfree(ctx);
 		return NULL;
@@ -140,7 +143,7 @@ void scribe_exit_context(struct scribe_context *ctx)
 		printk(KERN_WARNING "scribe: emergency stop (context=%d)\n",
 		       ctx->id);
 		BUG_ON(ctx->flags == SCRIBE_IDLE);
-		list_for_each_entry(scribe, &ctx->tasks, task_node)
+		list_for_each_entry(scribe, &ctx->tasks, node)
 			force_sig(SIGKILL, scribe->p);
 
 		spin_unlock(&ctx->tasks_lock);
@@ -197,7 +200,7 @@ int scribe_set_attach_on_exec(struct scribe_context *ctx, int enable)
 	struct task_struct *p = current;
 	int ret;
 
-	if (is_scribbed(p))
+	if (is_ps_scribbed(p))
 		return -EPERM;
 
 	exit_scribe(p);
@@ -214,35 +217,155 @@ int scribe_set_attach_on_exec(struct scribe_context *ctx, int enable)
 }
 
 /* scribe_attach() and scribe_detach() must be called only by
- * the current process or if p is sleeping (and thus not accessing
+ * the current process or if scribe->p is sleeping (and thus not accessing
  * scribe->flags)
  */
-void scribe_attach(struct scribe_ps *scribe)
+int scribe_attach(struct scribe_ps *scribe)
 {
 	struct scribe_context *ctx = scribe->ctx;
+	struct scribe_event_queue *queue;
+	int ret;
 
-	assert_spin_locked(&ctx->tasks_lock);
+	queue = scribe_get_queue_by_pid(ctx, task_tgid_vnr(scribe->p));
+	if (!queue)
+		return -ENOMEM;
+
+	spin_lock(&ctx->tasks_lock);
 	BUG_ON(!(ctx->flags & (SCRIBE_RECORD | SCRIBE_REPLAY)));
-	BUG_ON(!list_empty(&scribe->task_node));
+	BUG_ON(!list_empty(&scribe->node));
 
-	scribe->flags = 0;
-	list_add_tail(&scribe->task_node, &ctx->tasks);
+	if (unlikely(ctx->flags & SCRIBE_DEAD)) {
+		spin_unlock(&ctx->tasks_lock);
+		ret = -ENODEV;
+		goto err_queue;
+	}
+
+	list_add_tail(&scribe->node, &ctx->tasks);
+	spin_unlock(&ctx->tasks_lock);
+
+	if (is_recording(scribe)) {
+		/* The monitor will be waiting on ctx->queue_wait, and all
+		 * processes sends their notification to it.
+		 */
+		queue->wait = &ctx->queues_wait;
+	}
+	else { /* is_replaying(scribe) == 1 */
+		/* Releasing the reference that the context has on it.
+		 * That way when the process detaches, the queue will
+		 * be removed right away.
+		 * In case new events comes in for new events, a new queue
+		 * will be instanciated, and will never be picked up by any
+		 * process. But that's fine because it means something went
+		 * wrong, and the scribe context is about to die. Clean up
+		 * will occure anyways
+		 */
+		scribe_put_queue(queue);
+	}
+
+	scribe->flags |= (ctx->flags & SCRIBE_RECORD) ? SCRIBE_PS_RECORD : 0;
+	scribe->flags |= (ctx->flags & SCRIBE_REPLAY) ? SCRIBE_PS_REPLAY : 0;
 
 	wake_up(&ctx->tasks_wait);
+	return 0;
+
+err_queue:
+	if (is_recording(scribe)) {
+		/* The context has a reference to the queue. */
+		queue->wont_grow = 1;
+		scribe_put_queue(queue);
+	}
+	scribe_put_queue(queue);
+	scribe->flags &= ~(SCRIBE_PS_RECORD | SCRIBE_PS_REPLAY);
+
+	return ret;
 }
 
 void scribe_detach(struct scribe_ps *scribe)
 {
 	struct scribe_context *ctx = scribe->ctx;
+	BUG_ON(list_empty(&scribe->node));
 
-	assert_spin_locked(&ctx->tasks_lock);
-	BUG_ON(list_empty(&scribe->task_node));
+	scribe->flags &= ~(SCRIBE_PS_RECORD | SCRIBE_PS_REPLAY);
+	scribe_put_queue(scribe->queue);
 
-	list_del(&scribe->task_node);
+	spin_lock(&ctx->tasks_lock);
+	list_del(&scribe->node);
 
 	/* We were the last task in the context, it's time to set it idle */
 	if (list_empty(&ctx->tasks))
 		ctx->flags = SCRIBE_IDLE;
+	spin_unlock(&ctx->tasks_lock);
 
 	wake_up(&ctx->tasks_wait);
+}
+
+
+static struct scribe_event_queue *
+find_queue(struct scribe_context *ctx, pid_t pid)
+{
+	struct scribe_event_queue *queue;
+
+	list_for_each_entry(queue, &ctx->queues, node)
+		if (queue->pid == pid)
+			return queue;
+
+	return NULL;
+}
+
+struct scribe_event_queue *
+scribe_get_queue_by_pid(struct scribe_context *ctx, pid_t pid)
+{
+	struct scribe_event_queue *queue, *new_queue;
+
+	spin_lock(&ctx->queues_lock);
+
+	queue = find_queue(ctx, pid);
+	if (!queue) {
+		spin_unlock(&ctx->queues_lock);
+
+		new_queue = scribe_alloc_event_queue();
+		if (!new_queue)
+			return new_queue;
+
+		spin_lock(&ctx->queues_lock);
+
+		queue = find_queue(ctx, pid);
+		if (queue) {
+			/* raced */
+			scribe_free_event_queue(new_queue);
+		}
+		else {
+			queue = new_queue;
+
+			/* A newly created queue will have a ref_cnt = 2:
+			 * - The queue is registered by the context
+			 * - The function returns a queue pointer
+			 */
+			atomic_inc(&queue->ref_cnt);
+			list_add(&queue->node, &ctx->queues);
+			queue->ctx = ctx;
+			queue->pid = pid;
+		}
+	}
+
+	atomic_inc(&queue->ref_cnt);
+	spin_unlock(&ctx->queues_lock);
+
+	return queue;
+}
+
+void scribe_get_queue(struct scribe_event_queue *queue)
+{
+	atomic_inc(&queue->ref_cnt);
+}
+
+void scribe_put_queue(struct scribe_event_queue *queue)
+{
+	struct scribe_context *ctx = queue->ctx;
+
+	if (atomic_dec_and_lock(&queue->ref_cnt, &ctx->queues_lock)) {
+		list_del(&queue->node);
+		spin_unlock(&ctx->queues_lock);
+		scribe_free_event_queue(queue);
+	}
 }

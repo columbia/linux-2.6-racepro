@@ -970,7 +970,7 @@ int init_scribe(struct task_struct *p, struct scribe_context *ctx)
 	scribe->flags = 0;
 	scribe->ctx = ctx;
 	scribe->p = p;
-	INIT_LIST_HEAD(&scribe->task_node);
+	INIT_LIST_HEAD(&scribe->node);
 
 	p->scribe = scribe;
 
@@ -981,20 +981,21 @@ int copy_scribe(unsigned long long clone_flags, struct task_struct *p)
 {
 	int ret;
 
-	if (!__is_scribbed(current->scribe))
+	if (!is_scribbed(current->scribe))
 		return 0;
 
 	ret = init_scribe(p, current->scribe->ctx);
 	if (ret)
 		return ret;
 
-	spin_lock(&p->scribe->ctx->tasks_lock);
-	scribe_attach(p->scribe);
-	spin_unlock(&p->scribe->ctx->tasks_lock);
+	ret = scribe_attach(p->scribe);
+	if (ret) {
+		exit_scribe(p);
+		return ret;
+	}
 
 	return 0;
 }
-
 
 #endif
 

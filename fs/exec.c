@@ -488,36 +488,35 @@ EXPORT_SYMBOL(copy_strings_kernel);
 
 static int prepare_scribe(void)
 {
-	return 0;
+	struct scribe_ps *scribe = current->scribe;
+	if (!scribe || !(scribe->flags & SCRIBE_PS_ATTACH_ON_EXEC))
+		return 0;
+
+	return scribe_attach(scribe);
 }
 
 static void update_scribe(void)
 {
 	struct scribe_ps *scribe = current->scribe;
-	struct scribe_context *ctx;
-
 	if (!scribe || !(scribe->flags & SCRIBE_PS_ATTACH_ON_EXEC))
 		return;
 
-	ctx = scribe->ctx;
-
-	spin_lock(&ctx->tasks_lock);
-	if (ctx->flags == SCRIBE_DEAD) {
-		/* FIXME make execve() fail */
-	}
-	else
-		scribe_attach(scribe);
-	spin_unlock(&ctx->tasks_lock);
+	scribe->flags &= ~SCRIBE_PS_ATTACH_ON_EXEC;
 }
 
 static void cleanup_scribe(void)
 {
+	struct scribe_ps *scribe = current->scribe;
+	if (!scribe || !(scribe->flags & SCRIBE_PS_ATTACH_ON_EXEC))
+		return;
+
+	scribe_detach(scribe);
 }
 
 #else
-static inline int prepare_scribe() { return 0; }
-static inline void update_scribe() {}
-static inline void cleanup_scribe() {}
+static inline int prepare_scribe(void) { return 0; }
+static inline void update_scribe(void) {}
+static inline void cleanup_scribe(void) {}
 #endif /* CONFIG_SCRIBE */
 
 
@@ -1428,7 +1427,6 @@ int do_execve(char * filename,
 	retval = copy_strings(bprm->argc, argv, bprm);
 	if (retval < 0)
 		goto out;
-
 
 	current->flags &= ~PF_KTHREAD;
 	retval = search_binary_handler(bprm,regs);
