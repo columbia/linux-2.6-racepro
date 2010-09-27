@@ -129,7 +129,7 @@ void scribe_exit_context(struct scribe_context *ctx)
 	 * we cannot guarantee that they can continue (no more events)
 	 */
 
-	if (!list_empty(ctx->tasks.next)) {
+	if (!list_empty(&ctx->tasks)) {
 		printk(KERN_WARNING "scribe: emergency stop (context=%d)\n",
 		       ctx->id);
 		BUG_ON(ctx->flags == SCRIBE_IDLE);

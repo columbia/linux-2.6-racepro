@@ -20,6 +20,7 @@
 #include <linux/wait.h>
 #include <asm/atomic.h>
 #include <linux/scribe_api.h>
+#include <linux/slab.h>
 
 struct proc_dir_entry;
 struct task_struct;
@@ -94,10 +95,53 @@ void exit_scribe(struct task_struct *p);
 
 /* Events */
 
+struct scribe_event_queue;
+struct scribe_insert_point {
+	struct list_head node;
+	struct scribe_event_queue *queue;
+	struct list_head events;
+};
+
+struct scribe_event_queue {
+	atomic_t ref_cnt;
+	struct list_head node;
+
+	/* Insert points allows to insert event at an arbitrary location
+	 * which is quite handy when we need to put events "in the past",
+	 * like saving the return value of a syscall.
+	 */
+	spinlock_t lock;
+	struct scribe_insert_point master;
+	/* For simplicity, there is not head of the insert point list */
+
+	/* points to context->wait_event in record mode
+	 * points to default_wait in replay mode
+	 */
+	wait_queue_head_t default_wait;
+	wait_queue_head_t *wait;
+
+	/* When wont_grow == 1 and list_empty(events), the queue can be
+	 * considered as dead
+	 */
+	int wont_grow;
+};
+
+
+struct scribe_event_queue *scribe_alloc_event_queue(void);
+void scribe_free_event_queue(struct scribe_event_queue *queue);
+void scribe_free_all_events(struct scribe_event_queue *queue);
+
+void scribe_create_insert_point(struct scribe_event_queue *queue,
+				struct scribe_insert_point *ip);
+void scribe_commit_insert_point(struct scribe_insert_point *ip);
+
+void scribe_queue_event_at(struct scribe_insert_point *where, void *event);
+void scribe_queue_event(struct scribe_event_queue *queue, void *event);
+struct scribe_event *scribe_try_dequeue_event(struct scribe_event_queue *queue);
+
 struct scribe_event_data *scribe_alloc_event_data(size_t size);
 void scribe_free_event_data(struct scribe_event_data *event);
 
-void *__scribe_alloc_event(__u8 type);
 static __always_inline void *__scribe_alloc_event_const(__u8 type)
 {
 	struct scribe_event *event;
@@ -108,6 +152,7 @@ static __always_inline void *__scribe_alloc_event_const(__u8 type)
 
 	return event;
 }
+void *__scribe_alloc_event(__u8 type);
 static __always_inline void *scribe_alloc_event(__u8 type)
 {
 	if (__builtin_constant_p(type))
