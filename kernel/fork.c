@@ -1229,7 +1229,9 @@ static struct task_struct *copy_process(unsigned long long clone_flags,
 	}
 
 	/* copy_scribe() needs the vpid to be valid for the queue */
-	/* FIXME doing the attach_pid() thing: I have no idea what I'm doing
+
+	/*
+	 * FIXME doing the attach_pid() thing: I have no idea what I'm doing
 	 * it seems to be a quick fix, but definitely not stable.
 	 */
 	write_lock_irq(&tasklist_lock);

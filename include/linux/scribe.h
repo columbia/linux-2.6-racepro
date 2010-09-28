@@ -59,10 +59,10 @@ static inline void scribe_put_context(struct scribe_context *ctx)
 		kfree(ctx);
 }
 
-struct scribe_context *scribe_alloc_context(void);
-void scribe_exit_context(struct scribe_context *ctx);
-int scribe_set_state(struct scribe_context *ctx, int state);
-int scribe_set_attach_on_exec(struct scribe_context *ctx, int enable);
+extern struct scribe_context *scribe_alloc_context(void);
+extern void scribe_exit_context(struct scribe_context *ctx);
+extern int scribe_set_state(struct scribe_context *ctx, int state);
+extern int scribe_set_attach_on_exec(struct scribe_context *ctx, int enable);
 
 #define SCRIBE_PS_RECORD	0x00000001
 #define SCRIBE_PS_REPLAY	0x00000002
@@ -72,7 +72,8 @@ struct scribe_event_queue;
 struct scribe_ps {
 	struct list_head node;
 
-	/* The two next fields should only be accessed by
+	/*
+	 * The two next fields should only be accessed by
 	 * the current process.
 	 */
 	int flags;
@@ -83,11 +84,18 @@ struct scribe_ps {
 };
 
 static inline int is_scribbed(struct scribe_ps *scribe)
-{ return scribe != NULL && scribe->flags & (SCRIBE_PS_RECORD | SCRIBE_PS_REPLAY); }
+{
+	return scribe != NULL &&
+	       (scribe->flags & (SCRIBE_PS_RECORD | SCRIBE_PS_REPLAY));
+}
 static inline int is_recording(struct scribe_ps *scribe)
-{ return scribe != NULL && scribe->flags & SCRIBE_PS_RECORD; }
+{
+	return scribe != NULL && (scribe->flags & SCRIBE_PS_RECORD);
+}
 static inline int is_replaying(struct scribe_ps *scribe)
-{ return scribe != NULL && scribe->flags & SCRIBE_PS_REPLAY; }
+{
+	return scribe != NULL && (scribe->flags & SCRIBE_PS_REPLAY);
+}
 
 /* Using defines instead of inline functions so that we don't need
  * to include sched.h
@@ -96,11 +104,11 @@ static inline int is_replaying(struct scribe_ps *scribe)
 #define is_ps_recording(t) is_recording(t->scribe)
 #define is_ps_replaying(t) is_replaying(t->scribe)
 
-int scribe_attach(struct scribe_ps *scribe);
-void scribe_detach(struct scribe_ps *scribe);
+extern int scribe_attach(struct scribe_ps *scribe);
+extern void scribe_detach(struct scribe_ps *scribe);
 
-int init_scribe(struct task_struct *p, struct scribe_context *ctx);
-void exit_scribe(struct task_struct *p);
+extern int init_scribe(struct task_struct *p, struct scribe_context *ctx);
+extern void exit_scribe(struct task_struct *p);
 
 /* Events */
 
@@ -121,12 +129,14 @@ struct scribe_event_queue {
 
 	pid_t pid;
 
-	/* When wont_grow == 1 and list_empty(events), the queue can be
+	/*
+	 * When wont_grow == 1 and list_empty(events), the queue can be
 	 * considered as dead
 	 */
 	int flags;
 
-	/* Insert points allows to insert event at an arbitrary location
+	/*
+	 * Insert points allows to insert event at an arbitrary location
 	 * which is quite handy when we need to put events "in the past",
 	 * like saving the return value of a syscall.
 	 */
@@ -134,25 +144,29 @@ struct scribe_event_queue {
 	struct scribe_insert_point master;
 	/* For simplicity, there is not list head of the insert point list */
 
-	/* points to context->wait_event in record mode
-	 * points to default_wait in replay mode
+	/*
+	 * 'wait' points to:
+	 * - context->wait_event in record mode
+	 * - default_wait in replay mode
 	 */
 	wait_queue_head_t default_wait;
 	wait_queue_head_t *wait;
 };
 
-struct scribe_event_queue *scribe_alloc_event_queue(void);
-void scribe_free_event_queue(struct scribe_event_queue *queue);
-void scribe_free_all_events(struct scribe_event_queue *queue);
+extern struct scribe_event_queue *scribe_alloc_event_queue(void);
+extern void scribe_free_event_queue(struct scribe_event_queue *queue);
+extern void scribe_free_all_events(struct scribe_event_queue *queue);
 
-void scribe_create_insert_point(struct scribe_event_queue *queue,
-				struct scribe_insert_point *ip);
-void scribe_commit_insert_point(struct scribe_insert_point *ip);
+extern void scribe_create_insert_point(struct scribe_event_queue *queue,
+				       struct scribe_insert_point *ip);
+extern void scribe_commit_insert_point(struct scribe_insert_point *ip);
 
-void scribe_queue_event_at(struct scribe_insert_point *where, void *event);
-void scribe_queue_event(struct scribe_event_queue *queue, void *event);
+extern void scribe_queue_event_at(struct scribe_insert_point *where,
+				  void *event);
+extern void scribe_queue_event(struct scribe_event_queue *queue, void *event);
 
-/* This macro allows us to write such code:
+/*
+ * This macro allows us to write such code:
  *	scribe_queue_new_event(scribe->queue,
  *			       SCRIBE_EVENT_SYSCALL,
  *			       .nr = 1, .ret = 2);
@@ -167,27 +181,27 @@ void scribe_queue_event(struct scribe_event_queue *queue, void *event);
 		__ret = -ENOMEM;					\
 	else {								\
 		*__new_event = (struct_##_type)				\
-			{.h= {.type = _type},  __VA_ARGS__};		\
+			{.h = {.type = _type},  __VA_ARGS__};		\
 		scribe_queue_event(queue, __new_event);			\
 	}								\
 	__ret;								\
 })
 
-struct scribe_event *scribe_try_dequeue_event(struct scribe_event_queue *queue);
+extern struct scribe_event *scribe_try_dequeue_event(
+		struct scribe_event_queue *queue);
 
-int scribe_is_queue_empty(struct scribe_event_queue *queue);
-void scribe_set_queue_wont_grow(struct scribe_event_queue *queue);
+extern int scribe_is_queue_empty(struct scribe_event_queue *queue);
+extern void scribe_set_queue_wont_grow(struct scribe_event_queue *queue);
 
-struct scribe_event_data *scribe_alloc_event_data(size_t size);
-void scribe_free_event_data(struct scribe_event_data *event);
+extern struct scribe_event_data *scribe_alloc_event_data(size_t size);
+extern void scribe_free_event_data(struct scribe_event_data *event);
 
 
-
-struct scribe_event_queue *
-scribe_get_queue_by_pid(struct scribe_context *ctx, pid_t pid);
-void scribe_get_queue(struct scribe_event_queue *queue);
-void scribe_put_queue(struct scribe_event_queue *queue);
-void scribe_put_queue_locked(struct scribe_event_queue *queue);
+extern struct scribe_event_queue *scribe_get_queue_by_pid(
+		struct scribe_context *ctx, pid_t pid);
+extern void scribe_get_queue(struct scribe_event_queue *queue);
+extern void scribe_put_queue(struct scribe_event_queue *queue);
+extern void scribe_put_queue_locked(struct scribe_event_queue *queue);
 
 static __always_inline void *__scribe_alloc_event_const(__u8 type)
 {
@@ -199,7 +213,7 @@ static __always_inline void *__scribe_alloc_event_const(__u8 type)
 
 	return event;
 }
-void *__scribe_alloc_event(__u8 type);
+extern void *__scribe_alloc_event(__u8 type);
 static __always_inline void *scribe_alloc_event(__u8 type)
 {
 	if (__builtin_constant_p(type))
@@ -217,11 +231,12 @@ static inline void scribe_free_event(void *event)
 
 #else /* CONFIG_SCRIBE */
 
-#define is_scribbed(t)  0
-#define is_recording(t) 0
-#define is_replaying(t) 0
+#define is_ps_scribbed(t)  0
+#define is_ps_recording(t) 0
+#define is_ps_replaying(t) 0
 
-static inline int init_scribe(struct task_struct *p, struct scribe_context *ctx) { return 0; }
+static inline int init_scribe(struct task_struct *p,
+			      struct scribe_context *ctx) { return 0; }
 static inline void exit_scribe(struct task_struct *tsk) {}
 
 #endif /* CONFIG_SCRIBE */

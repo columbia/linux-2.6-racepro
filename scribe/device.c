@@ -14,7 +14,7 @@
 #include <linux/slab.h>
 #include <linux/scribe.h>
 #include <linux/sched.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 struct scribe_dev {
 	struct scribe_context *ctx;
@@ -31,7 +31,7 @@ static inline size_t sizeof_raw_event(struct scribe_event *event)
 
 static inline char *get_raw_event(struct scribe_event *event)
 {
-	return (char*)event + offsetof(typeof(*event), raw_offset);
+	return (char *)event + offsetof(typeof(*event), raw_offset);
 }
 
 static ssize_t dev_write(struct file *file,
@@ -48,8 +48,8 @@ static ssize_t dev_write(struct file *file,
  *
  * Note: scribe_get_non_empty_queue() also remove dead queues.
  */
-static struct scribe_event_queue *
-__get_non_empty_queue(struct scribe_context *ctx)
+static struct scribe_event_queue *__get_non_empty_queue(
+		struct scribe_context *ctx)
 {
 	struct scribe_event_queue *queue, *tmp;
 	int ret;
@@ -63,7 +63,8 @@ __get_non_empty_queue(struct scribe_context *ctx)
 		}
 		/* queue is empty...*/
 
-		/* If the queue is set to wont_grow, we don't want to detach
+		/*
+		 * If the queue is set to wont_grow, we don't want to detach
 		 * it twice. Hence the check for SCRIBE_CTX_DETACHED.
 		 */
 		if ((queue->flags & (SCRIBE_WONT_GROW | SCRIBE_CTX_DETACHED)) ==
@@ -75,7 +76,8 @@ __get_non_empty_queue(struct scribe_context *ctx)
 
 	ret = -EAGAIN;
 	if (list_empty(&ctx->queues)) {
-		/* There are no more queues in the context, which means that
+		/*
+		 * There are no more queues in the context, which means that
 		 * there are no tasks attached as well. Thus the context
 		 * status is either set to:
 		 * - SCRIBE_IDLE: the recording is over, and so we want
@@ -91,11 +93,11 @@ __get_non_empty_queue(struct scribe_context *ctx)
 	return ERR_PTR(ret);
 }
 
-#define PLEASE_WAIT 0
-#define DONT_WAIT 1
+#define SCRIBE_NO_WAIT 0
+#define SCRIBE_WAIT 1
 
-static struct scribe_event_queue *
-get_non_empty_queue(struct scribe_dev *dev, int wait)
+static struct scribe_event_queue *get_non_empty_queue(
+		struct scribe_dev *dev, int wait)
 {
 	struct scribe_context *ctx = dev->ctx;
 	struct scribe_event_queue *queue;
@@ -109,7 +111,7 @@ get_non_empty_queue(struct scribe_dev *dev, int wait)
 		dev->last_queue = NULL;
 	}
 
-	if (wait == PLEASE_WAIT) {
+	if (wait == SCRIBE_WAIT) {
 		ret = wait_event_interruptible(
 			ctx->queues_wait,
 			((queue = __get_non_empty_queue(ctx))
@@ -117,8 +119,7 @@ get_non_empty_queue(struct scribe_dev *dev, int wait)
 
 		if (ret)
 			return ERR_PTR(-ERESTARTSYS);
-	}
-	else {
+	} else {
 		queue = __get_non_empty_queue(ctx);
 	}
 
@@ -155,7 +156,6 @@ static ssize_t dev_read(struct file *file,
 			char __user *buf, size_t count, loff_t * ppos)
 {
 	struct scribe_dev *dev = file->private_data;
-	struct scribe_context *ctx = dev->ctx;
 	struct scribe_event_queue *queue;
 	struct scribe_event *event;
 	long not_written;
@@ -163,21 +163,22 @@ static ssize_t dev_read(struct file *file,
 	size_t length;
 	char *kbuf;
 
-	/* FIXME put a mutex around this to protect it against multiple
+	/*
+	 * FIXME put a mutex around this to protect it against multiple
 	 * readers, although it would not make any sense to have multiple
 	 * readers.
 	 */
 
-	/* Maybe we had an even half-sent and we'll pick up where we left off,
+	/*
+	 * Maybe we had an even half-sent and we'll pick up where we left off,
 	 * if not we'll get the next non empty queue.
 	 */
 	event = dev->pending_event;
 	if (event) {
 		dev->pending_event = NULL;
 		queue = NULL;
-	}
-	else {
-		queue = get_non_empty_queue(dev, PLEASE_WAIT);
+	} else {
+		queue = get_non_empty_queue(dev, SCRIBE_WAIT);
 		if (IS_ERR(queue)) {
 			ret = PTR_ERR(queue);
 			if (ret == -ENODEV)
@@ -226,9 +227,9 @@ static ssize_t dev_read(struct file *file,
 		buf += length;
 		count -= length;
 
-		queue = get_non_empty_queue(dev, DONT_WAIT);
+		queue = get_non_empty_queue(dev, SCRIBE_NO_WAIT);
 		if (IS_ERR(queue))
-			goto out:
+			goto out;
 	}
 
 out:

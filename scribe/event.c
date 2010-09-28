@@ -100,14 +100,15 @@ void scribe_commit_insert_point(struct scribe_insert_point *ip)
 
 
 static inline void __scribe_queue_event_at(struct scribe_event_queue *queue,
-				    struct scribe_insert_point *where,
-				    void *_event)
+					   struct scribe_insert_point *where,
+					   void *_event)
 {
 	struct scribe_event *event = (struct scribe_event *)_event;
 	struct scribe_insert_point *next_ip = get_next_ip(where);
-	
+
 	spin_lock(&queue->lock);
-	/* When queuing events, we want to put them in the next
+	/*
+	 * When queuing events, we want to put them in the next
 	 * insert point event list because the current insert point is
 	 * blocked by the insert point.
 	 * When the next insert point is commited, those events will be
@@ -136,7 +137,8 @@ struct scribe_event *scribe_try_dequeue_event(struct scribe_event_queue *queue)
 	struct scribe_event *event;
 	struct list_head *events;
 
-	/* When deqeuing events, we grab them from the current insert point,
+	/*
+	 * When deqeuing events, we grab them from the current insert point,
 	 * not the next one.
 	 */
 

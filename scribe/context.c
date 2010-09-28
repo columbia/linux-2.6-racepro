@@ -134,7 +134,8 @@ void scribe_exit_context(struct scribe_context *ctx)
 	struct scribe_ps *scribe;
 
 	spin_lock(&ctx->tasks_lock);
-	/* The tasks list should be empty by now.
+	/*
+	 * The tasks list should be empty by now.
 	 * If it's not, it means that the userspace monitor process
 	 * has gone missing. We'll kill all the scribed tasks because
 	 * we cannot guarantee that they can continue (no more events)
@@ -152,7 +153,8 @@ void scribe_exit_context(struct scribe_context *ctx)
 		spin_lock(&ctx->tasks_lock);
 	}
 
-	/* Setting the SCRIBE_DEAD flag has to be set with the lock,
+	/*
+	 * Setting the SCRIBE_DEAD flag has to be set with the lock,
 	 * to guards against race with attach_on_exec.
 	 */
 	ctx->flags = SCRIBE_DEAD;
@@ -227,7 +229,8 @@ int scribe_set_attach_on_exec(struct scribe_context *ctx, int enable)
 	return 0;
 }
 
-/* scribe_attach() and scribe_detach() must be called only by
+/*
+ * scribe_attach() and scribe_detach() must be called only by
  * the current process or if scribe->p is sleeping (and thus not accessing
  * scribe->flags)
  */
@@ -237,7 +240,8 @@ int scribe_attach(struct scribe_ps *scribe)
 	struct scribe_event_queue *queue;
 	int ret;
 
-	/* First get the queue, and only then, add to the task list:
+	/*
+	 * First get the queue, and only then, add to the task list:
 	 * It guarantee that if a task is in the task list, its
 	 * queue is in the queue list
 	 */
@@ -264,13 +268,14 @@ int scribe_attach(struct scribe_ps *scribe)
 	scribe->flags |= (ctx->flags & SCRIBE_REPLAY) ? SCRIBE_PS_REPLAY : 0;
 
 	if (is_recording(scribe)) {
-		/* The monitor will be waiting on ctx->queue_wait, and all
+		/*
+		 * The monitor will be waiting on ctx->queue_wait, and all
 		 * processes sends their notification to it.
 		 */
 		queue->wait = &ctx->queues_wait;
-	}
-	else { /* is_replaying(scribe) == 1 */
-		/* Releasing the reference that the context has on it.
+	} else { /* is_replaying(scribe) == 1 */
+		/*
+		 * Releasing the reference that the context has on it.
 		 * That way when the process detaches, the queue will
 		 * be removed right away.
 		 * In case new events comes in for new events, a new queue
@@ -320,8 +325,8 @@ void scribe_detach(struct scribe_ps *scribe)
 }
 
 
-static struct scribe_event_queue *
-find_queue(struct scribe_context *ctx, pid_t pid)
+static struct scribe_event_queue *find_queue(struct scribe_context *ctx,
+					     pid_t pid)
 {
 	struct scribe_event_queue *queue;
 
@@ -332,8 +337,8 @@ find_queue(struct scribe_context *ctx, pid_t pid)
 	return NULL;
 }
 
-struct scribe_event_queue *
-scribe_get_queue_by_pid(struct scribe_context *ctx, pid_t pid)
+struct scribe_event_queue *scribe_get_queue_by_pid(struct scribe_context *ctx,
+						   pid_t pid)
 {
 	struct scribe_event_queue *queue, *new_queue;
 
@@ -353,11 +358,11 @@ scribe_get_queue_by_pid(struct scribe_context *ctx, pid_t pid)
 		if (queue) {
 			/* raced */
 			scribe_free_event_queue(new_queue);
-		}
-		else {
+		} else {
 			queue = new_queue;
 
-			/* A newly created queue will have a ref_cnt = 2:
+			/*
+			 * A newly created queue will have a ref_cnt = 2:
 			 * - The queue is registered by the context
 			 * - The function returns a queue pointer
 			 */

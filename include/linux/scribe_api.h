@@ -76,7 +76,8 @@ struct scribe_event_syscall {
 } __attribute__((packed));
 
 void __you_are_using_an_unknown_scribe_type(void);
-/* XXX Data events have a variable size. This additional payload
+/*
+ * XXX Data events have a variable size. This additional payload
  * is NOT accounted here.
  */
 static __always_inline size_t sizeof_event_from_type(__u8 type)
