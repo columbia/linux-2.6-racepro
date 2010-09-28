@@ -41,8 +41,9 @@
 
 
 enum scribe_event_type {
-	SCRIBE_EVENT_DATA = 1,
-	SCRIBE_EVENT_SYSCALL
+	SCRIBE_EVENT_PID = 1,
+	SCRIBE_EVENT_DATA,
+	SCRIBE_EVENT_SYSCALL,
 };
 
 struct scribe_event {
@@ -51,6 +52,12 @@ struct scribe_event {
 	char raw_offset[0];
 #endif
 	__u8 type;
+} __attribute__((packed));
+
+#define struct_SCRIBE_EVENT_PID struct scribe_event_pid
+struct scribe_event_pid {
+	struct scribe_event h;
+	__u32 pid;
 } __attribute__((packed));
 
 #define struct_SCRIBE_EVENT_DATA struct scribe_event_data
@@ -75,8 +82,9 @@ static __always_inline size_t sizeof_event_from_type(__u8 type)
 {
 	switch(type) {
 #define __TYPE(t) case t: return sizeof(struct_##t)
-	__TYPE(SCRIBE_EVENT_SYSCALL);
+	__TYPE(SCRIBE_EVENT_PID);
 	__TYPE(SCRIBE_EVENT_DATA);
+	__TYPE(SCRIBE_EVENT_SYSCALL);
 #undef  __TYPE
 	}
 

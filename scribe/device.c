@@ -21,6 +21,7 @@ struct scribe_dev {
 	struct scribe_event_queue *last_queue;
 	struct scribe_event *pending_event;
 	unsigned long offset;
+	pid_t last_pid;
 };
 
 static inline size_t sizeof_raw_event(struct scribe_event *event)
@@ -118,6 +119,29 @@ get_non_empty_queue_wait(struct scribe_dev *dev)
 	return queue;
 }
 
+static struct scribe_event *get_next_event(struct scribe_dev *dev,
+					   struct scribe_event_queue *queue)
+{
+	struct scribe_event_pid *event_pid;
+	struct scribe_event *event;
+
+	if (likely(dev->last_pid == queue->pid)) {
+		event = scribe_try_dequeue_event(queue);
+		BUG_ON(IS_ERR(event));
+		return event;
+	}
+
+	/* We've changed pid, inserting a pid event */
+	event_pid = scribe_alloc_event(SCRIBE_EVENT_PID);
+	if (!event_pid)
+		return ERR_PTR(-ENOMEM);
+
+	event_pid->pid = queue->pid;
+	dev->last_pid = queue->pid;
+
+	return (struct scribe_event *)event_pid;
+}
+
 static ssize_t dev_read(struct file *file,
 			char __user *buf, size_t count, loff_t * ppos)
 {
@@ -130,9 +154,16 @@ static ssize_t dev_read(struct file *file,
 	size_t length;
 	char *kbuf;
 
+	/* FIXME put a mutex around this to protect it against multiple
+	 * readers, although it would not make sense.
+	 */
+
 	if (!(ctx->flags &= SCRIBE_RECORD))
 		return -EPERM;
 
+	/* Maybe we had an even half-sent. We'll pick up where we left off,
+	 * or we'll get the next non empty queue
+	 */
 	event = dev->pending_event;
 	if (event) {
 		dev->pending_event = NULL;
@@ -142,17 +173,20 @@ static ssize_t dev_read(struct file *file,
 		queue = get_non_empty_queue_wait(dev);
 		if (IS_ERR(queue)) {
 			ret = PTR_ERR(queue);
-			if (ret == -ENODEV)
+			if (ret != -ENODEV)
 				ret = 0;
-			return ret;
+			goto out;
 		}
-
-		event = scribe_try_dequeue_event(queue);
-		if (IS_ERR(event))
-			return PTR_ERR(event);
 	}
 
 	for (;;) {
+		if (!event) {
+			event = get_next_event(dev, queue);
+			if (IS_ERR(event) && !ret)
+				ret = PTR_ERR(event);
+			goto out;
+		}
+
 		length = sizeof_raw_event(event) - dev->offset;
 		kbuf = get_raw_event(event) + dev->offset;
 
@@ -165,8 +199,9 @@ static ssize_t dev_read(struct file *file,
 		not_written = copy_to_user(buf, kbuf, length);
 		if (not_written) {
 			dev->offset -= not_written;
-			dev->pending_event = event;
 			ret += length - not_written;
+
+			dev->pending_event = event;
 
 			if (!ret)
 				ret = -EFAULT;
@@ -178,6 +213,7 @@ static ssize_t dev_read(struct file *file,
 			goto out;
 
 		scribe_free_event(event);
+		event = NULL;
 		dev->offset = 0;
 
 		buf += length;
@@ -191,10 +227,6 @@ static ssize_t dev_read(struct file *file,
 			scribe_put_queue(dev->last_queue);
 			dev->last_queue = queue;
 		}
-
-		event = scribe_try_dequeue_event(queue);
-		if (IS_ERR(event))
-			goto out;
 	}
 
 out:
@@ -218,6 +250,7 @@ static int dev_open(struct inode *inode, struct file *file)
 	dev->last_queue = NULL;
 	dev->pending_event = NULL;
 	dev->offset = 0;
+	dev->last_pid = -1;
 
 	file->private_data = dev;
 
