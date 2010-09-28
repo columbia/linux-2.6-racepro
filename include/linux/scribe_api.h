@@ -75,18 +75,20 @@ struct scribe_event_syscall {
 	__u32 ret; /* FIXME 64 bit support ? */
 } __attribute__((packed));
 
+void __you_are_using_an_unknown_scribe_type(void);
 /* XXX Data events have a variable size. This additional payload
  * is NOT accounted here.
  */
 static __always_inline size_t sizeof_event_from_type(__u8 type)
 {
-	switch(type) {
-#define __TYPE(t) case t: return sizeof(struct_##t)
+#define __TYPE(t) if (type == t) return sizeof(struct_##t);
 	__TYPE(SCRIBE_EVENT_PID);
 	__TYPE(SCRIBE_EVENT_DATA);
 	__TYPE(SCRIBE_EVENT_SYSCALL);
 #undef  __TYPE
-	}
+
+	if (__builtin_constant_p(type))
+		__you_are_using_an_unknown_scribe_type();
 
 	return (size_t)-1;
 }

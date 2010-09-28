@@ -151,6 +151,28 @@ void scribe_commit_insert_point(struct scribe_insert_point *ip);
 
 void scribe_queue_event_at(struct scribe_insert_point *where, void *event);
 void scribe_queue_event(struct scribe_event_queue *queue, void *event);
+
+/* This macro allows us to write such code:
+ *	scribe_queue_new_event(scribe->queue,
+ *			       SCRIBE_EVENT_SYSCALL,
+ *			       .nr = 1, .ret = 2);
+ */
+#define scribe_queue_new_event(queue, _type, ...)			\
+({									\
+	struct_##_type *__new_event;					\
+	int __ret = 0;							\
+									\
+	__new_event = scribe_alloc_event(_type);			\
+	if (!__new_event)						\
+		__ret = -ENOMEM;					\
+	else {								\
+		*__new_event = (struct_##_type)				\
+			{.h= {.type = _type},  __VA_ARGS__};		\
+		scribe_queue_event(queue, __new_event);			\
+	}								\
+	__ret;								\
+})
+
 struct scribe_event *scribe_try_dequeue_event(struct scribe_event_queue *queue);
 
 int scribe_is_queue_empty(struct scribe_event_queue *queue);
