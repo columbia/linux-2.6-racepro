@@ -27,13 +27,16 @@ struct scribe_event_queue *scribe_alloc_event_queue(void)
 		return NULL;
 
 	atomic_set(&queue->ref_cnt, 0);
-	init_waitqueue_head(&queue->default_wait);
-	queue->wait = &queue->default_wait;
+
+	/* ctx, node, pid are initialized later */
+
+	queue->flags = 0;
 
 	spin_lock_init(&queue->lock);
 	init_insert_point(queue, &queue->master);
 
-	queue->wont_grow = 0;
+	init_waitqueue_head(&queue->default_wait);
+	queue->wait = &queue->default_wait;
 
 	return queue;
 }
@@ -146,6 +149,20 @@ struct scribe_event *scribe_try_dequeue_event(struct scribe_event_queue *queue)
 	return event;
 }
 
+int scribe_is_queue_empty(struct scribe_event_queue *queue)
+{
+	int ret;
+	spin_lock(&queue->lock);
+	ret = list_empty(&queue->master.events);
+	spin_unlock(&queue->lock);
+	return ret;
+}
+
+void scribe_set_queue_wont_grow(struct scribe_event_queue *queue)
+{
+	queue->flags |= SCRIBE_WONT_GROW;
+	wake_up(queue->wait);
+}
 
 void *__scribe_alloc_event(__u8 type)
 {

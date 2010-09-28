@@ -226,6 +226,11 @@ int scribe_attach(struct scribe_ps *scribe)
 	struct scribe_event_queue *queue;
 	int ret;
 
+	/* First get the queue, and only then, add to the task list:
+	 * It guarantee that if a task is in the task list, its
+	 * queue is in the queue list
+	 */
+
 	queue = scribe_get_queue_by_pid(ctx, task_tgid_vnr(scribe->p));
 	if (!queue)
 		return -ENOMEM;
@@ -271,7 +276,7 @@ int scribe_attach(struct scribe_ps *scribe)
 err_queue:
 	if (is_recording(scribe)) {
 		/* The context has a reference to the queue. */
-		queue->wont_grow = 1;
+		scribe_set_queue_wont_grow(queue);
 		scribe_put_queue(queue);
 	}
 	scribe_put_queue(queue);
@@ -285,9 +290,6 @@ void scribe_detach(struct scribe_ps *scribe)
 	struct scribe_context *ctx = scribe->ctx;
 	BUG_ON(list_empty(&scribe->node));
 
-	scribe->flags &= ~(SCRIBE_PS_RECORD | SCRIBE_PS_REPLAY);
-	scribe_put_queue(scribe->queue);
-
 	spin_lock(&ctx->tasks_lock);
 	list_del(&scribe->node);
 
@@ -295,8 +297,13 @@ void scribe_detach(struct scribe_ps *scribe)
 	if (list_empty(&ctx->tasks))
 		ctx->flags = SCRIBE_IDLE;
 	spin_unlock(&ctx->tasks_lock);
-
 	wake_up(&ctx->tasks_wait);
+
+	if (is_recording(scribe))
+		scribe_set_queue_wont_grow(scribe->queue);
+
+	scribe_put_queue(scribe->queue);
+	scribe->flags &= ~(SCRIBE_PS_RECORD | SCRIBE_PS_REPLAY);
 }
 
 

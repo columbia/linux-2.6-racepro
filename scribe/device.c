@@ -13,10 +13,25 @@
 #include <linux/device.h>
 #include <linux/slab.h>
 #include <linux/scribe.h>
+#include <linux/sched.h>
+#include <asm/uaccess.h>
 
 struct scribe_dev {
 	struct scribe_context *ctx;
+	struct scribe_event_queue *last_queue;
+	struct scribe_event *pending_event;
+	unsigned long offset;
 };
+
+static inline size_t sizeof_raw_event(struct scribe_event *event)
+{
+	return sizeof_event(event) - offsetof(typeof(*event), raw_offset);
+}
+
+static inline char *get_raw_event(struct scribe_event *event)
+{
+	return (char*)event + offsetof(typeof(*event), raw_offset);
+}
 
 static ssize_t dev_write(struct file *file,
 			 const char __user *buf, size_t count, loff_t *ppos)
@@ -24,10 +39,166 @@ static ssize_t dev_write(struct file *file,
 	return 0;
 }
 
+/* Returns the first non empty queue, -ENODEV if the queue list is empty and
+ * will stay empty, -EAGAIN if at least one queue is present and all queues
+ * are empty
+ *
+ * Note: scribe_get_non_empty_queue() also remove dead queues.
+ */
+static struct scribe_event_queue *
+get_non_empty_queue(struct scribe_context *ctx)
+{
+	struct scribe_event_queue *queue;
+	int ret = -EAGAIN;
+
+retry:
+	spin_lock(&ctx->queues_lock);
+	list_for_each_entry(queue, &ctx->queues, node) {
+		if (!scribe_is_queue_empty(queue)) {
+			scribe_get_queue(queue);
+			spin_unlock(&ctx->queues_lock);
+			return queue;
+		}
+
+		/* If the queue is set to wont_grow, we don't want to detach
+		 * it twice. Hence the check for SCRIBE_CTX_DETACHED.
+		 */
+		if (queue->flags &= (SCRIBE_WONT_GROW | SCRIBE_CTX_DETACHED) ==
+		    SCRIBE_WONT_GROW) {
+			queue->flags |= SCRIBE_CTX_DETACHED;
+
+			spin_unlock(&ctx->queues_lock);
+			scribe_put_queue(queue);
+			goto retry;
+		}
+		continue;
+	}
+
+	if (list_empty(&ctx->queues)) {
+		/* There are no queues in the context, which means that there
+		 * are no tasks attached as well. Thus the context flag is
+		 * either set to:
+		 * - SCRIBE_IDLE: the recording is over, and so we want
+		 *   dev_read() to return 0
+		 * - SCRIBE_RECORD: the recording has not started yet, we want
+		 *   to wait.
+		 */
+		ret = (ctx->flags == SCRIBE_IDLE) ? -ENODEV : -EAGAIN;
+	}
+
+	spin_unlock(&ctx->queues_lock);
+	return ERR_PTR(ret);
+}
+
+static struct scribe_event_queue *
+get_non_empty_queue_wait(struct scribe_dev *dev)
+{
+	struct scribe_context *ctx = dev->ctx;
+	struct scribe_event_queue *queue;
+	int ret;
+
+	queue = dev->last_queue;
+	if (queue && !scribe_is_queue_empty(queue))
+		return queue;
+
+	if (queue) {
+		scribe_put_queue(queue);
+		dev->last_queue = NULL;
+	}
+
+	ret = wait_event_interruptible(
+		ctx->queues_wait,
+		((queue = get_non_empty_queue(ctx)) != ERR_PTR(-EAGAIN)));
+	if (ret)
+		return ERR_PTR(-ERESTARTSYS);
+
+	if (!IS_ERR(queue))
+		dev->last_queue = queue;
+
+	return queue;
+}
+
 static ssize_t dev_read(struct file *file,
 			char __user *buf, size_t count, loff_t * ppos)
 {
-	return 0;
+	struct scribe_dev *dev = file->private_data;
+	struct scribe_context *ctx = dev->ctx;
+	struct scribe_event_queue *queue;
+	struct scribe_event *event;
+	long not_written;
+	ssize_t ret = 0;
+	size_t length;
+	char *kbuf;
+
+	if (!(ctx->flags &= SCRIBE_RECORD))
+		return -EPERM;
+
+	event = dev->pending_event;
+	if (event) {
+		dev->pending_event = NULL;
+		queue = NULL;
+	}
+	else {
+		queue = get_non_empty_queue_wait(dev);
+		if (IS_ERR(queue)) {
+			ret = PTR_ERR(queue);
+			if (ret == -ENODEV)
+				ret = 0;
+			return ret;
+		}
+
+		event = scribe_try_dequeue_event(queue);
+		if (IS_ERR(event))
+			return PTR_ERR(event);
+	}
+
+	for (;;) {
+		length = sizeof_raw_event(event) - dev->offset;
+		kbuf = get_raw_event(event) + dev->offset;
+
+		if (length > count) {
+			length = count;
+			dev->pending_event = event;
+		}
+		dev->offset += length;
+
+		not_written = copy_to_user(buf, kbuf, length);
+		if (not_written) {
+			dev->offset -= not_written;
+			dev->pending_event = event;
+			ret += length - not_written;
+
+			if (!ret)
+				ret = -EFAULT;
+			goto out;
+		}
+
+		ret += length;
+		if (dev->pending_event)
+			goto out;
+
+		scribe_free_event(event);
+		dev->offset = 0;
+
+		buf += length;
+		count -= length;
+
+		if (!queue || scribe_is_queue_empty(queue)) {
+			queue = get_non_empty_queue(ctx);
+			if (IS_ERR(queue))
+				goto out;
+
+			scribe_put_queue(dev->last_queue);
+			dev->last_queue = queue;
+		}
+
+		event = scribe_try_dequeue_event(queue);
+		if (IS_ERR(event))
+			goto out;
+	}
+
+out:
+	return ret;
 }
 
 static int dev_open(struct inode *inode, struct file *file)
@@ -44,6 +215,10 @@ static int dev_open(struct inode *inode, struct file *file)
 		return -ENOMEM;
 	}
 
+	dev->last_queue = NULL;
+	dev->pending_event = NULL;
+	dev->offset = 0;
+
 	file->private_data = dev;
 
 	return 0;
@@ -52,6 +227,11 @@ static int dev_open(struct inode *inode, struct file *file)
 static int dev_release(struct inode *inode, struct file *file)
 {
 	struct scribe_dev *dev = file->private_data;
+
+	if (dev->pending_event)
+		scribe_free_event(dev->pending_event);
+	if (dev->last_queue)
+		scribe_put_queue(dev->last_queue);
 
 	scribe_exit_context(dev->ctx);
 	return 0;

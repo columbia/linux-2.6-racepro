@@ -72,7 +72,7 @@ struct scribe_event_queue;
 struct scribe_ps {
 	struct list_head node;
 
-	/* The two next fields should only be written to by
+	/* The two next fields should only be accessed by
 	 * the current process.
 	 */
 	int flags;
@@ -110,6 +110,9 @@ struct scribe_insert_point {
 	struct list_head events;
 };
 
+#define SCRIBE_WONT_GROW 1
+#define SCRIBE_CTX_DETACHED 2
+
 struct scribe_event_queue {
 	atomic_t ref_cnt;
 
@@ -117,6 +120,11 @@ struct scribe_event_queue {
 	struct list_head node;
 
 	pid_t pid;
+
+	/* When wont_grow == 1 and list_empty(events), the queue can be
+	 * considered as dead
+	 */
+	int flags;
 
 	/* Insert points allows to insert event at an arbitrary location
 	 * which is quite handy when we need to put events "in the past",
@@ -131,11 +139,6 @@ struct scribe_event_queue {
 	 */
 	wait_queue_head_t default_wait;
 	wait_queue_head_t *wait;
-
-	/* When wont_grow == 1 and list_empty(events), the queue can be
-	 * considered as dead
-	 */
-	int wont_grow;
 };
 
 struct scribe_event_queue *scribe_alloc_event_queue(void);
@@ -149,6 +152,9 @@ void scribe_commit_insert_point(struct scribe_insert_point *ip);
 void scribe_queue_event_at(struct scribe_insert_point *where, void *event);
 void scribe_queue_event(struct scribe_event_queue *queue, void *event);
 struct scribe_event *scribe_try_dequeue_event(struct scribe_event_queue *queue);
+
+int scribe_is_queue_empty(struct scribe_event_queue *queue);
+void scribe_set_queue_wont_grow(struct scribe_event_queue *queue);
 
 struct scribe_event_data *scribe_alloc_event_data(size_t size);
 void scribe_free_event_data(struct scribe_event_data *event);
