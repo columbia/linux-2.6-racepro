@@ -970,7 +970,6 @@ int init_scribe(struct task_struct *p, struct scribe_context *ctx)
 	scribe->flags = 0;
 	scribe->ctx = ctx;
 	scribe->p = p;
-	INIT_LIST_HEAD(&scribe->node);
 
 	p->scribe = scribe;
 
@@ -1200,17 +1199,15 @@ static struct task_struct *copy_process(unsigned long long clone_flags,
 		goto bad_fork_cleanup_mm;
 	if ((retval = copy_io(clone_flags, p)))
 		goto bad_fork_cleanup_namespaces;
-	if ((retval = copy_scribe(clone_flags, p)))
-		goto bad_fork_cleanup_io;
 	retval = copy_thread(clone_flags, stack_start, stack_size, p, regs);
 	if (retval)
-		goto bad_fork_cleanup_scribe;
+		goto bad_fork_cleanup_io;
 
 	if (pid != &init_struct_pid) {
 		pid = alloc_pid(p->nsproxy->pid_ns, target_pids);
 		if (IS_ERR(pid)) {
 			retval = PTR_ERR(pid);
-			goto bad_fork_cleanup_scribe;
+			goto bad_fork_cleanup_io;
 		}
 
 		if (clone_flags & CLONE_NEWPID) {
@@ -1230,6 +1227,18 @@ static struct task_struct *copy_process(unsigned long long clone_flags,
 		if (retval)
 			goto bad_fork_free_pid;
 	}
+
+	/* copy_scribe() needs the vpid to be valid for the queue */
+	/* FIXME doing the attach_pid() thing: I have no idea what I'm doing
+	 * it seems to be a quick fix, but definitely not stable.
+	 */
+	write_lock_irq(&tasklist_lock);
+	if (likely(p->pid))
+		attach_pid(p, PIDTYPE_PID, pid);
+	write_unlock_irq(&tasklist_lock);
+
+	if ((retval = copy_scribe(clone_flags, p)))
+		goto bad_fork_detach_pid;
 
 	p->set_child_tid = (clone_flags & CLONE_CHILD_SETTID) ? child_tidptr : NULL;
 	/*
@@ -1306,7 +1315,7 @@ static struct task_struct *copy_process(unsigned long long clone_flags,
 		spin_unlock(&current->sighand->siglock);
 		write_unlock_irq(&tasklist_lock);
 		retval = -ERESTARTNOINTR;
-		goto bad_fork_free_pid;
+		goto bad_fork_cleanup_scribe;
 	}
 
 	if (clone_flags & CLONE_THREAD) {
@@ -1332,7 +1341,6 @@ static struct task_struct *copy_process(unsigned long long clone_flags,
 			list_add_tail_rcu(&p->tasks, &init_task.tasks);
 			__get_cpu_var(process_counts)++;
 		}
-		attach_pid(p, PIDTYPE_PID, pid);
 		nr_threads++;
 	}
 
@@ -1344,11 +1352,16 @@ static struct task_struct *copy_process(unsigned long long clone_flags,
 	perf_event_fork(p);
 	return p;
 
+bad_fork_cleanup_scribe:
+	exit_scribe(p);
+bad_fork_detach_pid:
+	write_lock_irq(&tasklist_lock);
+	if (likely(p->pid))
+		detach_pid(p, PIDTYPE_PID);
+	write_unlock_irq(&tasklist_lock);
 bad_fork_free_pid:
 	if (pid != &init_struct_pid)
 		free_pid(pid);
-bad_fork_cleanup_scribe:
-	exit_scribe(p);
 bad_fork_cleanup_io:
 	if (p->io_context)
 		exit_io_context(p);

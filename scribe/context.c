@@ -38,7 +38,7 @@ static int status_seq_show(struct seq_file *seq, void *offset)
 
 	spin_lock(&ctx->tasks_lock);
 	list_for_each_entry(scribe, &ctx->tasks, node)
-		seq_printf(seq, "  [%d]\n", task_tgid_vnr(scribe->p));
+		seq_printf(seq, "  [%d]\n", task_pid_vnr(scribe->p));
 
 	spin_unlock(&ctx->tasks_lock);
 
@@ -130,6 +130,7 @@ struct scribe_context *scribe_alloc_context(void)
 
 void scribe_exit_context(struct scribe_context *ctx)
 {
+	struct scribe_event_queue *queue, *tmp;
 	struct scribe_ps *scribe;
 
 	spin_lock(&ctx->tasks_lock);
@@ -156,6 +157,16 @@ void scribe_exit_context(struct scribe_context *ctx)
 	 */
 	ctx->flags = SCRIBE_DEAD;
 	spin_unlock(&ctx->tasks_lock);
+
+
+	spin_lock(&ctx->queues_lock);
+	list_for_each_entry_safe(queue, tmp, &ctx->queues, node) {
+		if (!(queue->flags & SCRIBE_CTX_DETACHED)) {
+			queue->flags |= SCRIBE_CTX_DETACHED;
+			scribe_put_queue_locked(queue);
+		}
+	}
+	spin_unlock(&ctx->queues_lock);
 
 	unregister_proc(ctx);
 
@@ -231,13 +242,14 @@ int scribe_attach(struct scribe_ps *scribe)
 	 * queue is in the queue list
 	 */
 
-	queue = scribe_get_queue_by_pid(ctx, task_tgid_vnr(scribe->p));
+	queue = scribe_get_queue_by_pid(ctx, task_pid_vnr(scribe->p));
 	if (!queue)
 		return -ENOMEM;
+	scribe->queue = queue;
 
 	spin_lock(&ctx->tasks_lock);
 	BUG_ON(!(ctx->flags & (SCRIBE_RECORD | SCRIBE_REPLAY)));
-	BUG_ON(!list_empty(&scribe->node));
+	BUG_ON(is_scribbed(scribe));
 
 	if (unlikely(ctx->flags & SCRIBE_DEAD)) {
 		spin_unlock(&ctx->tasks_lock);
@@ -247,6 +259,9 @@ int scribe_attach(struct scribe_ps *scribe)
 
 	list_add_tail(&scribe->node, &ctx->tasks);
 	spin_unlock(&ctx->tasks_lock);
+
+	scribe->flags |= (ctx->flags & SCRIBE_RECORD) ? SCRIBE_PS_RECORD : 0;
+	scribe->flags |= (ctx->flags & SCRIBE_REPLAY) ? SCRIBE_PS_REPLAY : 0;
 
 	if (is_recording(scribe)) {
 		/* The monitor will be waiting on ctx->queue_wait, and all
@@ -264,11 +279,9 @@ int scribe_attach(struct scribe_ps *scribe)
 		 * wrong, and the scribe context is about to die. Clean up
 		 * will occure anyways
 		 */
+		queue->flags |= SCRIBE_CTX_DETACHED;
 		scribe_put_queue(queue);
 	}
-
-	scribe->flags |= (ctx->flags & SCRIBE_RECORD) ? SCRIBE_PS_RECORD : 0;
-	scribe->flags |= (ctx->flags & SCRIBE_REPLAY) ? SCRIBE_PS_REPLAY : 0;
 
 	wake_up(&ctx->tasks_wait);
 	return 0;
@@ -288,7 +301,7 @@ err_queue:
 void scribe_detach(struct scribe_ps *scribe)
 {
 	struct scribe_context *ctx = scribe->ctx;
-	BUG_ON(list_empty(&scribe->node));
+	BUG_ON(!is_scribbed(scribe));
 
 	spin_lock(&ctx->tasks_lock);
 	list_del(&scribe->node);
@@ -332,7 +345,7 @@ scribe_get_queue_by_pid(struct scribe_context *ctx, pid_t pid)
 
 		new_queue = scribe_alloc_event_queue();
 		if (!new_queue)
-			return new_queue;
+			return NULL;
 
 		spin_lock(&ctx->queues_lock);
 
@@ -373,6 +386,14 @@ void scribe_put_queue(struct scribe_event_queue *queue)
 	if (atomic_dec_and_lock(&queue->ref_cnt, &ctx->queues_lock)) {
 		list_del(&queue->node);
 		spin_unlock(&ctx->queues_lock);
+		scribe_free_event_queue(queue);
+	}
+}
+
+void scribe_put_queue_locked(struct scribe_event_queue *queue)
+{
+	if (atomic_dec_and_test(&queue->ref_cnt)) {
+		list_del(&queue->node);
 		scribe_free_event_queue(queue);
 	}
 }

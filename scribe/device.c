@@ -49,42 +49,40 @@ static ssize_t dev_write(struct file *file,
 static struct scribe_event_queue *
 get_non_empty_queue(struct scribe_context *ctx)
 {
-	struct scribe_event_queue *queue;
-	int ret = -EAGAIN;
+	struct scribe_event_queue *queue, *tmp;
+	int ret;
 
-retry:
 	spin_lock(&ctx->queues_lock);
-	list_for_each_entry(queue, &ctx->queues, node) {
+	list_for_each_entry_safe(queue, tmp, &ctx->queues, node) {
 		if (!scribe_is_queue_empty(queue)) {
 			scribe_get_queue(queue);
 			spin_unlock(&ctx->queues_lock);
 			return queue;
 		}
+		/* queue is empty...*/
 
 		/* If the queue is set to wont_grow, we don't want to detach
 		 * it twice. Hence the check for SCRIBE_CTX_DETACHED.
 		 */
-		if (queue->flags &= (SCRIBE_WONT_GROW | SCRIBE_CTX_DETACHED) ==
+		if ((queue->flags & (SCRIBE_WONT_GROW | SCRIBE_CTX_DETACHED)) ==
 		    SCRIBE_WONT_GROW) {
 			queue->flags |= SCRIBE_CTX_DETACHED;
-
-			spin_unlock(&ctx->queues_lock);
-			scribe_put_queue(queue);
-			goto retry;
+			scribe_put_queue_locked(queue);
 		}
-		continue;
 	}
 
+	ret = -EAGAIN;
 	if (list_empty(&ctx->queues)) {
-		/* There are no queues in the context, which means that there
-		 * are no tasks attached as well. Thus the context flag is
-		 * either set to:
+		/* There are no more queues in the context, which means that
+		 * there are no tasks attached as well. Thus the context
+		 * status is either set to:
 		 * - SCRIBE_IDLE: the recording is over, and so we want
 		 *   dev_read() to return 0
 		 * - SCRIBE_RECORD: the recording has not started yet, we want
 		 *   to wait.
 		 */
-		ret = (ctx->flags == SCRIBE_IDLE) ? -ENODEV : -EAGAIN;
+		if (ctx->flags == SCRIBE_IDLE)
+			ret = -ENODEV;
 	}
 
 	spin_unlock(&ctx->queues_lock);
@@ -155,14 +153,12 @@ static ssize_t dev_read(struct file *file,
 	char *kbuf;
 
 	/* FIXME put a mutex around this to protect it against multiple
-	 * readers, although it would not make sense.
+	 * readers, although it would not make any sense to have multiple
+	 * readers.
 	 */
 
-	if (!(ctx->flags &= SCRIBE_RECORD))
-		return -EPERM;
-
-	/* Maybe we had an even half-sent. We'll pick up where we left off,
-	 * or we'll get the next non empty queue
+	/* Maybe we had an even half-sent and we'll pick up where we left off,
+	 * if not we'll get the next non empty queue.
 	 */
 	event = dev->pending_event;
 	if (event) {
@@ -173,7 +169,7 @@ static ssize_t dev_read(struct file *file,
 		queue = get_non_empty_queue_wait(dev);
 		if (IS_ERR(queue)) {
 			ret = PTR_ERR(queue);
-			if (ret != -ENODEV)
+			if (ret == -ENODEV)
 				ret = 0;
 			goto out;
 		}
@@ -182,9 +178,10 @@ static ssize_t dev_read(struct file *file,
 	for (;;) {
 		if (!event) {
 			event = get_next_event(dev, queue);
-			if (IS_ERR(event) && !ret)
+			if (IS_ERR(event) && !ret) {
 				ret = PTR_ERR(event);
-			goto out;
+				goto out;
+			}
 		}
 
 		length = sizeof_raw_event(event) - dev->offset;
@@ -267,13 +264,15 @@ static int dev_release(struct inode *inode, struct file *file)
 		scribe_put_queue(dev->last_queue);
 
 	scribe_exit_context(dev->ctx);
+	kfree(dev);
 	return 0;
 }
 
 static int dev_ioctl(struct inode *inode, struct file *file,
 		     unsigned int num, unsigned long arg)
 {
-	struct scribe_context *ctx = file->private_data;
+	struct scribe_dev *dev = file->private_data;
+	struct scribe_context *ctx = dev->ctx;
 
 	switch (num) {
 	case SCRIBE_IO_SET_STATE:

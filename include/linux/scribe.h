@@ -132,7 +132,7 @@ struct scribe_event_queue {
 	 */
 	spinlock_t lock;
 	struct scribe_insert_point master;
-	/* For simplicity, there is not head of the insert point list */
+	/* For simplicity, there is not list head of the insert point list */
 
 	/* points to context->wait_event in record mode
 	 * points to default_wait in replay mode
@@ -187,6 +187,7 @@ struct scribe_event_queue *
 scribe_get_queue_by_pid(struct scribe_context *ctx, pid_t pid);
 void scribe_get_queue(struct scribe_event_queue *queue);
 void scribe_put_queue(struct scribe_event_queue *queue);
+void scribe_put_queue_locked(struct scribe_event_queue *queue);
 
 static __always_inline void *__scribe_alloc_event_const(__u8 type)
 {

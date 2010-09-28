@@ -34,6 +34,7 @@ struct scribe_event_queue *scribe_alloc_event_queue(void)
 
 	spin_lock_init(&queue->lock);
 	init_insert_point(queue, &queue->master);
+	INIT_LIST_HEAD(&queue->master.node);
 
 	init_waitqueue_head(&queue->default_wait);
 	queue->wait = &queue->default_wait;
@@ -134,6 +135,10 @@ struct scribe_event *scribe_try_dequeue_event(struct scribe_event_queue *queue)
 {
 	struct scribe_event *event;
 	struct list_head *events;
+
+	/* When deqeuing events, we grab them from the current insert point,
+	 * not the next one.
+	 */
 
 	events = &queue->master.events;
 
