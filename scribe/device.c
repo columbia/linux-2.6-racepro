@@ -40,14 +40,16 @@ static ssize_t dev_write(struct file *file,
 	return 0;
 }
 
-/* Returns the first non empty queue, -ENODEV if the queue list is empty and
- * will stay empty, -EAGAIN if at least one queue is present and all queues
- * are empty
+/*
+ * __get_non_empty_queue() try to find the the first non empty queue. It
+ * returns the queue on success, -ENODEV if the queue list is empty and will
+ * stay empty, -EAGAIN if at least one queue is present and all queues are
+ * empty.
  *
  * Note: scribe_get_non_empty_queue() also remove dead queues.
  */
 static struct scribe_event_queue *
-get_non_empty_queue(struct scribe_context *ctx)
+__get_non_empty_queue(struct scribe_context *ctx)
 {
 	struct scribe_event_queue *queue, *tmp;
 	int ret;
@@ -89,27 +91,36 @@ get_non_empty_queue(struct scribe_context *ctx)
 	return ERR_PTR(ret);
 }
 
+#define PLEASE_WAIT 0
+#define DONT_WAIT 1
+
 static struct scribe_event_queue *
-get_non_empty_queue_wait(struct scribe_dev *dev)
+get_non_empty_queue(struct scribe_dev *dev, int wait)
 {
 	struct scribe_context *ctx = dev->ctx;
 	struct scribe_event_queue *queue;
 	int ret;
 
 	queue = dev->last_queue;
-	if (queue && !scribe_is_queue_empty(queue))
-		return queue;
-
 	if (queue) {
+		if (!scribe_is_queue_empty(queue))
+			return queue;
 		scribe_put_queue(queue);
 		dev->last_queue = NULL;
 	}
 
-	ret = wait_event_interruptible(
-		ctx->queues_wait,
-		((queue = get_non_empty_queue(ctx)) != ERR_PTR(-EAGAIN)));
-	if (ret)
-		return ERR_PTR(-ERESTARTSYS);
+	if (wait == PLEASE_WAIT) {
+		ret = wait_event_interruptible(
+			ctx->queues_wait,
+			((queue = __get_non_empty_queue(ctx))
+			 != ERR_PTR(-EAGAIN)));
+
+		if (ret)
+			return ERR_PTR(-ERESTARTSYS);
+	}
+	else {
+		queue = __get_non_empty_queue(ctx);
+	}
 
 	if (!IS_ERR(queue))
 		dev->last_queue = queue;
@@ -166,7 +177,7 @@ static ssize_t dev_read(struct file *file,
 		queue = NULL;
 	}
 	else {
-		queue = get_non_empty_queue_wait(dev);
+		queue = get_non_empty_queue(dev, PLEASE_WAIT);
 		if (IS_ERR(queue)) {
 			ret = PTR_ERR(queue);
 			if (ret == -ENODEV)
@@ -178,8 +189,8 @@ static ssize_t dev_read(struct file *file,
 	for (;;) {
 		if (!event) {
 			event = get_next_event(dev, queue);
-			if (IS_ERR(event) && !ret) {
-				ret = PTR_ERR(event);
+			if (IS_ERR(event)) {
+				ret = ret ? ret : PTR_ERR(event);
 				goto out;
 			}
 		}
@@ -200,8 +211,7 @@ static ssize_t dev_read(struct file *file,
 
 			dev->pending_event = event;
 
-			if (!ret)
-				ret = -EFAULT;
+			ret = ret ? ret : -EFAULT;
 			goto out;
 		}
 
@@ -216,14 +226,9 @@ static ssize_t dev_read(struct file *file,
 		buf += length;
 		count -= length;
 
-		if (!queue || scribe_is_queue_empty(queue)) {
-			queue = get_non_empty_queue(ctx);
-			if (IS_ERR(queue))
-				goto out;
-
-			scribe_put_queue(dev->last_queue);
-			dev->last_queue = queue;
-		}
+		queue = get_non_empty_queue(dev, DONT_WAIT);
+		if (IS_ERR(queue))
+			goto out:
 	}
 
 out:
