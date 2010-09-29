@@ -215,10 +215,14 @@ static __always_inline void *__scribe_alloc_event_const(__u8 type)
 	return event;
 }
 extern void *__scribe_alloc_event(__u8 type);
+void __please_use_scribe_alloc_event_data(void);
 static __always_inline void *scribe_alloc_event(__u8 type)
 {
-	if (__builtin_constant_p(type))
+	if (__builtin_constant_p(type)) {
+		if (type == SCRIBE_EVENT_DATA)
+			__please_use_scribe_alloc_event_data();
 		return __scribe_alloc_event_const(type);
+	}
 	return __scribe_alloc_event(type);
 }
 void scribe_free_event(void *event);
