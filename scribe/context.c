@@ -133,30 +133,31 @@ void scribe_exit_context(struct scribe_context *ctx)
 	struct scribe_ps *scribe;
 
 	spin_lock(&ctx->tasks_lock);
-	/*
-	 * The tasks list should be empty by now.
-	 * If it's not, it means that the userspace monitor process
-	 * has gone missing. We'll kill all the scribed tasks because
-	 * we cannot guarantee that they can continue (no more events)
-	 */
 
-	if (!list_empty(&ctx->tasks)) {
+	/*
+	 * The SCRIBE_DEAD flag has to be set here to guard against race with
+	 * scribe_attach() called from copy_process() or execve().
+	 * See in scribe_attach() for more details.
+	 */
+	ctx->flags = SCRIBE_DEAD;
+
+	/*
+	 * The tasks list is most likely to be empty by now.
+	 * If it's not empty, it means that the userspace monitor process has
+	 * gone missing. We'll kill all the scribed tasks because we cannot
+	 * guarantee that they can continue (no more events).
+	 */
+	if (unlikely(!list_empty(&ctx->tasks))) {
 		printk(KERN_WARNING "scribe: emergency stop (context=%d)\n",
 		       ctx->id);
-		BUG_ON(ctx->flags == SCRIBE_IDLE);
+
 		list_for_each_entry(scribe, &ctx->tasks, node)
 			force_sig(SIGKILL, scribe->p);
 
 		spin_unlock(&ctx->tasks_lock);
-		wait_event(ctx->tasks_wait, ctx->flags == SCRIBE_IDLE);
+		wait_event(ctx->tasks_wait, list_empty(&ctx->tasks));
 		spin_lock(&ctx->tasks_lock);
 	}
-
-	/*
-	 * Setting the SCRIBE_DEAD flag has to be set with the lock,
-	 * to guards against race with attach_on_exec.
-	 */
-	ctx->flags = SCRIBE_DEAD;
 	spin_unlock(&ctx->tasks_lock);
 
 
@@ -249,13 +250,21 @@ void scribe_attach(struct scribe_ps *scribe)
 		spin_unlock(&ctx->tasks_lock);
 
 		/*
-		 * We got caught in the attach_on_exec race:
-		 * - the process calls scribe_set_attach_on_exec(ctx)
-		 * - the device gets closed and the context dies
-		 * - the process calls execve(), and lands here
+		 * Two reasons we are here:
+		 * 1) We got caught in the attach_on_exec race:
+		 *    - the process calls scribe_set_attach_on_exec(ctx)
+		 *    - the device gets closed and the context dies
+		 *    - the process calls execve(), and lands here
+		 * Note: the execve will still succeed.
 		 *
-		 * Note: the execve will succeed.
+		 * 2) copy_process() was about to attach a child, when
+		 * suddenly scribe_exit_context() got called and distributed
+		 * some SIG_KILLs, but only to the parent, which is why we
+		 * need to do our own cleanup.
 		 */
+		spin_lock(&ctx->queues_lock);
+		scribe_make_persistent(scribe->queue, 0);
+		spin_unlock(&ctx->queues_lock);
 		exit_scribe(scribe->p);
 		return;
 	}
@@ -306,7 +315,7 @@ void scribe_detach(struct scribe_ps *scribe)
 	list_del(&scribe->node);
 
 	/* We were the last task in the context, it's time to set it idle */
-	if (list_empty(&ctx->tasks))
+	if (list_empty(&ctx->tasks) && ctx->flags != SCRIBE_DEAD)
 		ctx->flags = SCRIBE_IDLE;
 	spin_unlock(&ctx->tasks_lock);
 	wake_up(&ctx->tasks_wait);
