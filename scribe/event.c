@@ -293,13 +293,22 @@ struct scribe_event_data *scribe_alloc_event_data(size_t size)
 	return event;
 }
 
-void scribe_free_event_data(struct scribe_event_data *event)
+static void scribe_free_event_data(struct scribe_event_data *event)
 {
 	size_t event_size;
 
 	event_size = sizeof_event_from_type(SCRIBE_EVENT_DATA) + event->size;
 	if (event_size > SCRIBE_KMALLOC_MAX_SIZE)
 		vfree(event);
+	else
+		kfree(event);
+}
+
+void scribe_free_event(void *event)
+{
+	struct scribe_event_data *event_data = event;
+	if (event_data->h.type == SCRIBE_EVENT_DATA)
+		scribe_free_event_data(event_data);
 	else
 		kfree(event);
 }

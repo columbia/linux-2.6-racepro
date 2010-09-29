@@ -199,7 +199,6 @@ extern int scribe_is_queue_empty(struct scribe_event_queue *queue);
 extern void scribe_set_queue_wont_grow(struct scribe_event_queue *queue);
 
 extern struct scribe_event_data *scribe_alloc_event_data(size_t size);
-extern void scribe_free_event_data(struct scribe_event_data *event);
 
 /*
  * We need the __always_inline (like kmalloc()) to make sure that the constant
@@ -222,14 +221,7 @@ static __always_inline void *scribe_alloc_event(__u8 type)
 		return __scribe_alloc_event_const(type);
 	return __scribe_alloc_event(type);
 }
-static inline void scribe_free_event(void *event)
-{
-	struct scribe_event_data *event_data = event;
-	if (event_data->h.type == SCRIBE_EVENT_DATA)
-		scribe_free_event_data(event_data);
-	else
-		kfree(event);
-}
+void scribe_free_event(void *event);
 
 #else /* CONFIG_SCRIBE */
 
