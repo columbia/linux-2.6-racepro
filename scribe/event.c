@@ -26,9 +26,11 @@ struct scribe_event_queue *scribe_alloc_event_queue(void)
 	if (!queue)
 		return NULL;
 
-	atomic_set(&queue->ref_cnt, 0);
-
-	/* ctx, node, pid are initialized later */
+	atomic_set(&queue->ref_cnt, 1);
+	/*
+	 * node, ctx and pid are initialized when attaching the queue in
+	 * scribe_get_queue_by_pid().
+	 */
 
 	queue->flags = 0;
 
@@ -42,10 +44,105 @@ struct scribe_event_queue *scribe_alloc_event_queue(void)
 	return queue;
 }
 
-void scribe_free_event_queue(struct scribe_event_queue *queue)
+static void scribe_free_event_queue(struct scribe_event_queue *queue)
 {
 	scribe_free_all_events(queue);
 	kfree(queue);
+}
+
+static struct scribe_event_queue *find_queue(struct scribe_context *ctx,
+					     pid_t pid)
+{
+	struct scribe_event_queue *queue;
+
+	list_for_each_entry(queue, &ctx->queues, node)
+		if (queue->pid == pid)
+			return queue;
+
+	return NULL;
+}
+
+/*
+ * scribe_get_queue_by_pid() never fails if *ptr_queue holds an already
+ * allocated queue, which is useful for attach_process() to perform without
+ * failing.
+ * During the replay, the device calls scribe_get_queue_by_pid() very often, so
+ * we do not want to make the allocation mandatory: -EAGAIN is returned when
+ * allocation is necessary.
+ */
+int scribe_get_queue_by_pid(struct scribe_context *ctx,
+			    struct scribe_event_queue **ptr_queue,
+			    pid_t pid)
+{
+	struct scribe_event_queue *queue;
+
+	spin_lock(&ctx->queues_lock);
+	queue = find_queue(ctx, pid);
+	if (queue) {
+		scribe_get_queue(queue);
+		spin_unlock(&ctx->queues_lock);
+
+		scribe_put_queue_nolock(*ptr_queue);
+		*ptr_queue = queue;
+		return 0;
+	}
+
+	queue = *ptr_queue;
+	if (!queue) {
+		spin_unlock(&ctx->queues_lock);
+		return -EAGAIN;
+	}
+
+	queue->ctx = ctx;
+	queue->pid = pid;
+
+	/*
+	 * Making the new queue persistent: the queue reader hasn't
+	 * taken a reference on the queue yet. This is his reference.
+	 */
+	scribe_make_persistent(queue, 1);
+
+	list_add(&queue->node, &ctx->queues);
+	spin_unlock(&ctx->queues_lock);
+	return 0;
+}
+
+void scribe_get_queue(struct scribe_event_queue *queue)
+{
+	atomic_inc(&queue->ref_cnt);
+}
+
+void scribe_put_queue(struct scribe_event_queue *queue)
+{
+	struct scribe_context *ctx = queue->ctx;
+
+	if (atomic_dec_and_lock(&queue->ref_cnt, &ctx->queues_lock)) {
+		list_del(&queue->node);
+		spin_unlock(&ctx->queues_lock);
+		scribe_free_event_queue(queue);
+	}
+}
+
+void scribe_put_queue_nolock(struct scribe_event_queue *queue)
+{
+	if (atomic_dec_and_test(&queue->ref_cnt)) {
+		list_del(&queue->node);
+		scribe_free_event_queue(queue);
+	}
+}
+
+void scribe_make_persistent(struct scribe_event_queue *queue, int enable)
+{
+	assert_spin_locked(&queue->ctx->queues_lock);
+
+	if (enable && !(queue->flags & SCRIBE_PERSISTENT)) {
+		queue->flags |= SCRIBE_PERSISTENT;
+		scribe_get_queue(queue);
+	}
+	if (!enable && (queue->flags & SCRIBE_PERSISTENT)) {
+		queue->flags &= ~SCRIBE_PERSISTENT;
+		scribe_put_queue_nolock(queue);
+	}
 }
 
 void scribe_free_all_events(struct scribe_event_queue *queue)

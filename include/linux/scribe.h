@@ -62,7 +62,6 @@ static inline void scribe_put_context(struct scribe_context *ctx)
 extern struct scribe_context *scribe_alloc_context(void);
 extern void scribe_exit_context(struct scribe_context *ctx);
 extern int scribe_set_state(struct scribe_context *ctx, int state);
-extern int scribe_set_attach_on_exec(struct scribe_context *ctx, int enable);
 
 #define SCRIBE_PS_RECORD	0x00000001
 #define SCRIBE_PS_REPLAY	0x00000002
@@ -104,11 +103,12 @@ static inline int is_replaying(struct scribe_ps *scribe)
 #define is_ps_recording(t) is_recording(t->scribe)
 #define is_ps_replaying(t) is_replaying(t->scribe)
 
-extern int scribe_attach(struct scribe_ps *scribe);
-extern void scribe_detach(struct scribe_ps *scribe);
-
 extern int init_scribe(struct task_struct *p, struct scribe_context *ctx);
 extern void exit_scribe(struct task_struct *p);
+
+extern int scribe_set_attach_on_exec(struct scribe_context *ctx, int enable);
+extern void scribe_attach(struct scribe_ps *scribe);
+extern void scribe_detach(struct scribe_ps *scribe);
 
 /* Events */
 
@@ -119,14 +119,12 @@ struct scribe_insert_point {
 };
 
 #define SCRIBE_WONT_GROW 1
-#define SCRIBE_CTX_DETACHED 2
+#define SCRIBE_PERSISTENT 2
 
 struct scribe_event_queue {
 	atomic_t ref_cnt;
-
 	struct scribe_context *ctx;
 	struct list_head node;
-
 	pid_t pid;
 
 	/*
@@ -141,8 +139,8 @@ struct scribe_event_queue {
 	 * like saving the return value of a syscall.
 	 */
 	spinlock_t lock;
-	struct scribe_insert_point master;
 	/* For simplicity, there is not list head of the insert point list */
+	struct scribe_insert_point master;
 
 	/*
 	 * 'wait' points to:
@@ -154,7 +152,14 @@ struct scribe_event_queue {
 };
 
 extern struct scribe_event_queue *scribe_alloc_event_queue(void);
-extern void scribe_free_event_queue(struct scribe_event_queue *queue);
+extern int scribe_get_queue_by_pid(struct scribe_context *ctx,
+				   struct scribe_event_queue **ptr_queue,
+				   pid_t pid);
+extern void scribe_get_queue(struct scribe_event_queue *queue);
+extern void scribe_put_queue(struct scribe_event_queue *queue);
+extern void scribe_put_queue_nolock(struct scribe_event_queue *queue);
+extern void scribe_make_persistent(struct scribe_event_queue *queue,
+				   int enable);
 extern void scribe_free_all_events(struct scribe_event_queue *queue);
 
 extern void scribe_create_insert_point(struct scribe_event_queue *queue,
@@ -196,13 +201,10 @@ extern void scribe_set_queue_wont_grow(struct scribe_event_queue *queue);
 extern struct scribe_event_data *scribe_alloc_event_data(size_t size);
 extern void scribe_free_event_data(struct scribe_event_data *event);
 
-
-extern struct scribe_event_queue *scribe_get_queue_by_pid(
-		struct scribe_context *ctx, pid_t pid);
-extern void scribe_get_queue(struct scribe_event_queue *queue);
-extern void scribe_put_queue(struct scribe_event_queue *queue);
-extern void scribe_put_queue_locked(struct scribe_event_queue *queue);
-
+/*
+ * We need the __always_inline (like kmalloc()) to make sure that the constant
+ * propagation with its optimization will be made by the compiler.
+ */
 static __always_inline void *__scribe_alloc_event_const(__u8 type)
 {
 	struct scribe_event *event;

@@ -39,7 +39,6 @@ static int status_seq_show(struct seq_file *seq, void *offset)
 	spin_lock(&ctx->tasks_lock);
 	list_for_each_entry(scribe, &ctx->tasks, node)
 		seq_printf(seq, "  [%d]\n", task_pid_vnr(scribe->p));
-
 	spin_unlock(&ctx->tasks_lock);
 
 	return 0;
@@ -162,12 +161,8 @@ void scribe_exit_context(struct scribe_context *ctx)
 
 
 	spin_lock(&ctx->queues_lock);
-	list_for_each_entry_safe(queue, tmp, &ctx->queues, node) {
-		if (!(queue->flags & SCRIBE_CTX_DETACHED)) {
-			queue->flags |= SCRIBE_CTX_DETACHED;
-			scribe_put_queue_locked(queue);
-		}
-	}
+	list_for_each_entry_safe(queue, tmp, &ctx->queues, node)
+		scribe_make_persistent(queue, 0);
 	spin_unlock(&ctx->queues_lock);
 
 	unregister_proc(ctx);
@@ -234,31 +229,35 @@ int scribe_set_attach_on_exec(struct scribe_context *ctx, int enable)
  * the current process or if scribe->p is sleeping (and thus not accessing
  * scribe->flags)
  */
-int scribe_attach(struct scribe_ps *scribe)
+void scribe_attach(struct scribe_ps *scribe)
 {
 	struct scribe_context *ctx = scribe->ctx;
-	struct scribe_event_queue *queue;
-	int ret;
 
 	/*
 	 * First get the queue, and only then, add to the task list:
 	 * It guarantee that if a task is in the task list, its
 	 * queue is in the queue list
 	 */
-
-	queue = scribe_get_queue_by_pid(ctx, task_pid_vnr(scribe->p));
-	if (!queue)
-		return -ENOMEM;
-	scribe->queue = queue;
+	BUG_ON(!scribe->queue);
+	scribe_get_queue_by_pid(ctx, &scribe->queue, task_pid_vnr(scribe->p));
 
 	spin_lock(&ctx->tasks_lock);
-	BUG_ON(!(ctx->flags & (SCRIBE_RECORD | SCRIBE_REPLAY)));
+	BUG_ON(!(ctx->flags & (SCRIBE_RECORD | SCRIBE_REPLAY | SCRIBE_DEAD)));
 	BUG_ON(is_scribbed(scribe));
 
 	if (unlikely(ctx->flags & SCRIBE_DEAD)) {
 		spin_unlock(&ctx->tasks_lock);
-		ret = -ENODEV;
-		goto err_queue;
+
+		/*
+		 * We got caught in the attach_on_exec race:
+		 * - the process calls scribe_set_attach_on_exec(ctx)
+		 * - the device gets closed and the context dies
+		 * - the process calls execve(), and lands here
+		 *
+		 * Note: the execve will succeed.
+		 */
+		exit_scribe(scribe->p);
+		return;
 	}
 
 	list_add_tail(&scribe->node, &ctx->tasks);
@@ -270,39 +269,34 @@ int scribe_attach(struct scribe_ps *scribe)
 	if (is_recording(scribe)) {
 		/*
 		 * The monitor will be waiting on ctx->queue_wait, and all
-		 * processes sends their notification to it.
+		 * processes sends their event queue notifications to it.
 		 */
-		queue->wait = &ctx->queues_wait;
+		scribe->queue->wait = &ctx->queues_wait;
 	} else { /* is_replaying(scribe) == 1 */
+
 		/*
-		 * Releasing the reference that the context has on it.
-		 * That way when the process detaches, the queue will
-		 * be removed right away.
-		 * In case new events comes in for new events, a new queue
-		 * will be instanciated, and will never be picked up by any
-		 * process. But that's fine because it means something went
-		 * wrong, and the scribe context is about to die. Clean up
-		 * will occure anyways
+		 * Releasing the persistent reference that was holding the
+		 * queue waiting the process to attach.
+		 *
+		 * Note: In case a new event comes in for our pid, a new queue
+		 * will be instantiated by the device, and will never be
+		 * picked up by any process. But that's fine because it means
+		 * something went wrong, and the scribe context is about to
+		 * die, the queue will get freed in scribe_exit_context().
 		 */
-		queue->flags |= SCRIBE_CTX_DETACHED;
-		scribe_put_queue(queue);
+		spin_lock(&ctx->queues_lock);
+		scribe_make_persistent(scribe->queue, 0);
+		spin_unlock(&ctx->queues_lock);
 	}
 
 	wake_up(&ctx->tasks_wait);
-	return 0;
-
-err_queue:
-	if (is_recording(scribe)) {
-		/* The context has a reference to the queue. */
-		scribe_set_queue_wont_grow(queue);
-		scribe_put_queue(queue);
-	}
-	scribe_put_queue(queue);
-	scribe->flags &= ~(SCRIBE_PS_RECORD | SCRIBE_PS_REPLAY);
-
-	return ret;
 }
 
+/*
+ * XXX when scribe_detach() happened, the queue reference will be gone, which
+ * means that we cannot scribe_attach() again.
+ * To do so, we would need to exit_scribe() and init_scribe() again.
+ */
 void scribe_detach(struct scribe_ps *scribe)
 {
 	struct scribe_context *ctx = scribe->ctx;
@@ -321,84 +315,8 @@ void scribe_detach(struct scribe_ps *scribe)
 		scribe_set_queue_wont_grow(scribe->queue);
 
 	scribe_put_queue(scribe->queue);
+	scribe->queue = NULL;
+
 	scribe->flags &= ~(SCRIBE_PS_RECORD | SCRIBE_PS_REPLAY);
 }
 
-
-static struct scribe_event_queue *find_queue(struct scribe_context *ctx,
-					     pid_t pid)
-{
-	struct scribe_event_queue *queue;
-
-	list_for_each_entry(queue, &ctx->queues, node)
-		if (queue->pid == pid)
-			return queue;
-
-	return NULL;
-}
-
-struct scribe_event_queue *scribe_get_queue_by_pid(struct scribe_context *ctx,
-						   pid_t pid)
-{
-	struct scribe_event_queue *queue, *new_queue;
-
-	spin_lock(&ctx->queues_lock);
-
-	queue = find_queue(ctx, pid);
-	if (!queue) {
-		spin_unlock(&ctx->queues_lock);
-
-		new_queue = scribe_alloc_event_queue();
-		if (!new_queue)
-			return NULL;
-
-		spin_lock(&ctx->queues_lock);
-
-		queue = find_queue(ctx, pid);
-		if (queue) {
-			/* raced */
-			scribe_free_event_queue(new_queue);
-		} else {
-			queue = new_queue;
-
-			/*
-			 * A newly created queue will have a ref_cnt = 2:
-			 * - The queue is registered by the context
-			 * - The function returns a queue pointer
-			 */
-			atomic_inc(&queue->ref_cnt);
-			list_add(&queue->node, &ctx->queues);
-			queue->ctx = ctx;
-			queue->pid = pid;
-		}
-	}
-
-	atomic_inc(&queue->ref_cnt);
-	spin_unlock(&ctx->queues_lock);
-
-	return queue;
-}
-
-void scribe_get_queue(struct scribe_event_queue *queue)
-{
-	atomic_inc(&queue->ref_cnt);
-}
-
-void scribe_put_queue(struct scribe_event_queue *queue)
-{
-	struct scribe_context *ctx = queue->ctx;
-
-	if (atomic_dec_and_lock(&queue->ref_cnt, &ctx->queues_lock)) {
-		list_del(&queue->node);
-		spin_unlock(&ctx->queues_lock);
-		scribe_free_event_queue(queue);
-	}
-}
-
-void scribe_put_queue_locked(struct scribe_event_queue *queue)
-{
-	if (atomic_dec_and_test(&queue->ref_cnt)) {
-		list_del(&queue->node);
-		scribe_free_event_queue(queue);
-	}
-}

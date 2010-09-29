@@ -61,17 +61,15 @@ static struct scribe_event_queue *__get_non_empty_queue(
 			spin_unlock(&ctx->queues_lock);
 			return queue;
 		}
-		/* queue is empty...*/
 
 		/*
-		 * If the queue is set to wont_grow, we don't want to detach
-		 * it twice. Hence the check for SCRIBE_CTX_DETACHED.
+		 * When the queue is empty and set to not growing, we can
+		 * consider it as dead. Releasing our persistent token on it
+		 * will make the queue go away if the associated process
+		 * detaches.
 		 */
-		if ((queue->flags & (SCRIBE_WONT_GROW | SCRIBE_CTX_DETACHED)) ==
-		    SCRIBE_WONT_GROW) {
-			queue->flags |= SCRIBE_CTX_DETACHED;
-			scribe_put_queue_locked(queue);
-		}
+		if (queue->flags & SCRIBE_WONT_GROW)
+			scribe_make_persistent(queue, 0);
 	}
 
 	ret = -EAGAIN;
@@ -170,8 +168,10 @@ static ssize_t dev_read(struct file *file,
 	 */
 
 	/*
-	 * Maybe we had an even half-sent and we'll pick up where we left off,
-	 * if not we'll get the next non empty queue.
+	 * Two cases:
+	 * - We are dealing with a partially sent event, we need to pick up
+	 *   where we left off.
+	 * - In the other case, we'll just grab the next non empty queue.
 	 */
 	event = dev->pending_event;
 	if (event) {

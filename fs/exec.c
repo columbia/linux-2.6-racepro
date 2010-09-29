@@ -486,37 +486,18 @@ EXPORT_SYMBOL(copy_strings_kernel);
 
 #ifdef CONFIG_SCRIBE
 
-static int prepare_scribe(void)
+static void scribe_maybe_attach_on_exec(void)
 {
 	struct scribe_ps *scribe = current->scribe;
-	if (!scribe || !(scribe->flags & SCRIBE_PS_ATTACH_ON_EXEC))
-		return 0;
 
-	return scribe_attach(scribe);
-}
-
-static void update_scribe(void)
-{
-	struct scribe_ps *scribe = current->scribe;
-	if (!scribe || !(scribe->flags & SCRIBE_PS_ATTACH_ON_EXEC))
-		return;
-
-	scribe->flags &= ~SCRIBE_PS_ATTACH_ON_EXEC;
-}
-
-static void cleanup_scribe(void)
-{
-	struct scribe_ps *scribe = current->scribe;
-	if (!scribe || !(scribe->flags & SCRIBE_PS_ATTACH_ON_EXEC))
-		return;
-
-	scribe_detach(scribe);
+	if (scribe && (scribe->flags & SCRIBE_PS_ATTACH_ON_EXEC)) {
+		scribe->flags &= ~SCRIBE_PS_ATTACH_ON_EXEC;
+		scribe_attach(scribe);
+	}
 }
 
 #else
-static inline int prepare_scribe(void) { return 0; }
-static inline void update_scribe(void) {}
-static inline void cleanup_scribe(void) {}
+static inline void scribe_maybe_attach_on_exec(void) {}
 #endif /* CONFIG_SCRIBE */
 
 
@@ -1391,17 +1372,13 @@ int do_execve(char * filename,
 
 	sched_exec();
 
-	retval = prepare_scribe();
-	if (retval)
-		goto out_file;
-
 	bprm->file = file;
 	bprm->filename = filename;
 	bprm->interp = filename;
 
 	retval = bprm_mm_init(bprm);
 	if (retval)
-		goto out_scribe;
+		goto out_file;
 
 	bprm->argc = count(argv, MAX_ARG_STRINGS);
 	if ((retval = bprm->argc) < 0)
@@ -1433,7 +1410,7 @@ int do_execve(char * filename,
 	if (retval < 0)
 		goto out;
 
-	update_scribe();
+	scribe_maybe_attach_on_exec();
 
 	/* execve succeeded */
 	current->fs->in_exec = 0;
@@ -1444,13 +1421,9 @@ int do_execve(char * filename,
 		put_files_struct(displaced);
 	return retval;
 
-
 out:
 	if (bprm->mm)
 		mmput (bprm->mm);
-
-out_scribe:
-	cleanup_scribe();
 
 out_file:
 	if (bprm->file) {
