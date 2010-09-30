@@ -306,11 +306,6 @@ void scribe_attach(struct scribe_ps *scribe)
 	wake_up(&ctx->tasks_wait);
 }
 
-/*
- * XXX when scribe_detach() happened, the queue reference will be gone, which
- * means that we cannot scribe_attach() again.
- * To do so, we would need to exit_scribe() and init_scribe() again.
- */
 void scribe_detach(struct scribe_ps *scribe)
 {
 	struct scribe_context *ctx = scribe->ctx;
@@ -333,4 +328,3 @@ void scribe_detach(struct scribe_ps *scribe)
 
 	scribe->flags &= ~(SCRIBE_PS_RECORD | SCRIBE_PS_REPLAY);
 }
-

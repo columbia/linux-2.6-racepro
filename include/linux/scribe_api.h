@@ -49,8 +49,11 @@ enum scribe_event_type {
 struct scribe_event {
 #ifdef __KERNEL__
 	struct list_head node;
-	char raw_offset[0];
-	/* type must directly follow raw_offset, dev_write() relies on it. */
+	char payload_offset[0];
+	/*
+	 * type must directly follow payload_offset,
+	 * dev_write() relies on it.
+	 */
 #endif
 	__u8 type;
 } __attribute__((packed));

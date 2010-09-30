@@ -24,14 +24,14 @@ struct scribe_dev {
 	pid_t last_pid;
 };
 
-static inline size_t sizeof_raw_event(struct scribe_event *event)
+static inline size_t sizeof_event_payload(struct scribe_event *event)
 {
-	return sizeof_event(event) - offsetof(typeof(*event), raw_offset);
+	return sizeof_event(event) - offsetof(typeof(*event), payload_offset);
 }
 
-static inline char *get_raw_event(struct scribe_event *event)
+static inline char *get_event_payload(struct scribe_event *event)
 {
-	return (char *)(event->raw_offset);
+	return (char *)(event->payload_offset);
 }
 
 static int handle_event_pid(struct scribe_dev *dev, struct scribe_event *event)
@@ -59,19 +59,20 @@ static ssize_t dev_write(struct file *file,
 	typeof(event->type) type;
 	typeof(event_data->size) data_size = 0;
 	int data_size_offset;
-	size_t raw_event_size, to_copy;
+	size_t event_payload_size, to_copy;
 	ssize_t ret = 0;
 	int err = 0;
 
 	if (dev->ctx->flags & SCRIBE_RECORD)
 		return -EPERM;
 
-	/* TODO When an event cannot be read in its whole, the function
+	/*
+	 * TODO When an event cannot be read in its whole, the function
 	 * returns. We'd like to prevent that by accepting whatever is given,
 	 * and buffer the data until the event is complete.
 	 */
 
-	for(;;) {
+	for (;;) {
 		/* Step 1: The event allocation */
 		err = -EINVAL;
 		if (count < sizeof(type))
@@ -86,8 +87,8 @@ static ssize_t dev_write(struct file *file,
 			 * its payload length to properly allocate the event.
 			 */
 			data_size_offset =
-					offsetof(typeof(*event_data), size)
-				      - offsetof(typeof(*event), raw_offset);
+				       offsetof(typeof(*event_data), size)
+				     - offsetof(typeof(*event), payload_offset);
 
 			err = -EINVAL;
 			if (count < data_size_offset + sizeof(data_size))
@@ -107,19 +108,19 @@ static ssize_t dev_write(struct file *file,
 			goto out;
 
 		/* Step 2: The copy_from_user() */
-		raw_event_size = sizeof_raw_event(event);
-		to_copy = raw_event_size - sizeof(type);
+		event_payload_size = sizeof_event_payload(event);
+		to_copy = event_payload_size - sizeof(type);
 
 		err = -EINVAL;
 		if (count < to_copy)
 			goto out;
 		if (to_copy) {
 			err = -EFAULT;
-			if (copy_from_user(get_raw_event(event) + sizeof(type),
-					   buf + sizeof(type),
-					   to_copy)) {
+			if (copy_from_user(
+					get_event_payload(event) + sizeof(type),
+					buf + sizeof(type),
+					to_copy))
 				goto out;
-			}
 		}
 
 		/* Step 3: Special event handling */
@@ -141,9 +142,9 @@ static ssize_t dev_write(struct file *file,
 		}
 
 		event = NULL;
-		ret += raw_event_size;
-		buf += raw_event_size;
-		count -= raw_event_size;
+		ret += event_payload_size;
+		buf += event_payload_size;
+		count -= event_payload_size;
 	}
 
 out:
@@ -313,8 +314,8 @@ static ssize_t dev_read(struct file *file,
 			}
 		}
 
-		length = sizeof_raw_event(event) - dev->offset;
-		kbuf = get_raw_event(event) + dev->offset;
+		length = sizeof_event_payload(event) - dev->offset;
+		kbuf = get_event_payload(event) + dev->offset;
 
 		if (length > count) {
 			length = count;
