@@ -240,7 +240,12 @@ void scribe_attach(struct scribe_ps *scribe)
 	 * queue is in the queue list
 	 */
 	BUG_ON(!scribe->queue);
-	scribe_get_queue_by_pid(ctx, &scribe->queue, task_pid_vnr(scribe->p));
+	scribe->queue = scribe_get_queue_by_pid(ctx, &scribe->pre_alloc_queue,
+						task_pid_vnr(scribe->p));
+	if (scribe->pre_alloc_queue) {
+		scribe_put_queue(scribe->pre_alloc_queue);
+		scribe->pre_alloc_queue = NULL;
+	}
 
 	spin_lock(&ctx->tasks_lock);
 	BUG_ON(!(ctx->flags & (SCRIBE_RECORD | SCRIBE_REPLAY | SCRIBE_DEAD)));

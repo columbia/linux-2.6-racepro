@@ -79,6 +79,7 @@ struct scribe_ps {
 	struct scribe_context *ctx;
 
 	struct task_struct *p;
+	struct scribe_event_queue *pre_alloc_queue;
 	struct scribe_event_queue *queue;
 };
 
@@ -152,9 +153,10 @@ struct scribe_event_queue {
 };
 
 extern struct scribe_event_queue *scribe_alloc_event_queue(void);
-extern int scribe_get_queue_by_pid(struct scribe_context *ctx,
-				   struct scribe_event_queue **ptr_queue,
-				   pid_t pid);
+extern struct scribe_event_queue *scribe_get_queue_by_pid(
+				struct scribe_context *ctx,
+				struct scribe_event_queue **pre_alloc_queue,
+				pid_t pid);
 extern void scribe_get_queue(struct scribe_event_queue *queue);
 extern void scribe_put_queue(struct scribe_event_queue *queue);
 extern void scribe_put_queue_nolock(struct scribe_event_queue *queue);

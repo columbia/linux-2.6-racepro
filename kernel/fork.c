@@ -969,8 +969,8 @@ int init_scribe(struct task_struct *p, struct scribe_context *ctx)
 	if (!scribe)
 		goto err;
 
-	scribe->queue = scribe_alloc_event_queue();
-	if (!scribe->queue)
+	scribe->pre_alloc_queue = scribe_alloc_event_queue();
+	if (!scribe->pre_alloc_queue)
 		goto err_scribe;
 
 	scribe_get_context(ctx);

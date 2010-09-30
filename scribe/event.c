@@ -63,16 +63,14 @@ static struct scribe_event_queue *find_queue(struct scribe_context *ctx,
 }
 
 /*
- * scribe_get_queue_by_pid() never fails if *ptr_queue holds an already
- * allocated queue, which is useful for attach_process() to perform without
- * failing.
- * During the replay, the device calls scribe_get_queue_by_pid() very often, so
- * we do not want to make the allocation mandatory: -EAGAIN is returned when
- * allocation is necessary.
+ * scribe_get_queue_by_pid() never fails. The pre allocated queue is useful
+ * for attach_process() to perform without failing.
+ * When the pre allocated queue is used, it's address is set NULL.
  */
-int scribe_get_queue_by_pid(struct scribe_context *ctx,
-			    struct scribe_event_queue **ptr_queue,
-			    pid_t pid)
+struct scribe_event_queue *scribe_get_queue_by_pid(
+				struct scribe_context *ctx,
+				struct scribe_event_queue **pre_alloc_queue,
+				pid_t pid)
 {
 	struct scribe_event_queue *queue;
 
@@ -81,17 +79,11 @@ int scribe_get_queue_by_pid(struct scribe_context *ctx,
 	if (queue) {
 		scribe_get_queue(queue);
 		spin_unlock(&ctx->queues_lock);
-
-		scribe_put_queue_nolock(*ptr_queue);
-		*ptr_queue = queue;
-		return 0;
+		return queue;
 	}
 
-	queue = *ptr_queue;
-	if (!queue) {
-		spin_unlock(&ctx->queues_lock);
-		return -EAGAIN;
-	}
+	queue = *pre_alloc_queue;
+	*pre_alloc_queue = NULL;
 
 	queue->ctx = ctx;
 	queue->pid = pid;
@@ -104,7 +96,8 @@ int scribe_get_queue_by_pid(struct scribe_context *ctx,
 
 	list_add(&queue->node, &ctx->queues);
 	spin_unlock(&ctx->queues_lock);
-	return 0;
+
+	return queue;
 }
 
 void scribe_get_queue(struct scribe_event_queue *queue)

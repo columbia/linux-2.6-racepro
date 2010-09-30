@@ -18,7 +18,7 @@
 
 struct scribe_dev {
 	struct scribe_context *ctx;
-	struct scribe_event_queue *last_queue;
+	struct scribe_event_queue *last_queue, *pre_alloc_queue;
 	struct scribe_event *pending_event;
 	unsigned long offset;
 	pid_t last_pid;
@@ -31,13 +31,127 @@ static inline size_t sizeof_raw_event(struct scribe_event *event)
 
 static inline char *get_raw_event(struct scribe_event *event)
 {
-	return (char *)event + offsetof(typeof(*event), raw_offset);
+	return (char *)(event->raw_offset);
+}
+
+static int handle_event_pid(struct scribe_dev *dev, struct scribe_event *event)
+{
+	pid_t pid = ((struct scribe_event_pid *)event)->pid;
+
+	if (!dev->pre_alloc_queue) {
+		dev->pre_alloc_queue = scribe_alloc_event_queue();
+		if (!dev->pre_alloc_queue)
+			return -ENOMEM;
+	}
+
+	dev->last_queue =
+		scribe_get_queue_by_pid(dev->ctx, &dev->pre_alloc_queue, pid);
+
+	return 0;
 }
 
 static ssize_t dev_write(struct file *file,
 			 const char __user *buf, size_t count, loff_t *ppos)
 {
-	return 0;
+	struct scribe_dev *dev = file->private_data;
+	struct scribe_event *event = NULL;
+	struct scribe_event_data *event_data = NULL;
+	typeof(event->type) type;
+	typeof(event_data->size) data_size = 0;
+	int data_size_offset;
+	size_t raw_event_size, to_copy;
+	ssize_t ret = 0;
+	int err = 0;
+
+	if (dev->ctx->flags & SCRIBE_RECORD)
+		return -EPERM;
+
+	/* TODO When an event cannot be read in its whole, the function
+	 * returns. We'd like to prevent that by accepting whatever is given,
+	 * and buffer the data until the event is complete.
+	 */
+
+	for(;;) {
+		/* Step 1: The event allocation */
+		err = -EINVAL;
+		if (count < sizeof(type))
+			goto out;
+		err = -EFAULT;
+		if (get_user(type, buf))
+			goto out;
+
+		if (type == SCRIBE_EVENT_DATA) {
+			/*
+			 * This event has a variable size, and we need to know
+			 * its payload length to properly allocate the event.
+			 */
+			data_size_offset =
+					offsetof(typeof(*event_data), size)
+				      - offsetof(typeof(*event), raw_offset);
+
+			err = -EINVAL;
+			if (count < data_size_offset + sizeof(data_size))
+				goto out;
+			err = -EFAULT;
+			if (get_user(data_size, buf + data_size_offset))
+				goto out;
+
+			event_data = scribe_alloc_event_data(data_size);
+			event = (struct scribe_event *)event_data;
+		} else {
+			event = scribe_alloc_event(type);
+		}
+
+		err = -ENOMEM;
+		if (!event)
+			goto out;
+
+		/* Step 2: The copy_from_user() */
+		raw_event_size = sizeof_raw_event(event);
+		to_copy = raw_event_size - sizeof(type);
+
+		err = -EINVAL;
+		if (count < to_copy)
+			goto out;
+		if (to_copy) {
+			err = -EFAULT;
+			if (copy_from_user(get_raw_event(event) + sizeof(type),
+					   buf + sizeof(type),
+					   to_copy)) {
+				goto out;
+			}
+		}
+
+		/* Step 3: Special event handling */
+		if (type == SCRIBE_EVENT_DATA) {
+			/*
+			 * This is a guards against a race that could happen
+			 * if a thread changes the event_data->size field
+			 * after we first read it.
+			 */
+			event_data->size = data_size;
+		} else if (type == SCRIBE_EVENT_PID) {
+			err = handle_event_pid(dev, event);
+			scribe_free_event(event);
+			event = NULL;
+			if (err)
+				goto out;
+		} else { /* generic event handling */
+			scribe_queue_event(dev->last_queue, event);
+		}
+
+		event = NULL;
+		ret += raw_event_size;
+		buf += raw_event_size;
+		count -= raw_event_size;
+	}
+
+out:
+	if (event)
+		scribe_free_event(event);
+	if (err)
+		return err;
+	return ret;
 }
 
 /*
@@ -167,6 +281,9 @@ static ssize_t dev_read(struct file *file,
 	 * readers.
 	 */
 
+	if (dev->ctx->flags & SCRIBE_REPLAY)
+		return -EPERM;
+
 	/*
 	 * Two cases:
 	 * - We are dealing with a partially sent event, we need to pick up
@@ -212,7 +329,7 @@ static ssize_t dev_read(struct file *file,
 
 			dev->pending_event = event;
 
-			ret = ret ? ret : -EFAULT;
+			ret = ret ? : -EFAULT;
 			goto out;
 		}
 
@@ -266,6 +383,8 @@ static int dev_release(struct inode *inode, struct file *file)
 
 	if (dev->pending_event)
 		scribe_free_event(dev->pending_event);
+	if (dev->pre_alloc_queue)
+		scribe_put_queue(dev->last_queue);
 	if (dev->last_queue)
 		scribe_put_queue(dev->last_queue);
 

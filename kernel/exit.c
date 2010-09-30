@@ -897,14 +897,8 @@ void exit_scribe(struct task_struct *p)
 	if (is_scribbed(scribe))
 		scribe_detach(scribe);
 
-	if (scribe->queue) {
-		/*
-		 * Because we pre-allocate a queue (so that scribe_attach()
-		 * doesn't fail), we may need to free it if the process never
-		 * got attached.
-		 */
-		scribe_put_queue(scribe->queue);
-	}
+	if (scribe->pre_alloc_queue)
+		scribe_put_queue(scribe->pre_alloc_queue);
 
 	scribe_put_context(scribe->ctx);
 

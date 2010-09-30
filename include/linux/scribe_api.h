@@ -50,6 +50,7 @@ struct scribe_event {
 #ifdef __KERNEL__
 	struct list_head node;
 	char raw_offset[0];
+	/* type must directly follow raw_offset, dev_write() relies on it. */
 #endif
 	__u8 type;
 } __attribute__((packed));
@@ -96,7 +97,10 @@ static __always_inline size_t sizeof_event_from_type(__u8 type)
 
 static inline size_t sizeof_event(struct scribe_event *event)
 {
-	return sizeof_event_from_type(event->type);
+	size_t sz = sizeof_event_from_type(event->type);
+	if (event->type == SCRIBE_EVENT_DATA)
+		sz += ((struct scribe_event_data *)event)->size;
+	return sz;
 }
 
 #endif /* _LINUX_SCRIBE_API_H_ */
