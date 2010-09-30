@@ -358,7 +358,7 @@ static int dev_open(struct inode *inode, struct file *file)
 {
 	struct scribe_dev *dev;
 
-	dev = kmalloc(sizeof(*dev), GFP_KERNEL);
+	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
 	if (!dev)
 		return -ENOMEM;
 
@@ -367,11 +367,6 @@ static int dev_open(struct inode *inode, struct file *file)
 		kfree(dev);
 		return -ENOMEM;
 	}
-
-	dev->last_queue = NULL;
-	dev->pending_event = NULL;
-	dev->offset = 0;
-	dev->last_pid = -1;
 
 	file->private_data = dev;
 
