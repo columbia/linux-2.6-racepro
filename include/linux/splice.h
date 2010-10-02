@@ -74,6 +74,8 @@ extern int splice_from_pipe_next(struct pipe_inode_info *,
 extern void splice_from_pipe_begin(struct splice_desc *);
 extern void splice_from_pipe_end(struct pipe_inode_info *,
 				 struct splice_desc *);
+extern ssize_t kernel_write(struct file *file, const char *buf,
+			    size_t count, loff_t pos);
 extern int pipe_to_file(struct pipe_inode_info *, struct pipe_buffer *,
 			struct splice_desc *);
 

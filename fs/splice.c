@@ -572,7 +572,7 @@ static ssize_t kernel_readv(struct file *file, const struct iovec *vec,
 	return res;
 }
 
-static ssize_t kernel_write(struct file *file, const char *buf, size_t count,
+ssize_t kernel_write(struct file *file, const char *buf, size_t count,
 			    loff_t pos)
 {
 	mm_segment_t old_fs;
