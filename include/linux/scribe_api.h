@@ -34,10 +34,6 @@
 #define SCRIBE_STOP		0x00000004
 
 #define SCRIBE_DEVICE_NAME		"scribe"
-#define SCRIBE_IO_MAGIC			0xFF
-#define SCRIBE_IO_SET_STATE		_IOR(SCRIBE_IO_MAGIC,	1, int)
-#define SCRIBE_IO_ATTACH_ON_EXEC	_IOR(SCRIBE_IO_MAGIC,	2, int)
-
 
 enum scribe_event_type {
 	/* log file events */

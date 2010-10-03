@@ -9,19 +9,23 @@
 
 #include <linux/kernel.h>
 #include <linux/fs.h>
+#include <linux/file.h>
 #include <linux/major.h>
 #include <linux/device.h>
 #include <linux/slab.h>
 #include <linux/scribe.h>
 #include <linux/sched.h>
 #include <linux/uaccess.h>
+#include <linux/kthread.h>
+#include <linux/splice.h>
+
+#define PUMP_BUFFER_ORDER 2
+#define PUMP_BUFFER_SIZE (PAGE_SIZE << PUMP_BUFFER_ORDER)
 
 struct scribe_dev {
 	struct scribe_context *ctx;
-	struct scribe_event_queue *last_queue, *pre_alloc_queue;
-	struct scribe_event *pending_event;
-	unsigned long offset;
-	pid_t last_pid;
+	char *pump_buffer;
+	struct file *log_file;
 };
 
 static inline size_t sizeof_event_payload(struct scribe_event *event)
@@ -34,137 +38,27 @@ static inline char *get_event_payload(struct scribe_event *event)
 	return (char *)(event->payload_offset);
 }
 
-static int handle_event_pid(struct scribe_dev *dev, struct scribe_event *event)
+static inline int is_interrupted(int ret)
 {
-	pid_t pid = ((struct scribe_event_pid *)event)->pid;
-
-	if (!dev->pre_alloc_queue) {
-		dev->pre_alloc_queue = scribe_alloc_event_queue();
-		if (!dev->pre_alloc_queue)
-			return -ENOMEM;
-	}
-
-	dev->last_queue =
-		scribe_get_queue_by_pid(dev->ctx, &dev->pre_alloc_queue, pid);
-
-	return 0;
+	return ret == -ERESTARTSYS ||
+		ret == -ERESTARTNOINTR ||
+		ret == -ERESTARTNOHAND ||
+		ret == -ERESTART_RESTARTBLOCK ||
+		ret == -EINTR;
 }
 
-static ssize_t dev_write(struct file *file,
-			 const char __user *buf, size_t count, loff_t *ppos)
-{
-	struct scribe_dev *dev = file->private_data;
-	struct scribe_event *event = NULL;
-	struct scribe_event_data *event_data = NULL;
-	typeof(event->type) type;
-	typeof(event_data->size) data_size = 0;
-	int data_size_offset;
-	size_t event_payload_size, to_copy;
-	ssize_t ret = 0;
-	int err = 0;
-
-	if (dev->ctx->flags & SCRIBE_RECORD)
-		return -EPERM;
-
-	/*
-	 * TODO When an event cannot be read in its whole, the function
-	 * returns. We'd like to prevent that by accepting whatever is given,
-	 * and buffer the data until the event is complete.
-	 */
-
-	for (;;) {
-		/* Step 1: The event allocation */
-		err = -EINVAL;
-		if (count < sizeof(type))
-			goto out;
-		err = -EFAULT;
-		if (get_user(type, buf))
-			goto out;
-
-		if (type == SCRIBE_EVENT_DATA) {
-			/*
-			 * This event has a variable size, and we need to know
-			 * its payload length to properly allocate the event.
-			 */
-			data_size_offset =
-				       offsetof(typeof(*event_data), size)
-				     - offsetof(typeof(*event), payload_offset);
-
-			err = -EINVAL;
-			if (count < data_size_offset + sizeof(data_size))
-				goto out;
-			err = -EFAULT;
-			if (get_user(data_size, buf + data_size_offset))
-				goto out;
-
-			event_data = scribe_alloc_event_data(data_size);
-			event = (struct scribe_event *)event_data;
-		} else {
-			event = scribe_alloc_event(type);
-		}
-
-		err = -ENOMEM;
-		if (!event)
-			goto out;
-
-		/* Step 2: The copy_from_user() */
-		event_payload_size = sizeof_event_payload(event);
-		to_copy = event_payload_size - sizeof(type);
-
-		err = -EINVAL;
-		if (count < to_copy)
-			goto out;
-		if (to_copy) {
-			err = -EFAULT;
-			if (copy_from_user(
-					get_event_payload(event) + sizeof(type),
-					buf + sizeof(type),
-					to_copy))
-				goto out;
-		}
-
-		/* Step 3: Special event handling */
-		if (type == SCRIBE_EVENT_DATA) {
-			/*
-			 * This is a guards against a race that could happen
-			 * if a thread changes the event_data->size field
-			 * after we first read it.
-			 */
-			event_data->size = data_size;
-		} else if (type == SCRIBE_EVENT_PID) {
-			err = handle_event_pid(dev, event);
-			scribe_free_event(event);
-			event = NULL;
-			if (err)
-				goto out;
-		} else { /* generic event handling */
-			scribe_queue_event(dev->last_queue, event);
-		}
-
-		event = NULL;
-		ret += event_payload_size;
-		buf += event_payload_size;
-		count -= event_payload_size;
-	}
-
-out:
-	if (event)
-		scribe_free_event(event);
-	if (err)
-		return err;
-	return ret;
-}
+/* Record */
 
 /*
  * __get_non_empty_queue() try to find the the first non empty queue. It
- * returns the queue on success, -ENODEV if the queue list is empty and will
+ * returns 0 on success, -ENODEV if the queue list is empty and will
  * stay empty, -EAGAIN if at least one queue is present and all queues are
  * empty.
  *
  * Note: scribe_get_non_empty_queue() also remove dead queues.
  */
-static struct scribe_event_queue *__get_non_empty_queue(
-		struct scribe_context *ctx)
+static int __get_non_empty_queue(struct scribe_context *ctx,
+				 struct scribe_event_queue **ptr_queue)
 {
 	struct scribe_event_queue *queue, *tmp;
 	int ret;
@@ -174,7 +68,8 @@ static struct scribe_event_queue *__get_non_empty_queue(
 		if (!scribe_is_queue_empty(queue)) {
 			scribe_get_queue(queue);
 			spin_unlock(&ctx->queues_lock);
-			return queue;
+			*ptr_queue = queue;
+			return 0;
 		}
 
 		/*
@@ -203,206 +98,456 @@ static struct scribe_event_queue *__get_non_empty_queue(
 	}
 
 	spin_unlock(&ctx->queues_lock);
-	return ERR_PTR(ret);
+	return ret;
 }
 
-#define SCRIBE_NO_WAIT 0
-#define SCRIBE_WAIT 1
-
-static struct scribe_event_queue *get_non_empty_queue(
-		struct scribe_dev *dev, int wait)
+static int get_non_empty_queue(struct scribe_context *ctx,
+			       struct scribe_event_queue **current_queue,
+			       int wait)
 {
-	struct scribe_context *ctx = dev->ctx;
 	struct scribe_event_queue *queue;
 	int ret;
 
-	queue = dev->last_queue;
+	queue = *current_queue;
 	if (queue) {
 		if (!scribe_is_queue_empty(queue))
-			return queue;
+			return 0;
 		scribe_put_queue(queue);
-		dev->last_queue = NULL;
+		*current_queue = NULL;
 	}
 
 	if (wait == SCRIBE_WAIT) {
-		ret = wait_event_interruptible(
-			ctx->queues_wait,
-			((queue = __get_non_empty_queue(ctx))
-			 != ERR_PTR(-EAGAIN)));
+		ret = wait_event_interruptible(ctx->queues_wait,
+			__get_non_empty_queue(ctx, &queue) != -EAGAIN);
 
 		if (ret)
-			return ERR_PTR(-ERESTARTSYS);
-	} else {
-		queue = __get_non_empty_queue(ctx);
+			ret = -EINTR;
+	} else { /* SCRIBE_NO_WAIT */
+		ret = __get_non_empty_queue(ctx, &queue);
 	}
 
-	if (!IS_ERR(queue))
-		dev->last_queue = queue;
+	if (ret)
+		return ret;
 
-	return queue;
+	*current_queue = queue;
+	return 0;
 }
 
-static struct scribe_event *get_next_event(struct scribe_dev *dev,
-					   struct scribe_event_queue *queue)
+static int get_next_event(pid_t *last_pid, struct scribe_event **event,
+			  struct scribe_event_queue *queue)
 {
 	struct scribe_event_pid *event_pid;
-	struct scribe_event *event;
 
-	if (likely(dev->last_pid == queue->pid)) {
-		event = scribe_dequeue_event(queue, SCRIBE_NO_WAIT);
-		BUG_ON(IS_ERR(event));
-		return event;
+	if (likely(*last_pid == queue->pid)) {
+		*event = scribe_dequeue_event(queue, SCRIBE_NO_WAIT);
+		/* The queue should be non-empty, so it should not fail */
+		BUG_ON(IS_ERR(*event));
+		return 0;
 	}
 
 	/* We've changed pid, inserting a pid event */
 	event_pid = scribe_alloc_event(SCRIBE_EVENT_PID);
 	if (!event_pid)
-		return ERR_PTR(-ENOMEM);
+		return -ENOMEM;
 
 	event_pid->pid = queue->pid;
-	dev->last_pid = queue->pid;
+	*last_pid = queue->pid;
 
-	return (struct scribe_event *)event_pid;
+	*event = (struct scribe_event *)event_pid;
+	return 0;
 }
 
-static ssize_t dev_read(struct file *file,
-			char __user *buf, size_t count, loff_t * ppos)
+static ssize_t serialize_events(struct scribe_context *ctx,
+				char *buf, size_t count,
+				pid_t *last_pid,
+				struct scribe_event_queue **current_queue,
+				struct scribe_event **pending_event,
+				size_t *pending_offset)
 {
-	struct scribe_dev *dev = file->private_data;
-	struct scribe_event_queue *queue;
 	struct scribe_event *event;
-	long not_written;
+	size_t to_write;
 	ssize_t ret = 0;
-	size_t length;
-	char *kbuf;
-
-	/*
-	 * FIXME put a mutex around this to protect it against multiple
-	 * readers, although it would not make any sense to have multiple
-	 * readers.
-	 */
-
-	if (dev->ctx->flags & SCRIBE_REPLAY)
-		return -EPERM;
+	int err = 0;
 
 	/*
 	 * Two cases:
 	 * - We are dealing with a partially sent event, we need to pick up
 	 *   where we left off.
-	 * - In the other case, we'll just grab the next non empty queue.
+	 * - In the other case, we'll just grab the next event on the next non
+	 *   empty queue.
 	 */
-	event = dev->pending_event;
-	if (event) {
-		dev->pending_event = NULL;
-		queue = NULL;
-	} else {
-		queue = get_non_empty_queue(dev, SCRIBE_WAIT);
-		if (IS_ERR(queue)) {
-			ret = PTR_ERR(queue);
-			if (ret == -ENODEV)
-				ret = 0;
+	event = *pending_event;
+	*pending_event = NULL;
+	if (!event) {
+		err = get_non_empty_queue(ctx, current_queue, SCRIBE_WAIT);
+		if (err) {
+			/*
+			 * if err == -ENODEV, it means that the context is in
+			 * idle state and that the queue list is empty.
+			 * It's time for EOF
+			 */
+			if (err == -ENODEV)
+				err = 0;
 			goto out;
 		}
 	}
 
 	for (;;) {
 		if (!event) {
-			event = get_next_event(dev, queue);
-			if (IS_ERR(event)) {
-				ret = ret ? ret : PTR_ERR(event);
+			err = get_next_event(last_pid, &event, *current_queue);
+			if (err)
 				goto out;
-			}
 		}
 
-		length = sizeof_event_payload(event) - dev->offset;
-		kbuf = get_event_payload(event) + dev->offset;
-
-		if (length > count) {
-			length = count;
-			dev->pending_event = event;
+		to_write = sizeof_event_payload(event) - *pending_offset;
+		if (count < to_write) {
+			to_write = count;
+			*pending_offset += to_write;
+			*pending_event = event;
 		}
-		dev->offset += length;
+		memcpy(buf,
+		       get_event_payload(event) + *pending_offset, to_write);
+		ret += to_write;
 
-		not_written = copy_to_user(buf, kbuf, length);
-		if (not_written) {
-			dev->offset -= not_written;
-			ret += length - not_written;
-
-			dev->pending_event = event;
-
-			ret = ret ? : -EFAULT;
-			goto out;
-		}
-
-		ret += length;
-		if (dev->pending_event)
+		if (*pending_event)
 			goto out;
 
 		scribe_free_event(event);
 		event = NULL;
-		dev->offset = 0;
+		*pending_offset = 0;
 
-		buf += length;
-		count -= length;
+		buf += to_write;
+		count -= to_write;
 
-		queue = get_non_empty_queue(dev, SCRIBE_NO_WAIT);
-		if (IS_ERR(queue))
+		err = get_non_empty_queue(ctx, current_queue, SCRIBE_NO_WAIT);
+		if (err)
 			goto out;
 	}
 
 out:
+	if (err)
+		return err;
 	return ret;
+}
+
+static void event_pump_record(struct scribe_context *ctx,
+			      char *buf, struct file *file)
+{
+	struct scribe_event_queue *current_queue = NULL;
+	struct scribe_event *pending_event = NULL;
+	size_t pending_offset = 0;
+	pid_t last_pid = 0;
+
+	ssize_t ret;
+	size_t to_write;
+	char *write_buf;
+
+	while (!kthread_should_stop()) {
+		ret = serialize_events(ctx, buf, PUMP_BUFFER_SIZE,
+				       &last_pid, &current_queue,
+				       &pending_event, &pending_offset);
+		if (ret == -EINTR)
+			continue;
+		if (ret < 0)
+			goto err;
+		if (!ret)
+			break;
+
+		to_write = ret;
+		write_buf = buf;
+		while (to_write) {
+			ret = kernel_write(file,
+					   write_buf, to_write, file->f_pos);
+			if (unlikely(is_interrupted(ret)))
+				continue;
+
+			if (ret < 0)
+				goto err;
+
+			to_write -= ret;
+			write_buf += ret;
+			file->f_pos += ret;
+		}
+	}
+free:
+	if (current_queue)
+		scribe_put_queue(current_queue);
+	if (pending_event)
+		scribe_free_event(pending_event);
+	return;
+err:
+	scribe_emergency_stop(ctx, -ret);
+	goto free;
+}
+
+/* Replay */
+
+static int handle_event_pid(struct scribe_context *ctx,
+			    struct scribe_event *event,
+			    struct scribe_event_queue **current_queue,
+			    struct scribe_event_queue **pre_alloc_queue)
+{
+	pid_t pid = ((struct scribe_event_pid *)event)->pid;
+
+	if (!*pre_alloc_queue) {
+		*pre_alloc_queue = scribe_alloc_event_queue();
+		if (!*pre_alloc_queue)
+			return -ENOMEM;
+	}
+
+	*current_queue = scribe_get_queue_by_pid(ctx, pre_alloc_queue, pid);
+	return 0;
+}
+
+static int get_data_size(const char *buf, size_t count)
+{
+	struct scribe_event_data *event_data;
+	typeof(event_data->size) data_size = 0;
+	int data_size_offset;
+
+	data_size_offset = offsetof(struct scribe_event_data, size)
+			 - offsetof(struct scribe_event, payload_offset);
+
+	if (count < data_size_offset + sizeof(data_size))
+		return -EINVAL;
+	return *(typeof(data_size) *)(buf + data_size_offset);
+}
+
+static int alloc_next_event(const char *buf, size_t count,
+			    struct scribe_event **event)
+{
+	typeof((*event)->type) type;
+	int data_size;
+
+	if (count < sizeof(type))
+		return -EAGAIN;
+	type = *(typeof(type) *)buf;
+
+	if (type == SCRIBE_EVENT_DATA) {
+		data_size = get_data_size(buf, count);
+		if (data_size < 0)
+			return -EAGAIN;
+
+		*event = (struct scribe_event *)
+			scribe_alloc_event_data(data_size);
+	} else {
+		*event = scribe_alloc_event(type);
+	}
+
+	if (!*event)
+		return -ENOMEM;
+
+	return 0;
+}
+
+static ssize_t deserialize_events(struct scribe_context *ctx,
+				  const char *buf, size_t count,
+				  struct scribe_event_queue **current_queue,
+				  struct scribe_event_queue **pre_alloc_queue,
+				  struct scribe_event **pending_event,
+				  size_t *pending_offset)
+{
+	struct scribe_event *event = NULL;
+	size_t to_copy;
+	ssize_t ret = 0;
+	int err = 0;
+
+	event = *pending_event;
+	*pending_event = NULL;
+
+	for (;;) {
+		if (!event) {
+			err = alloc_next_event(buf, count, &event);
+			if (err)
+				goto out;
+		}
+
+		to_copy = sizeof_event_payload(event) - *pending_offset;
+
+		if (count < to_copy) {
+			to_copy = count;
+			*pending_offset += to_copy;
+			*pending_event = event;
+		}
+		memcpy(get_event_payload(event) + *pending_offset,
+		       buf, to_copy);
+
+		if (*pending_event) {
+			ret += to_copy;
+			goto out;
+		}
+		*pending_offset = 0;
+
+		if (event->type == SCRIBE_EVENT_PID) {
+			err = handle_event_pid(ctx, event,
+					       current_queue, pre_alloc_queue);
+			scribe_free_event(event);
+			event = NULL;
+			if (err)
+				goto out;
+		} else { /* generic event handling */
+			scribe_queue_event(*current_queue, event);
+		}
+
+		event = NULL;
+		ret += to_copy;
+		buf += to_copy;
+		count -= to_copy;
+	}
+
+out:
+	if (event)
+		scribe_free_event(event);
+	if (err)
+		return err;
+	return ret;
+}
+
+/*
+ * event_pump_replay() reads from @file to @buf, and call deserialize_events()
+ * to instantiate each event. Sometimes deserialize_events() cannot process
+ * the whole buffer entirely, so it will wait for more data to arrive.
+ * This assume that all the events (besides the data event) can fit in the
+ * buffer.
+ */
+static void event_pump_replay(struct scribe_context *ctx, char *buf,
+			      struct file *file)
+
+{
+	struct scribe_event_queue *current_queue = NULL;
+	struct scribe_event_queue *pre_alloc_queue = NULL;
+	struct scribe_event *pending_event = NULL;
+	size_t pending_offset = 0;
+
+	size_t count = 0;
+	ssize_t ret = 0;
+
+	while (!kthread_should_stop()) {
+		ret = kernel_read(file, file->f_pos,
+				  buf + count,
+				  PUMP_BUFFER_SIZE - count);
+
+		if (unlikely(is_interrupted(ret)))
+			continue;
+		if (!ret) {
+			if (!count) {
+				/* EOF reached, all done. */
+				break;
+			}
+
+			/*
+			 * We have a pending event in our buffer, and
+			 * we are reaching EOF. Something is wrong.
+			 */
+			ret = -EPIPE;
+		}
+		if (ret < 0)
+			goto err;
+
+		file->f_pos += ret;
+		count += ret;
+
+		ret = deserialize_events(ctx, buf, count,
+					 &current_queue, &pre_alloc_queue,
+					 &pending_event, &pending_offset);
+		if (ret < 0)
+			goto err;
+
+		BUG_ON(!ret);
+		count -= ret;
+		if (count) {
+			/*
+			 * Only a portion of the buffer has been processed, it
+			 * will get processed on the next round.
+			 */
+			memmove(buf, buf + ret, count);
+		}
+	}
+
+free:
+	if (current_queue)
+		scribe_put_queue(current_queue);
+	if (pre_alloc_queue)
+		scribe_put_queue(pre_alloc_queue);
+	if (pending_event)
+		scribe_free_event(pending_event);
+	return;
+err:
+	scribe_emergency_stop(ctx, -ret);
+	goto free;
+}
+
+/*
+ * We need a kthread for performance reasons: consider a single process
+ * getting recorded. When that process queues some events in its queue, we
+ * want it to immediately return to work, and the actual serialization will
+ * happen on another CPU.
+ */
+int kthread_event_pump(void *_dev)
+{
+	struct scribe_dev *dev = _dev;
+	struct scribe_context *ctx = dev->ctx;
+
+	if (ctx->flags & SCRIBE_RECORD)
+		event_pump_record(ctx, dev->pump_buffer, dev->log_file);
+	else if (ctx->flags & SCRIBE_REPLAY)
+		event_pump_replay(ctx, dev->pump_buffer, dev->log_file);
+	else
+		BUG();
+
+	do_exit(0);
+}
+
+static ssize_t dev_write(struct file *file,
+			 const char __user *buf, size_t count, loff_t *ppos)
+{
+	return 0;
+}
+
+static ssize_t dev_read(struct file *file,
+			char __user *buf, size_t count, loff_t * ppos)
+{
+	return 0;
 }
 
 static int dev_open(struct inode *inode, struct file *file)
 {
 	struct scribe_dev *dev;
+	int ret;
 
+	ret = -ENOMEM;
 	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
 	if (!dev)
-		return -ENOMEM;
+		goto out;
 
 	dev->ctx = scribe_alloc_context();
-	if (!dev->ctx) {
-		kfree(dev);
-		return -ENOMEM;
-	}
+	if (!dev->ctx)
+		goto out_dev;
+
+	dev->pump_buffer = (char *)__get_free_pages(GFP_KERNEL,
+						    PUMP_BUFFER_ORDER);
+	if (!dev->pump_buffer)
+		goto out_ctx;
 
 	file->private_data = dev;
-
 	return 0;
+
+out_ctx:
+	scribe_exit_context(dev->ctx);
+out_dev:
+	kfree(dev);
+out:
+	return ret;
 }
 
 static int dev_release(struct inode *inode, struct file *file)
 {
 	struct scribe_dev *dev = file->private_data;
 
-	if (dev->pending_event)
-		scribe_free_event(dev->pending_event);
-	if (dev->pre_alloc_queue)
-		scribe_put_queue(dev->last_queue);
-	if (dev->last_queue)
-		scribe_put_queue(dev->last_queue);
-
+	free_pages((unsigned long)dev->pump_buffer, PUMP_BUFFER_ORDER);
 	scribe_exit_context(dev->ctx);
 	kfree(dev);
 	return 0;
-}
-
-static int dev_ioctl(struct inode *inode, struct file *file,
-		     unsigned int num, unsigned long arg)
-{
-	struct scribe_dev *dev = file->private_data;
-	struct scribe_context *ctx = dev->ctx;
-
-	switch (num) {
-	case SCRIBE_IO_SET_STATE:
-		return scribe_set_state(ctx, arg);
-	case SCRIBE_IO_ATTACH_ON_EXEC:
-		return scribe_set_attach_on_exec(ctx, arg);
-	}
-
-	return -ENOIOCTLCMD;
 }
 
 static const struct file_operations scribe_fops = {
@@ -410,7 +555,6 @@ static const struct file_operations scribe_fops = {
 	.write   = dev_write,
 	.open    = dev_open,
 	.release = dev_release,
-	.ioctl   = dev_ioctl
 };
 
 int __init scribe_init_device(void)
