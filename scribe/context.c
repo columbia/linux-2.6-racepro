@@ -103,9 +103,9 @@ struct scribe_context *scribe_alloc_context(void)
 
 	ctx = kmalloc(sizeof(*ctx), GFP_KERNEL);
 	if (!ctx)
-		return NULL;
+		goto err;
 
-	atomic_set(&ctx->ref_cnt, 0);
+	atomic_set(&ctx->ref_cnt, 1);
 	ctx->id = current->pid;
 	ctx->flags = SCRIBE_IDLE;
 
@@ -117,14 +117,22 @@ struct scribe_context *scribe_alloc_context(void)
 	INIT_LIST_HEAD(&ctx->queues);
 	init_waitqueue_head(&ctx->queues_wait);
 
-	if (register_proc(ctx)) {
-		kfree(ctx);
-		return NULL;
-	}
+	ctx->notification_queue = scribe_alloc_event_queue();
+	if (!ctx->notification_queue)
+		goto err_ctx;
+	scribe_make_persistent(ctx->notification_queue, 0);
 
-	scribe_get_context(ctx);
+	if (register_proc(ctx))
+		goto err_queue;
 
 	return ctx;
+
+err_queue:
+	scribe_put_queue(ctx->notification_queue);
+err_ctx:
+	kfree(ctx);
+err:
+	return NULL;
 }
 
 
@@ -177,8 +185,8 @@ void scribe_exit_context(struct scribe_context *ctx)
 		scribe_make_persistent(queue, 0);
 	spin_unlock(&ctx->queues_lock);
 
+	scribe_put_queue(ctx->notification_queue);
 	unregister_proc(ctx);
-
 	scribe_put_context(ctx);
 }
 

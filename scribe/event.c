@@ -27,11 +27,9 @@ struct scribe_event_queue *scribe_alloc_event_queue(void)
 		return NULL;
 
 	atomic_set(&queue->ref_cnt, 1);
-	/*
-	 * node, ctx and pid are initialized when attaching the queue in
-	 * scribe_get_queue_by_pid().
-	 */
-
+	queue->ctx = NULL;
+	INIT_LIST_HEAD(&queue->node);
+	queue->pid = 0;
 	queue->flags = 0;
 
 	spin_lock_init(&queue->lock);
@@ -78,8 +76,7 @@ struct scribe_event_queue *scribe_get_queue_by_pid(
 	queue = find_queue(ctx, pid);
 	if (queue) {
 		scribe_get_queue(queue);
-		spin_unlock(&ctx->queues_lock);
-		return queue;
+		goto out;
 	}
 
 	queue = *pre_alloc_queue;
@@ -95,8 +92,9 @@ struct scribe_event_queue *scribe_get_queue_by_pid(
 	scribe_make_persistent(queue, 1);
 
 	list_add(&queue->node, &ctx->queues);
-	spin_unlock(&ctx->queues_lock);
 
+out:
+	spin_unlock(&ctx->queues_lock);
 	return queue;
 }
 
@@ -108,6 +106,12 @@ void scribe_get_queue(struct scribe_event_queue *queue)
 void scribe_put_queue(struct scribe_event_queue *queue)
 {
 	struct scribe_context *ctx = queue->ctx;
+
+	if (!ctx) {
+		/* The queue is not attached in the context queues list */
+		scribe_put_queue_nolock(queue);
+		return;
+	}
 
 	if (atomic_dec_and_lock(&queue->ref_cnt, &ctx->queues_lock)) {
 		list_del(&queue->node);
@@ -201,7 +205,7 @@ static inline void __scribe_queue_event_at(struct scribe_event_queue *queue,
 	 * When queuing events, we want to put them in the next
 	 * insert point event list because the current insert point is
 	 * blocked by the insert point.
-	 * When the next insert point is commited, those events will be
+	 * When the next insert point is committed, those events will be
 	 * merge into the current insert point with
 	 * scribe_commit_insert_point().
 	 */

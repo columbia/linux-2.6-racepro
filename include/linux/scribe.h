@@ -44,6 +44,7 @@ struct scribe_context {
 	struct list_head queues;
 	wait_queue_head_t queues_wait;
 
+	struct scribe_event_queue *notification_queue;
 #ifdef CONFIG_PROC_FS
 	struct proc_dir_entry *proc_entry;
 #endif
@@ -125,6 +126,12 @@ struct scribe_insert_point {
 
 struct scribe_event_queue {
 	atomic_t ref_cnt;
+
+	/*
+	 * ctx, node and pid are only relevent when the queue has been
+	 * attached to the context list of queues, with
+	 * scribe_get_queue_by_pid()
+	 */
 	struct scribe_context *ctx;
 	struct list_head node;
 	pid_t pid;
