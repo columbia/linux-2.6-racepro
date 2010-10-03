@@ -60,6 +60,7 @@ static inline void scribe_put_context(struct scribe_context *ctx)
 }
 
 extern struct scribe_context *scribe_alloc_context(void);
+extern void scribe_emergency_stop(struct scribe_context *ctx, int reason);
 extern void scribe_exit_context(struct scribe_context *ctx);
 extern int scribe_set_state(struct scribe_context *ctx, int state);
 

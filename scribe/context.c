@@ -127,19 +127,24 @@ struct scribe_context *scribe_alloc_context(void)
 	return ctx;
 }
 
-void scribe_exit_context(struct scribe_context *ctx)
+
+void scribe_emergency_stop(struct scribe_context *ctx, int error)
 {
-	struct scribe_event_queue *queue, *tmp;
 	struct scribe_ps *scribe;
 
 	spin_lock(&ctx->tasks_lock);
 
+	if (ctx->flags == SCRIBE_IDLE) {
+		spin_unlock(&ctx->tasks_lock);
+		return;
+	}
+
 	/*
-	 * The SCRIBE_DEAD flag has to be set here to guard against race with
+	 * The SCRIBE_IDLE flag has to be set here to guard against race with
 	 * scribe_attach() called from copy_process() or execve().
 	 * See in scribe_attach() for more details.
 	 */
-	ctx->flags = SCRIBE_DEAD;
+	ctx->flags = SCRIBE_IDLE;
 
 	/*
 	 * The tasks list is most likely to be empty by now.
@@ -159,7 +164,13 @@ void scribe_exit_context(struct scribe_context *ctx)
 		spin_lock(&ctx->tasks_lock);
 	}
 	spin_unlock(&ctx->tasks_lock);
+}
 
+void scribe_exit_context(struct scribe_context *ctx)
+{
+	struct scribe_event_queue *queue, *tmp;
+
+	scribe_emergency_stop(ctx, 0);
 
 	spin_lock(&ctx->queues_lock);
 	list_for_each_entry_safe(queue, tmp, &ctx->queues, node)
@@ -176,17 +187,25 @@ static int context_start(struct scribe_context *ctx, int action)
 	if (ctx->flags != SCRIBE_IDLE)
 		return -EPERM;
 
+	BUG_ON(!list_empty(&ctx->tasks));
+
 	ctx->flags = action;
 	return 0;
 }
 
 static int context_stop(struct scribe_context *ctx)
 {
-	if (ctx->flags == SCRIBE_IDLE)
-		return -EPERM;
 	if (ctx->flags & SCRIBE_STOP)
 		return 0;
-	ctx->flags = SCRIBE_IDLE;
+
+	spin_lock(&ctx->tasks_lock);
+	if (ctx->flags == SCRIBE_IDLE) {
+		spin_unlock(&ctx->tasks_lock);
+		return -EPERM;
+	}
+	ctx->flags &= SCRIBE_STOP;
+	spin_unlock(&ctx->tasks_lock);
+
 	return 0;
 }
 
@@ -197,6 +216,9 @@ int scribe_set_state(struct scribe_context *ctx, int state)
 
 	if (state & SCRIBE_STOP)
 		return context_stop(ctx);
+
+	if ((state & SCRIBE_RECORD) && (state & SCRIBE_REPLAY))
+		return -EINVAL;
 
 	if (state)
 		return context_start(ctx, state);
@@ -212,6 +234,9 @@ int scribe_set_attach_on_exec(struct scribe_context *ctx, int enable)
 	if (is_ps_scribbed(p))
 		return -EPERM;
 
+	if (ctx->flags == SCRIBE_IDLE)
+		return -EPERM;
+
 	exit_scribe(p);
 
 	if (!enable)
@@ -220,6 +245,7 @@ int scribe_set_attach_on_exec(struct scribe_context *ctx, int enable)
 	ret = init_scribe(p, ctx);
 	if (ret)
 		return ret;
+
 	p->scribe->flags = SCRIBE_PS_ATTACH_ON_EXEC;
 
 	return 0;
@@ -248,10 +274,10 @@ void scribe_attach(struct scribe_ps *scribe)
 	}
 
 	spin_lock(&ctx->tasks_lock);
-	BUG_ON(!(ctx->flags & (SCRIBE_RECORD | SCRIBE_REPLAY | SCRIBE_DEAD)));
+	BUG_ON(!(ctx->flags & (SCRIBE_RECORD | SCRIBE_REPLAY)));
 	BUG_ON(is_scribbed(scribe));
 
-	if (unlikely(ctx->flags & SCRIBE_DEAD)) {
+	if (unlikely(ctx->flags == SCRIBE_IDLE)) {
 		spin_unlock(&ctx->tasks_lock);
 
 		/*
@@ -301,6 +327,8 @@ void scribe_attach(struct scribe_ps *scribe)
 		spin_lock(&ctx->queues_lock);
 		scribe_make_persistent(scribe->queue, 0);
 		spin_unlock(&ctx->queues_lock);
+
+		scribe->queue->wait = &scribe->queue->default_wait;
 	}
 
 	wake_up(&ctx->tasks_wait);
@@ -315,7 +343,7 @@ void scribe_detach(struct scribe_ps *scribe)
 	list_del(&scribe->node);
 
 	/* We were the last task in the context, it's time to set it idle */
-	if (list_empty(&ctx->tasks) && ctx->flags != SCRIBE_DEAD)
+	if (list_empty(&ctx->tasks))
 		ctx->flags = SCRIBE_IDLE;
 	spin_unlock(&ctx->tasks_lock);
 	wake_up(&ctx->tasks_wait);
