@@ -40,9 +40,13 @@
 
 
 enum scribe_event_type {
+	/* log file events */
 	SCRIBE_EVENT_PID = 1,
 	SCRIBE_EVENT_DATA,
 	SCRIBE_EVENT_SYSCALL,
+
+	/* kernel -> userspace notifications */
+	SCRIBE_EVENT_CONTEXT_IDLE
 };
 
 struct scribe_event {
@@ -78,6 +82,15 @@ struct scribe_event_syscall {
 	__u32 ret; /* FIXME 64 bit support ? */
 } __attribute__((packed));
 
+/* Control/notification events */
+
+#define struct_SCRIBE_EVENT_CONTEXT_IDLE struct scribe_event_context_idle
+struct scribe_event_context_idle {
+	struct scribe_event h;
+	__u32 error;
+} __attribute__((packed));
+
+
 void __you_are_using_an_unknown_scribe_type(void);
 /*
  * XXX Data events have a variable size. This additional payload
@@ -89,6 +102,8 @@ static __always_inline size_t sizeof_event_from_type(__u8 type)
 	__TYPE(SCRIBE_EVENT_PID);
 	__TYPE(SCRIBE_EVENT_DATA);
 	__TYPE(SCRIBE_EVENT_SYSCALL);
+
+	__TYPE(SCRIBE_EVENT_CONTEXT_IDLE);
 #undef  __TYPE
 
 	if (__builtin_constant_p(type))
