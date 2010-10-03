@@ -209,8 +209,10 @@ extern void scribe_queue_event(struct scribe_event_queue *queue, void *event);
 	__ret;								\
 })
 
-extern struct scribe_event *scribe_try_dequeue_event(
-		struct scribe_event_queue *queue);
+#define SCRIBE_NO_WAIT 0
+#define SCRIBE_WAIT 1
+extern struct scribe_event *scribe_dequeue_event(
+				struct scribe_event_queue *queue, int wait);
 
 extern int scribe_is_queue_empty(struct scribe_event_queue *queue);
 extern void scribe_set_queue_wont_grow(struct scribe_event_queue *queue);

@@ -249,7 +249,7 @@ static struct scribe_event *get_next_event(struct scribe_dev *dev,
 	struct scribe_event *event;
 
 	if (likely(dev->last_pid == queue->pid)) {
-		event = scribe_try_dequeue_event(queue);
+		event = scribe_dequeue_event(queue, SCRIBE_NO_WAIT);
 		BUG_ON(IS_ERR(event));
 		return event;
 	}

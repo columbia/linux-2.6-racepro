@@ -226,7 +226,8 @@ void scribe_queue_event(struct scribe_event_queue *queue, void *event)
 	__scribe_queue_event_at(queue, &queue->master, event);
 }
 
-struct scribe_event *scribe_try_dequeue_event(struct scribe_event_queue *queue)
+struct scribe_event *scribe_dequeue_event(struct scribe_event_queue *queue,
+					  int wait)
 {
 	struct scribe_event *event;
 	struct list_head *events;
@@ -235,13 +236,19 @@ struct scribe_event *scribe_try_dequeue_event(struct scribe_event_queue *queue)
 	 * When deqeuing events, we grab them from the current insert point,
 	 * not the next one.
 	 */
-
 	events = &queue->master.events;
+
+retry:
+	if (wait && wait_event_interruptible(*queue->wait,
+					     !scribe_is_queue_empty(queue)))
+		return ERR_PTR(-EINTR);
 
 	spin_lock(&queue->lock);
 	if (list_empty(events)) {
-		return ERR_PTR(-EAGAIN);
 		spin_unlock(&queue->lock);
+		if (wait)
+			goto retry;
+		return ERR_PTR(-EAGAIN);
 	}
 	event = list_first_entry(events, typeof(*event), node);
 	list_del(&event->node);
