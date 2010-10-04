@@ -500,6 +500,12 @@ static int kthread_event_pump(void *_dev)
 	else
 		BUG();
 
+	if (ctx->flags == SCRIBE_IDLE) {
+		scribe_queue_new_event(ctx->notification_queue,
+				       SCRIBE_EVENT_CONTEXT_IDLE,
+				       ctx->idle_error);
+	}
+
 	fput(dev->log_file);
 
 	do_exit(0);

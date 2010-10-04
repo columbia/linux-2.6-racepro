@@ -45,12 +45,7 @@ struct scribe_context {
 	wait_queue_head_t queues_wait;
 
 	struct scribe_event_queue *notification_queue;
-	/*
-	 * We need to preallocate the event to put in the notification queue
-	 * to handle state change to SCRIBE_IDLE because we cannot fail in
-	 * scribe_detach() or in scribe_emergency_stop().
-	 */
-	struct scribe_event_context_idle *event_context_idle;
+	int idle_error;
 
 #ifdef CONFIG_PROC_FS
 	struct proc_dir_entry *proc_entry;
