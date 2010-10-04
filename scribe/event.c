@@ -240,12 +240,19 @@ struct scribe_event *scribe_dequeue_event(struct scribe_event_queue *queue,
 
 retry:
 	if (wait && wait_event_interruptible(*queue->wait,
-					     !scribe_is_queue_empty(queue)))
+					     !scribe_is_queue_empty(queue) ||
+					     (queue->flags & SCRIBE_WONT_GROW)))
 		return ERR_PTR(-EINTR);
 
 	spin_lock(&queue->lock);
 	if (list_empty(events)) {
 		spin_unlock(&queue->lock);
+		/*
+		 * If the queue will never grow, the queue is officially dead.
+		 * There is no point waiting.
+		 */
+		if (queue->flags & SCRIBE_WONT_GROW)
+			return ERR_PTR(-ENODEV);
 		if (wait)
 			goto retry;
 		return ERR_PTR(-EAGAIN);
