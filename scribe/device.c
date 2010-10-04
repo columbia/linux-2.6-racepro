@@ -18,12 +18,15 @@
 #include <linux/uaccess.h>
 #include <linux/kthread.h>
 #include <linux/splice.h>
+#include <linux/mutex.h>
 
 #define PUMP_BUFFER_ORDER 2
 #define PUMP_BUFFER_SIZE (PAGE_SIZE << PUMP_BUFFER_ORDER)
 
 struct scribe_dev {
 	struct scribe_context *ctx;
+	struct mutex lock_read;
+	struct mutex lock_write;
 	struct task_struct *kthread_event_pump;
 	char *pump_buffer;
 	struct file *log_file;
@@ -574,12 +577,6 @@ static ssize_t dev_write(struct file *file,
 	size_t to_copy;
 	ssize_t ret;
 
-	/*
-	 * FIXME need a mutex around here:
-	 * calling dev_write() from two different threads would break things
-	 * up, e.g. in stop_event_pump()
-	 */
-
 	if (count < sizeof(type))
 		return -EINVAL;
 	if (get_user(type, buf))
@@ -604,7 +601,9 @@ static ssize_t dev_write(struct file *file,
 	}
 	event->type = type; /* guard against TOCTTOU */
 
+	mutex_lock(&dev->lock_write);
 	ret = handle_command(dev, event);
+	mutex_unlock(&dev->lock_write);
 
 	scribe_free_event(event);
 	if (ret)
@@ -619,9 +618,9 @@ static ssize_t dev_read(struct file *file,
 	struct scribe_context *ctx = dev->ctx;
 	struct scribe_event *event;
 	ssize_t ret;
-	size_t to_copy;
+	size_t to_copy = 0;
 
-	/* FIXME protect this with a mutex */
+	mutex_lock(&dev->lock_read);
 
 	if (dev->pending_notification_event) {
 		event = dev->pending_notification_event;
@@ -632,23 +631,28 @@ static ssize_t dev_read(struct file *file,
 		if (IS_ERR(event)) {
 			ret = PTR_ERR(event);
 			if (ret == -EINTR)
-				return -ERESTARTSYS;
-			return ret;
+				ret = -ERESTARTSYS;
+			goto out;
 		}
 	}
 
 	dev->pending_notification_event = event;
 
 	to_copy = sizeof_event(event);
+	ret = -EINVAL;
 	if (count < to_copy)
-		return -EINVAL;
-
+		goto out;
+	ret = -EFAULT;
 	if (copy_to_user(buf, get_event_payload(event), to_copy))
-		return -EFAULT;
+		goto out;
 
 	scribe_free_event(dev->pending_notification_event);
 	dev->pending_notification_event = NULL;
 
+out:
+	mutex_unlock(&dev->lock_read);
+	if (ret)
+		return ret;
 	return to_copy;
 }
 
@@ -661,6 +665,9 @@ static int dev_open(struct inode *inode, struct file *file)
 	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
 	if (!dev)
 		goto out;
+
+	mutex_init(&dev->lock_read);
+	mutex_init(&dev->lock_write);
 
 	dev->ctx = scribe_alloc_context();
 	if (!dev->ctx)
@@ -677,6 +684,8 @@ static int dev_open(struct inode *inode, struct file *file)
 out_ctx:
 	scribe_exit_context(dev->ctx);
 out_dev:
+	mutex_destroy(&dev->lock_read);
+	mutex_destroy(&dev->lock_write);
 	kfree(dev);
 out:
 	return ret;
@@ -691,6 +700,8 @@ static int dev_release(struct inode *inode, struct file *file)
 	if (dev->pending_notification_event)
 		scribe_free_event(dev->pending_notification_event);
 	scribe_exit_context(dev->ctx);
+	mutex_destroy(&dev->lock_read);
+	mutex_destroy(&dev->lock_write);
 	kfree(dev);
 	return 0;
 }
