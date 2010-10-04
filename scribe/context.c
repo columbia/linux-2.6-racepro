@@ -221,15 +221,22 @@ static int context_start(struct scribe_context *ctx, int action)
 
 static int context_stop(struct scribe_context *ctx)
 {
+	int ret = 0;
 	if (ctx->flags & SCRIBE_STOP)
 		return 0;
 
 	spin_lock(&ctx->tasks_lock);
-	if (ctx->flags == SCRIBE_IDLE) {
-		spin_unlock(&ctx->tasks_lock);
-		return -EPERM;
-	}
-	ctx->flags &= SCRIBE_STOP;
+	if (ctx->flags == SCRIBE_IDLE)
+		ret = -EPERM;
+	else if (list_empty(&ctx->tasks)) {
+		/*
+		 * We are stopping without even starting (otherwise the state
+		 * of the context would be set to SCRIBE_IDLE), we are not
+		 * sending the CONTEXT_IDLE event in that case.
+		 */
+		ctx->flags = SCRIBE_IDLE;
+	} else
+		ctx->flags &= SCRIBE_STOP;
 	spin_unlock(&ctx->tasks_lock);
 
 	return 0;
@@ -237,16 +244,11 @@ static int context_stop(struct scribe_context *ctx)
 
 int scribe_set_state(struct scribe_context *ctx, int state)
 {
-	if (state & ~(SCRIBE_RECORD | SCRIBE_REPLAY | SCRIBE_STOP))
-		return -EINVAL;
-
-	if (state & SCRIBE_STOP)
+	if ((state & SCRIBE_STOP) == state)
 		return context_stop(ctx);
-
-	if ((state & SCRIBE_RECORD) && (state & SCRIBE_REPLAY))
-		return -EINVAL;
-
-	if (state)
+	if ((state & SCRIBE_RECORD) == state)
+		return context_start(ctx, state);
+	if ((state & SCRIBE_REPLAY) == state)
 		return context_start(ctx, state);
 
 	return -EINVAL;

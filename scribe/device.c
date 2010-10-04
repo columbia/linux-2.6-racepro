@@ -24,6 +24,7 @@
 
 struct scribe_dev {
 	struct scribe_context *ctx;
+	struct task_struct *kthread_event_pump;
 	char *pump_buffer;
 	struct file *log_file;
 };
@@ -483,7 +484,7 @@ err:
  * want it to immediately return to work, and the actual serialization will
  * happen on another CPU.
  */
-int kthread_event_pump(void *_dev)
+static int kthread_event_pump(void *_dev)
 {
 	struct scribe_dev *dev = _dev;
 	struct scribe_context *ctx = dev->ctx;
@@ -495,13 +496,119 @@ int kthread_event_pump(void *_dev)
 	else
 		BUG();
 
+	fput(dev->log_file);
+
 	do_exit(0);
+}
+
+static void stop_event_pump(struct scribe_dev *dev)
+{
+	if (!dev->kthread_event_pump)
+		return;
+
+	kthread_stop(dev->kthread_event_pump);
+	put_task_struct(dev->kthread_event_pump);
+	dev->kthread_event_pump = NULL;
+}
+
+static int do_start(struct scribe_dev *dev, int state, int log_fd)
+{
+	int ret;
+
+	stop_event_pump(dev);
+	dev->kthread_event_pump = kthread_create(kthread_event_pump, dev,
+						 "scribe%d", dev->ctx->id);
+	if (IS_ERR(dev->kthread_event_pump)) {
+		ret = PTR_ERR(dev->kthread_event_pump);
+		dev->kthread_event_pump = NULL;
+		goto err;
+	}
+	get_task_struct(dev->kthread_event_pump);
+
+	ret = -EBADF;
+	dev->log_file = fget(log_fd);
+	if (!dev->log_file)
+		goto err_kthread;
+
+	ret = scribe_set_state(dev->ctx, state);
+	if (ret)
+		goto err_file;
+
+	wake_up_process(dev->kthread_event_pump);
+	return 0;
+
+err_file:
+	fput(dev->log_file);
+err_kthread:
+	stop_event_pump(dev);
+err:
+	return ret;
+}
+
+static int handle_command(struct scribe_dev *dev, struct scribe_event *event)
+{
+	switch(event->type) {
+	case SCRIBE_EVENT_ATTACH_ON_EXECVE:
+		return scribe_set_attach_on_exec(dev->ctx,
+	          ((struct scribe_event_attach_on_execve *)event)->enable);
+	case SCRIBE_EVENT_RECORD:
+		return do_start(dev, SCRIBE_RECORD,
+				((struct scribe_event_record*)event)->log_fd);
+	case SCRIBE_EVENT_REPLAY:
+		return do_start(dev, SCRIBE_RECORD,
+				((struct scribe_event_record*)event)->log_fd);
+	case SCRIBE_EVENT_STOP:
+		return scribe_set_state(dev->ctx, SCRIBE_STOP);
+	default:
+		return -EINVAL;
+	}
 }
 
 static ssize_t dev_write(struct file *file,
 			 const char __user *buf, size_t count, loff_t *ppos)
 {
-	return 0;
+	struct scribe_dev *dev = file->private_data;
+	struct scribe_event *event;
+	typeof(event->type) type;
+	size_t to_copy;
+	ssize_t ret;
+
+	/*
+	 * FIXME need a mutex around here:
+	 * calling dev_write() from two different threads would break things
+	 * up, e.g. in stop_event_pump()
+	 */
+
+	if (count < sizeof(type))
+		return -EINVAL;
+	if (get_user(type, buf))
+		return -EFAULT;
+
+	if (type == SCRIBE_EVENT_DATA)
+		return -EINVAL;
+
+	event = scribe_alloc_event(type);
+	if (!event)
+		return -ENOMEM;
+
+	to_copy = sizeof_event_payload(event);
+	if (count < to_copy) {
+		scribe_free_event(event);
+		return -EINVAL;
+	}
+
+	if (copy_from_user(get_event_payload(event), buf, to_copy)) {
+		scribe_free_event(event);
+		return -EFAULT;
+	}
+	event->type = type; /* guard against TOCTTOU */
+
+	ret = handle_command(dev, event);
+
+	scribe_free_event(event);
+	if (ret)
+		return ret;
+	return to_copy;
 }
 
 static ssize_t dev_read(struct file *file,
@@ -544,6 +651,7 @@ static int dev_release(struct inode *inode, struct file *file)
 {
 	struct scribe_dev *dev = file->private_data;
 
+	stop_event_pump(dev);
 	free_pages((unsigned long)dev->pump_buffer, PUMP_BUFFER_ORDER);
 	scribe_exit_context(dev->ctx);
 	kfree(dev);

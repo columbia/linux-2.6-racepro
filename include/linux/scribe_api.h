@@ -41,6 +41,12 @@ enum scribe_event_type {
 	SCRIBE_EVENT_DATA,
 	SCRIBE_EVENT_SYSCALL,
 
+	/* userspace -> kernel commands */
+	SCRIBE_EVENT_ATTACH_ON_EXECVE,
+	SCRIBE_EVENT_RECORD,
+	SCRIBE_EVENT_REPLAY,
+	SCRIBE_EVENT_STOP,
+
 	/* kernel -> userspace notifications */
 	SCRIBE_EVENT_CONTEXT_IDLE
 };
@@ -56,6 +62,8 @@ struct scribe_event {
 #endif
 	__u8 type;
 } __attribute__((packed));
+
+/* Log file */
 
 #define struct_SCRIBE_EVENT_PID struct scribe_event_pid
 struct scribe_event_pid {
@@ -78,7 +86,35 @@ struct scribe_event_syscall {
 	__u32 ret; /* FIXME 64 bit support ? */
 } __attribute__((packed));
 
-/* Control/notification events */
+
+/* Commands */
+
+#define struct_SCRIBE_EVENT_ATTACH_ON_EXECVE \
+	struct scribe_event_attach_on_execve
+struct scribe_event_attach_on_execve {
+	struct scribe_event h;
+	__u8 enable;
+} __attribute__((packed));
+
+#define struct_SCRIBE_EVENT_RECORD struct scribe_event_record
+struct scribe_event_record {
+	struct scribe_event h;
+	__u32 log_fd;
+} __attribute__((packed));
+
+#define struct_SCRIBE_EVENT_REPLAY struct scribe_event_replay
+struct scribe_event_replay {
+	struct scribe_event h;
+	__u32 log_fd;
+} __attribute__((packed));
+
+#define struct_SCRIBE_EVENT_STOP struct scribe_event_stop
+struct scribe_event_stop {
+	struct scribe_event h;
+} __attribute__((packed));
+
+
+/* Notifications */
 
 #define struct_SCRIBE_EVENT_CONTEXT_IDLE struct scribe_event_context_idle
 struct scribe_event_context_idle {
@@ -99,7 +135,13 @@ static __always_inline size_t sizeof_event_from_type(__u8 type)
 	__TYPE(SCRIBE_EVENT_DATA);
 	__TYPE(SCRIBE_EVENT_SYSCALL);
 
+	__TYPE(SCRIBE_EVENT_ATTACH_ON_EXECVE);
+	__TYPE(SCRIBE_EVENT_RECORD);
+	__TYPE(SCRIBE_EVENT_REPLAY);
+	__TYPE(SCRIBE_EVENT_STOP);
+
 	__TYPE(SCRIBE_EVENT_CONTEXT_IDLE);
+
 #undef  __TYPE
 
 	if (__builtin_constant_p(type))
