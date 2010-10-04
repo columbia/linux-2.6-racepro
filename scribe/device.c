@@ -27,6 +27,7 @@ struct scribe_dev {
 	struct task_struct *kthread_event_pump;
 	char *pump_buffer;
 	struct file *log_file;
+	struct scribe_event *pending_notification_event;
 };
 
 static inline size_t sizeof_event_payload(struct scribe_event *event)
@@ -614,7 +615,41 @@ static ssize_t dev_write(struct file *file,
 static ssize_t dev_read(struct file *file,
 			char __user *buf, size_t count, loff_t * ppos)
 {
-	return 0;
+	struct scribe_dev *dev = file->private_data;
+	struct scribe_context *ctx = dev->ctx;
+	struct scribe_event *event;
+	ssize_t ret;
+	size_t to_copy;
+
+	/* FIXME protect this with a mutex */
+
+	if (dev->pending_notification_event) {
+		event = dev->pending_notification_event;
+		dev->pending_notification_event = NULL;
+	} else {
+		event = scribe_dequeue_event(ctx->notification_queue,
+					     SCRIBE_WAIT);
+		if (IS_ERR(event)) {
+			ret = PTR_ERR(event);
+			if (ret == -EINTR)
+				return -ERESTARTSYS;
+			return ret;
+		}
+	}
+
+	dev->pending_notification_event = event;
+
+	to_copy = sizeof_event(event);
+	if (count < to_copy)
+		return -EINVAL;
+
+	if (copy_to_user(buf, get_event_payload(event), to_copy))
+		return -EFAULT;
+
+	scribe_free_event(dev->pending_notification_event);
+	dev->pending_notification_event = NULL;
+
+	return to_copy;
 }
 
 static int dev_open(struct inode *inode, struct file *file)
@@ -653,6 +688,8 @@ static int dev_release(struct inode *inode, struct file *file)
 
 	stop_event_pump(dev);
 	free_pages((unsigned long)dev->pump_buffer, PUMP_BUFFER_ORDER);
+	if (dev->pending_notification_event)
+		scribe_free_event(dev->pending_notification_event);
 	scribe_exit_context(dev->ctx);
 	kfree(dev);
 	return 0;
