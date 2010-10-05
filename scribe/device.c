@@ -56,7 +56,7 @@ static inline int is_interrupted(int ret)
 
 /*
  * __get_non_empty_queue() try to find the the first non empty queue. It
- * returns 0 on success, -ENODEV if the queue list is empty and will
+ * returns 0 on success, -ENODATA if the queue list is empty and will
  * stay empty, -EAGAIN if at least one queue is present and all queues are
  * empty.
  *
@@ -99,7 +99,7 @@ static int __get_non_empty_queue(struct scribe_context *ctx,
 		 *   to wait.
 		 */
 		if (ctx->flags == SCRIBE_IDLE)
-			ret = -ENODEV;
+			ret = -ENODATA;
 	}
 
 	spin_unlock(&ctx->queues_lock);
@@ -121,15 +121,11 @@ static int get_non_empty_queue(struct scribe_context *ctx,
 		*current_queue = NULL;
 	}
 
-	if (wait == SCRIBE_WAIT) {
-		ret = wait_event_interruptible(ctx->queues_wait,
-			__get_non_empty_queue(ctx, &queue) != -EAGAIN);
-
-		if (ret)
-			ret = -EINTR;
-	} else { /* SCRIBE_NO_WAIT */
+	if (wait == SCRIBE_WAIT)
+		wait_event(ctx->queues_wait,
+			(ret = __get_non_empty_queue(ctx, &queue)) != -EAGAIN);
+	else /* SCRIBE_NO_WAIT */
 		ret = __get_non_empty_queue(ctx, &queue);
-	}
 
 	if (ret)
 		return ret;
@@ -187,11 +183,11 @@ static ssize_t serialize_events(struct scribe_context *ctx,
 		err = get_non_empty_queue(ctx, current_queue, SCRIBE_WAIT);
 		if (err) {
 			/*
-			 * if err == -ENODEV, it means that the context is in
+			 * if err == -ENODATA, it means that the context is in
 			 * idle state and that the queue list is empty.
 			 * It's time for EOF
 			 */
-			if (err == -ENODEV)
+			if (err == -ENODATA)
 				err = 0;
 			goto out;
 		}
@@ -230,9 +226,9 @@ static ssize_t serialize_events(struct scribe_context *ctx,
 	}
 
 out:
-	if (err)
-		return err;
-	return ret;
+	if (ret)
+		return ret;
+	return err;
 }
 
 static void event_pump_record(struct scribe_context *ctx,
@@ -281,7 +277,7 @@ free:
 		scribe_free_event(pending_event);
 	return;
 err:
-	scribe_emergency_stop(ctx, -ret);
+	scribe_emergency_stop(ctx, ret);
 	goto free;
 }
 
@@ -387,7 +383,6 @@ static ssize_t deserialize_events(struct scribe_context *ctx,
 			err = handle_event_pid(ctx, event,
 					       current_queue, pre_alloc_queue);
 			scribe_free_event(event);
-			event = NULL;
 			if (err)
 				goto out;
 		} else { /* generic event handling */
@@ -401,11 +396,9 @@ static ssize_t deserialize_events(struct scribe_context *ctx,
 	}
 
 out:
-	if (event)
-		scribe_free_event(event);
-	if (err)
-		return err;
-	return ret;
+	if (ret)
+		return ret;
+	return err;
 }
 
 /*
@@ -478,7 +471,7 @@ free:
 		scribe_free_event(pending_event);
 	return;
 err:
-	scribe_emergency_stop(ctx, -ret);
+	scribe_emergency_stop(ctx, ret);
 	goto free;
 }
 
@@ -515,6 +508,8 @@ static void stop_event_pump(struct scribe_dev *dev)
 {
 	if (!dev->kthread_event_pump)
 		return;
+
+	scribe_emergency_stop(dev->ctx, -EINTR);
 
 	kthread_stop(dev->kthread_event_pump);
 	put_task_struct(dev->kthread_event_pump);
@@ -557,16 +552,16 @@ err:
 
 static int handle_command(struct scribe_dev *dev, struct scribe_event *event)
 {
-	switch(event->type) {
+	switch (event->type) {
 	case SCRIBE_EVENT_ATTACH_ON_EXECVE:
 		return scribe_set_attach_on_exec(dev->ctx,
-	          ((struct scribe_event_attach_on_execve *)event)->enable);
+		      ((struct scribe_event_attach_on_execve *)event)->enable);
 	case SCRIBE_EVENT_RECORD:
 		return do_start(dev, SCRIBE_RECORD,
-				((struct scribe_event_record*)event)->log_fd);
+				((struct scribe_event_record *)event)->log_fd);
 	case SCRIBE_EVENT_REPLAY:
-		return do_start(dev, SCRIBE_RECORD,
-				((struct scribe_event_record*)event)->log_fd);
+		return do_start(dev, SCRIBE_REPLAY,
+				((struct scribe_event_replay *)event)->log_fd);
 	case SCRIBE_EVENT_STOP:
 		return scribe_set_state(dev->ctx, SCRIBE_STOP);
 	default:
@@ -654,6 +649,7 @@ static ssize_t dev_read(struct file *file,
 
 	scribe_free_event(dev->pending_notification_event);
 	dev->pending_notification_event = NULL;
+	ret = 0;
 
 out:
 	mutex_unlock(&dev->lock_read);

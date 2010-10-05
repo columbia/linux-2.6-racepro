@@ -120,7 +120,6 @@ struct scribe_context *scribe_alloc_context(void)
 	ctx->notification_queue = scribe_alloc_event_queue();
 	if (!ctx->notification_queue)
 		goto err_ctx;
-	scribe_make_persistent(ctx->notification_queue, 0);
 
 	if (register_proc(ctx))
 		goto err_queue;

@@ -252,7 +252,7 @@ retry:
 		 * There is no point waiting.
 		 */
 		if (queue->flags & SCRIBE_WONT_GROW)
-			return ERR_PTR(-ENODEV);
+			return ERR_PTR(-ENODATA);
 		if (wait)
 			goto retry;
 		return ERR_PTR(-EAGAIN);
