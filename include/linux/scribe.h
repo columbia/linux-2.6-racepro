@@ -27,10 +27,6 @@ struct task_struct;
 
 /* Context stuff */
 
-#ifdef CONFIG_PROC_FS
-extern struct proc_dir_entry *scribe_proc_root;
-#endif
-
 struct scribe_context {
 	atomic_t ref_cnt;
 	int id;
@@ -46,10 +42,6 @@ struct scribe_context {
 
 	struct scribe_event_queue *notification_queue;
 	int idle_error;
-
-#ifdef CONFIG_PROC_FS
-	struct proc_dir_entry *proc_entry;
-#endif
 };
 
 static inline void scribe_get_context(struct scribe_context *ctx)
