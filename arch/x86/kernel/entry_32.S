@@ -455,8 +455,16 @@ sysenter_past_esp:
 sysenter_do_call:
 	cmpl $(nr_syscalls), %eax
 	jae syscall_badsys
+
+	movl %esp,%eax
+	call scribe_enter_syscall
+	movl PT_ORIG_EAX(%esp), %eax
 	call *sys_call_table(,%eax,4)
 	movl %eax,PT_EAX(%esp)
+	movl %esp,%eax
+	call scribe_exit_syscall
+	movl PT_EAX(%esp), %eax
+
 	LOCKDEP_SYS_EXIT
 	DISABLE_INTERRUPTS(CLBR_ANY)
 	TRACE_IRQS_OFF
@@ -539,8 +547,15 @@ ENTRY(system_call)
 	cmpl $(nr_syscalls), %eax
 	jae syscall_badsys
 syscall_call:
+
+	movl %esp,%eax
+	call scribe_enter_syscall
+	movl PT_ORIG_EAX(%esp), %eax
 	call *sys_call_table(,%eax,4)
 	movl %eax,PT_EAX(%esp)		# store the return value
+	movl %esp,%eax
+	call scribe_exit_syscall
+
 syscall_exit:
 	LOCKDEP_SYS_EXIT
 	DISABLE_INTERRUPTS(CLBR_ANY)	# make sure we don't miss an interrupt
