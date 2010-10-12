@@ -147,7 +147,7 @@ int scribe_set_attach_on_exec(struct scribe_context *ctx, int enable)
 	struct task_struct *p = current;
 	int ret;
 
-	if (is_ps_scribbed(p))
+	if (is_ps_scribed(p))
 		return -EPERM;
 
 	if (ctx->flags == SCRIBE_IDLE)
@@ -191,7 +191,7 @@ void scribe_attach(struct scribe_ps *scribe)
 
 	spin_lock(&ctx->tasks_lock);
 	BUG_ON(!(ctx->flags & (SCRIBE_RECORD | SCRIBE_REPLAY)));
-	BUG_ON(is_scribbed(scribe));
+	BUG_ON(is_scribed(scribe));
 
 	if (unlikely(ctx->flags == SCRIBE_IDLE)) {
 		spin_unlock(&ctx->tasks_lock);
@@ -253,7 +253,7 @@ void scribe_attach(struct scribe_ps *scribe)
 void scribe_detach(struct scribe_ps *scribe)
 {
 	struct scribe_context *ctx = scribe->ctx;
-	BUG_ON(!is_scribbed(scribe));
+	BUG_ON(!is_scribed(scribe));
 
 	spin_lock(&ctx->tasks_lock);
 	list_del(&scribe->node);

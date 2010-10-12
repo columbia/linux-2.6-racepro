@@ -991,7 +991,7 @@ err:
 
 int copy_scribe(unsigned long long clone_flags, struct task_struct *p)
 {
-	if (!is_scribbed(current->scribe))
+	if (!is_scribed(current->scribe))
 		return 0;
 
 	/*

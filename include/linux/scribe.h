@@ -79,7 +79,7 @@ struct scribe_ps {
 	struct scribe_event_queue *queue;
 };
 
-static inline int is_scribbed(struct scribe_ps *scribe)
+static inline int is_scribed(struct scribe_ps *scribe)
 {
 	return scribe != NULL &&
 	       (scribe->flags & (SCRIBE_PS_RECORD | SCRIBE_PS_REPLAY));
@@ -96,7 +96,7 @@ static inline int is_replaying(struct scribe_ps *scribe)
 /* Using defines instead of inline functions so that we don't need
  * to include sched.h
  */
-#define is_ps_scribbed(t)  is_scribbed(t->scribe)
+#define is_ps_scribed(t)  is_scribed(t->scribe)
 #define is_ps_recording(t) is_recording(t->scribe)
 #define is_ps_replaying(t) is_replaying(t->scribe)
 
@@ -235,7 +235,7 @@ void scribe_free_event(void *event);
 
 #else /* CONFIG_SCRIBE */
 
-#define is_ps_scribbed(t)  0
+#define is_ps_scribed(t)  0
 #define is_ps_recording(t) 0
 #define is_ps_replaying(t) 0
 

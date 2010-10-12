@@ -16,7 +16,7 @@ void scribe_enter_syscall(struct pt_regs *regs)
 	struct scribe_ps *scribe = current->scribe;
 	int nr;
 
-	if (!is_scribbed(scribe))
+	if (!is_scribed(scribe))
 		return;
 
 	nr = regs->orig_ax;
@@ -28,7 +28,7 @@ void scribe_exit_syscall(struct pt_regs *regs)
 	struct scribe_ps *scribe = current->scribe;
 	int nr;
 
-	if (!is_scribbed(scribe))
+	if (!is_scribed(scribe))
 		return;
 
 	nr = regs->orig_ax;

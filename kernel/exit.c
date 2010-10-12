@@ -894,7 +894,7 @@ void exit_scribe(struct task_struct *p)
 	if (!scribe)
 		return;
 
-	if (is_scribbed(scribe))
+	if (is_scribed(scribe))
 		scribe_detach(scribe);
 
 	if (scribe->pre_alloc_queue)
