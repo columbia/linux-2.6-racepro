@@ -185,13 +185,20 @@ void scribe_commit_insert_point(struct scribe_insert_point *ip)
 
 	spin_lock(&queue->lock);
 	list_splice_tail(&ip->events, &next_ip->events);
-	list_del(&ip->node);
+	list_del_init(&ip->node);
 	spin_unlock(&queue->lock);
 
 	if (next_ip == &queue->master)
 		wake_up(queue->wait);
 }
 
+static void commit_pending_insert_points(struct scribe_event_queue *queue)
+{
+	struct scribe_insert_point *ip, *tmp;
+
+	list_for_each_entry_safe(ip, tmp, &queue->master.node, node)
+		scribe_commit_insert_point(ip);
+}
 
 static inline void __scribe_queue_event_at(struct scribe_event_queue *queue,
 					   struct scribe_insert_point *where,
@@ -275,6 +282,7 @@ int scribe_is_queue_empty(struct scribe_event_queue *queue)
 
 void scribe_set_queue_wont_grow(struct scribe_event_queue *queue)
 {
+	commit_pending_insert_points(queue);
 	queue->flags |= SCRIBE_WONT_GROW;
 	wake_up(queue->wait);
 }
