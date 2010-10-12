@@ -59,53 +59,6 @@ extern void scribe_emergency_stop(struct scribe_context *ctx, int reason);
 extern void scribe_exit_context(struct scribe_context *ctx);
 extern int scribe_set_state(struct scribe_context *ctx, int state);
 
-#define SCRIBE_PS_RECORD	0x00000001
-#define SCRIBE_PS_REPLAY	0x00000002
-#define SCRIBE_PS_ATTACH_ON_EXEC 0x00000004
-
-struct scribe_event_queue;
-struct scribe_ps {
-	struct list_head node;
-
-	/*
-	 * The two next fields should only be accessed by
-	 * the current process.
-	 */
-	int flags;
-	struct scribe_context *ctx;
-
-	struct task_struct *p;
-	struct scribe_event_queue *pre_alloc_queue;
-	struct scribe_event_queue *queue;
-};
-
-static inline int is_scribed(struct scribe_ps *scribe)
-{
-	return scribe != NULL &&
-	       (scribe->flags & (SCRIBE_PS_RECORD | SCRIBE_PS_REPLAY));
-}
-static inline int is_recording(struct scribe_ps *scribe)
-{
-	return scribe != NULL && (scribe->flags & SCRIBE_PS_RECORD);
-}
-static inline int is_replaying(struct scribe_ps *scribe)
-{
-	return scribe != NULL && (scribe->flags & SCRIBE_PS_REPLAY);
-}
-
-/* Using defines instead of inline functions so that we don't need
- * to include sched.h
- */
-#define is_ps_scribed(t)  is_scribed(t->scribe)
-#define is_ps_recording(t) is_recording(t->scribe)
-#define is_ps_replaying(t) is_replaying(t->scribe)
-
-extern int init_scribe(struct task_struct *p, struct scribe_context *ctx);
-extern void exit_scribe(struct task_struct *p);
-
-extern int scribe_set_attach_on_exec(struct scribe_context *ctx, int enable);
-extern void scribe_attach(struct scribe_ps *scribe);
-extern void scribe_detach(struct scribe_ps *scribe);
 
 /* Events */
 
@@ -232,6 +185,65 @@ static __always_inline void *scribe_alloc_event(__u8 type)
 	return __scribe_alloc_event(type);
 }
 void scribe_free_event(void *event);
+
+
+/* Per-process state */
+
+#define SCRIBE_PS_RECORD	0x00000001
+#define SCRIBE_PS_REPLAY	0x00000002
+#define SCRIBE_PS_ATTACH_ON_EXEC 0x00000004
+
+struct scribe_event_queue;
+struct scribe_ps {
+	struct list_head node;
+
+	/*
+	 * The two next fields should only be accessed by
+	 * the current process.
+	 */
+	int flags;
+	struct scribe_context *ctx;
+
+	struct task_struct *p;
+	struct scribe_event_queue *pre_alloc_queue;
+	struct scribe_event_queue *queue;
+
+	struct scribe_insert_point syscall_ip;
+	int in_syscall;
+};
+
+static inline int is_scribed(struct scribe_ps *scribe)
+{
+	return scribe != NULL &&
+	       (scribe->flags & (SCRIBE_PS_RECORD | SCRIBE_PS_REPLAY));
+}
+static inline int is_recording(struct scribe_ps *scribe)
+{
+	return scribe != NULL && (scribe->flags & SCRIBE_PS_RECORD);
+}
+static inline int is_replaying(struct scribe_ps *scribe)
+{
+	return scribe != NULL && (scribe->flags & SCRIBE_PS_REPLAY);
+}
+static inline int is_stopping(struct scribe_ps *scribe)
+{
+	return scribe != NULL && scribe->ctx &&
+		(scribe->ctx->flags & SCRIBE_STOP);
+}
+
+/* Using defines instead of inline functions so that we don't need
+ * to include sched.h
+ */
+#define is_ps_scribed(t)  is_scribed(t->scribe)
+#define is_ps_recording(t) is_recording(t->scribe)
+#define is_ps_replaying(t) is_replaying(t->scribe)
+
+extern int init_scribe(struct task_struct *p, struct scribe_context *ctx);
+extern void exit_scribe(struct task_struct *p);
+
+extern int scribe_set_attach_on_exec(struct scribe_context *ctx, int enable);
+extern void scribe_attach(struct scribe_ps *scribe);
+extern void scribe_detach(struct scribe_ps *scribe);
 
 #else /* CONFIG_SCRIBE */
 

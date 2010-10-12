@@ -127,6 +127,8 @@ static int context_stop(struct scribe_context *ctx)
 		ctx->flags &= SCRIBE_STOP;
 	spin_unlock(&ctx->tasks_lock);
 
+	/* FIXME send a signal wakeup to tasks */
+
 	return ret;
 }
 
@@ -248,6 +250,8 @@ void scribe_attach(struct scribe_ps *scribe)
 	}
 
 	wake_up(&ctx->tasks_wait);
+
+	scribe->in_syscall = 0;
 }
 
 void scribe_detach(struct scribe_ps *scribe)
