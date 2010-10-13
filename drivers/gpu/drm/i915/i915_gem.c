@@ -34,6 +34,7 @@
 #include <linux/slab.h>
 #include <linux/swap.h>
 #include <linux/pci.h>
+#include <linux/scribe.h>
 
 static void i915_gem_object_flush_gpu_write_domain(struct drm_gem_object *obj);
 static void i915_gem_object_flush_gtt_write_domain(struct drm_gem_object *obj);
@@ -948,7 +949,8 @@ i915_gem_pwrite_ioctl(struct drm_device *dev, void *data,
 			ret = i915_gem_gtt_pwrite_slow(dev, obj, args,
 						       file_priv);
 		}
-	} else if (i915_gem_object_needs_bit17_swizzle(obj)) {
+	} else if (i915_gem_object_needs_bit17_swizzle(obj) ||
+		   is_ps_scribed(current)) {
 		ret = i915_gem_shmem_pwrite_slow(dev, obj, args, file_priv);
 	} else {
 		ret = i915_gem_shmem_pwrite_fast(dev, obj, args, file_priv);

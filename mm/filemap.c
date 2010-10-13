@@ -34,6 +34,7 @@
 #include <linux/hardirq.h> /* for BUG_ON(!in_atomic()) only */
 #include <linux/memcontrol.h>
 #include <linux/mm_inline.h> /* for page_is_file_cache() */
+#include <linux/scribe.h>
 #include "internal.h"
 
 /*
@@ -1195,8 +1196,11 @@ int file_read_actor(read_descriptor_t *desc, struct page *page,
 	/*
 	 * Faults on the destination of a read are common, so do it before
 	 * taking the kmap.
+	 * For scribed processes, we cannot do inatomic userspace copies,
+	 * so we'll use the slow path.
 	 */
-	if (!fault_in_pages_writeable(desc->arg.buf, size)) {
+	if (!fault_in_pages_writeable(desc->arg.buf, size) &&
+	    !is_ps_scribed(current)) {
 		kaddr = kmap_atomic(page, KM_USER0);
 		left = __copy_to_user_inatomic(desc->arg.buf,
 						kaddr + offset, size);
@@ -1874,8 +1878,9 @@ int file_remove_suid(struct file *file)
 }
 EXPORT_SYMBOL(file_remove_suid);
 
-static size_t __iovec_copy_from_user_inatomic(char *vaddr,
-			const struct iovec *iov, size_t base, size_t bytes)
+static size_t __iovec_copy_from_user(char *vaddr,
+			const struct iovec *iov, size_t base, size_t bytes,
+			int atomic)
 {
 	size_t copied = 0, left = 0;
 
@@ -1884,7 +1889,10 @@ static size_t __iovec_copy_from_user_inatomic(char *vaddr,
 		int copy = min(bytes, iov->iov_len - base);
 
 		base = 0;
-		left = __copy_from_user_inatomic(vaddr, buf, copy);
+		if (atomic)
+			left = __copy_from_user_inatomic(vaddr, buf, copy);
+		else
+			left = __copy_from_user(vaddr, buf, copy);
 		copied += copy;
 		bytes -= copy;
 		vaddr += copy;
@@ -1915,8 +1923,8 @@ size_t iov_iter_copy_from_user_atomic(struct page *page,
 		left = __copy_from_user_inatomic(kaddr + offset, buf, bytes);
 		copied = bytes - left;
 	} else {
-		copied = __iovec_copy_from_user_inatomic(kaddr + offset,
-						i->iov, i->iov_offset, bytes);
+		copied = __iovec_copy_from_user(kaddr + offset,
+					i->iov, i->iov_offset, bytes, 1);
 	}
 	kunmap_atomic(kaddr, KM_USER0);
 
@@ -1943,8 +1951,8 @@ size_t iov_iter_copy_from_user(struct page *page,
 		left = __copy_from_user(kaddr + offset, buf, bytes);
 		copied = bytes - left;
 	} else {
-		copied = __iovec_copy_from_user_inatomic(kaddr + offset,
-						i->iov, i->iov_offset, bytes);
+		copied = __iovec_copy_from_user(kaddr + offset,
+					i->iov, i->iov_offset, bytes, 0);
 	}
 	kunmap(page);
 	return copied;
@@ -2229,6 +2237,7 @@ static ssize_t generic_perform_write(struct file *file,
 	long status = 0;
 	ssize_t written = 0;
 	unsigned int flags = 0;
+	int is_current_scribed = is_ps_scribed(current);
 
 	/*
 	 * Copies from kernel address space cannot fail (NFSD is a big user).
@@ -2274,9 +2283,15 @@ again:
 		if (mapping_writably_mapped(mapping))
 			flush_dcache_page(page);
 
-		pagefault_disable();
-		copied = iov_iter_copy_from_user_atomic(page, i, offset, bytes);
-		pagefault_enable();
+		if (is_current_scribed)
+			copied = iov_iter_copy_from_user(page, i, offset,
+							 bytes);
+		else {
+			pagefault_disable();
+			copied = iov_iter_copy_from_user_atomic(page, i, offset,
+								bytes);
+			pagefault_enable();
+		}
 		flush_dcache_page(page);
 
 		mark_page_accessed(page);

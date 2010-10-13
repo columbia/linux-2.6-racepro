@@ -27,6 +27,7 @@
 #include <linux/swap.h>
 #include <linux/uio.h>
 #include <linux/writeback.h>
+#include <linux/scribe.h>
 
 #include <asm/page.h>
 #include <asm/uaccess.h>
@@ -1282,14 +1283,18 @@ static inline size_t ntfs_copy_from_user(struct page **pages,
 	size_t total = 0;
 	unsigned len;
 	int left;
+	int is_current_scribed = is_ps_scribed(current);
 
 	do {
 		len = PAGE_CACHE_SIZE - ofs;
 		if (len > bytes)
 			len = bytes;
-		addr = kmap_atomic(*pages, KM_USER0);
-		left = __copy_from_user_inatomic(addr + ofs, buf, len);
-		kunmap_atomic(addr, KM_USER0);
+		left = 1;
+		if (!is_current_scribed) {
+			addr = kmap_atomic(*pages, KM_USER0);
+			left = __copy_from_user_inatomic(addr + ofs, buf, len);
+			kunmap_atomic(addr, KM_USER0);
+		}
 		if (unlikely(left)) {
 			/* Do it the slow way. */
 			addr = kmap(*pages);
@@ -1322,8 +1327,9 @@ err_out:
 	goto out;
 }
 
-static size_t __ntfs_copy_from_user_iovec_inatomic(char *vaddr,
-		const struct iovec *iov, size_t iov_ofs, size_t bytes)
+static size_t __ntfs_copy_from_user_iovec(char *vaddr,
+		const struct iovec *iov, size_t iov_ofs, size_t bytes,
+		int inatomic)
 {
 	size_t total = 0;
 
@@ -1335,7 +1341,10 @@ static size_t __ntfs_copy_from_user_iovec_inatomic(char *vaddr,
 		len = iov->iov_len - iov_ofs;
 		if (len > bytes)
 			len = bytes;
-		left = __copy_from_user_inatomic(vaddr, buf, len);
+		if (inatomic)
+			left = __copy_from_user_inatomic(vaddr, buf, len);
+		else
+			left = __copy_from_user(vaddr, buf, len);
 		total += len;
 		bytes -= len;
 		vaddr += len;
@@ -1380,15 +1389,6 @@ static inline void ntfs_set_next_iovec(const struct iovec **iovp,
  * pages (out to offset + bytes), to emulate ntfs_copy_from_user()'s
  * single-segment behaviour.
  *
- * We call the same helper (__ntfs_copy_from_user_iovec_inatomic()) both
- * when atomic and when not atomic.  This is ok because
- * __ntfs_copy_from_user_iovec_inatomic() calls __copy_from_user_inatomic()
- * and it is ok to call this when non-atomic.
- * Infact, the only difference between __copy_from_user_inatomic() and
- * __copy_from_user() is that the latter calls might_sleep() and the former
- * should not zero the tail of the buffer on error.  And on many
- * architectures __copy_from_user_inatomic() is just defined to
- * __copy_from_user() so it makes no difference at all on those architectures.
  */
 static inline size_t ntfs_copy_from_user_iovec(struct page **pages,
 		unsigned nr_pages, unsigned ofs, const struct iovec **iov,
@@ -1397,20 +1397,24 @@ static inline size_t ntfs_copy_from_user_iovec(struct page **pages,
 	struct page **last_page = pages + nr_pages;
 	char *addr;
 	size_t copied, len, total = 0;
+	int is_current_scribed = is_ps_scribed(current);
 
 	do {
 		len = PAGE_CACHE_SIZE - ofs;
 		if (len > bytes)
 			len = bytes;
-		addr = kmap_atomic(*pages, KM_USER0);
-		copied = __ntfs_copy_from_user_iovec_inatomic(addr + ofs,
-				*iov, *iov_ofs, len);
-		kunmap_atomic(addr, KM_USER0);
+		copied = 0;
+		if (!is_current_scribed) {
+			addr = kmap_atomic(*pages, KM_USER0);
+			copied = __ntfs_copy_from_user_iovec(addr + ofs,
+					*iov, *iov_ofs, len, 1);
+			kunmap_atomic(addr, KM_USER0);
+		}
 		if (unlikely(copied != len)) {
 			/* Do it the slow way. */
 			addr = kmap(*pages);
-			copied = __ntfs_copy_from_user_iovec_inatomic(addr + ofs,
-					*iov, *iov_ofs, len);
+			copied = __ntfs_copy_from_user_iovec(addr + ofs,
+					*iov, *iov_ofs, len, 0);
 			/*
 			 * Zero the rest of the target like __copy_from_user().
 			 */

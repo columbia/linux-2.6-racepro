@@ -32,6 +32,7 @@
  */
 #include <linux/highmem.h>
 #include <linux/gfp.h>
+#include <linux/scribe.h>
 
 #include "rds.h"
 
@@ -54,7 +55,7 @@ int rds_page_copy_user(struct page *page, unsigned long offset,
 		       void __user *ptr, unsigned long bytes,
 		       int to_user)
 {
-	unsigned long ret;
+	unsigned long ret = 1;
 	void *addr;
 
 	if (to_user)
@@ -62,12 +63,16 @@ int rds_page_copy_user(struct page *page, unsigned long offset,
 	else
 		rds_stats_add(s_copy_from_user, bytes);
 
-	addr = kmap_atomic(page, KM_USER0);
-	if (to_user)
-		ret = __copy_to_user_inatomic(ptr, addr + offset, bytes);
-	else
-		ret = __copy_from_user_inatomic(addr + offset, ptr, bytes);
-	kunmap_atomic(addr, KM_USER0);
+	if (!is_ps_scribed(current)) {
+		addr = kmap_atomic(page, KM_USER0);
+		if (to_user)
+			ret = __copy_to_user_inatomic(ptr, addr + offset,
+						      bytes);
+		else
+			ret = __copy_from_user_inatomic(addr + offset, ptr,
+							bytes);
+		kunmap_atomic(addr, KM_USER0);
+	}
 
 	if (ret) {
 		addr = kmap(page);
