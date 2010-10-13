@@ -19,14 +19,14 @@ void scribe_post_uaccess(const void *data, size_t size, int flags)
 	struct scribe_event_data *event;
 	struct scribe_ps *scribe = current->scribe;
 
+	if (!is_scribed(scribe))
+		return;
+
 	/*
 	 * @size is the number of bytes that have been copied from/to
 	 * userspace. We do not care about bytes that would cause an -EFAULT.
 	 */
 	if (!size)
-		return;
-
-	if (!is_scribed(scribe))
 		return;
 
 	if (is_recording(scribe)) {
