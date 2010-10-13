@@ -252,6 +252,7 @@ void scribe_attach(struct scribe_ps *scribe)
 	wake_up(&ctx->tasks_wait);
 
 	scribe->in_syscall = 0;
+	scribe->data_flags = 0;
 }
 
 void scribe_detach(struct scribe_ps *scribe)

@@ -23,10 +23,10 @@ void scribe_enter_syscall(struct pt_regs *regs)
 		return;
 	}
 
-	if (is_recording(scribe)) {
+	if (is_recording(scribe))
 		scribe_create_insert_point(scribe->queue, &scribe->syscall_ip);
-	}
 	scribe->in_syscall = 1;
+	scribe_set_data_flags(scribe, 0);
 }
 
 void scribe_exit_syscall(struct pt_regs *regs)

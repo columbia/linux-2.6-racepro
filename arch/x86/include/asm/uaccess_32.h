@@ -82,8 +82,12 @@ __copy_to_user_inatomic(void __user *to, const void *from, unsigned long n)
 static __always_inline unsigned long __must_check
 __copy_to_user(void __user *to, const void *from, unsigned long n)
 {
+	unsigned long ret;
 	might_fault();
-	return __copy_to_user_inatomic(to, from, n);
+	scribe_pre_uaccess();
+	ret = __copy_to_user_inatomic(to, from, n);
+	scribe_post_uaccess(from, n - ret, 0);
+	return ret;
 }
 
 static __always_inline unsigned long
@@ -137,23 +141,27 @@ __copy_from_user_inatomic(void *to, const void __user *from, unsigned long n)
 static __always_inline unsigned long
 __copy_from_user(void *to, const void __user *from, unsigned long n)
 {
+	unsigned long ret;
 	might_fault();
+	scribe_pre_uaccess();
 	if (__builtin_constant_p(n)) {
-		unsigned long ret;
-
 		switch (n) {
 		case 1:
 			__get_user_size(*(u8 *)to, from, 1, ret, 1);
-			return ret;
+			break;
 		case 2:
 			__get_user_size(*(u16 *)to, from, 2, ret, 2);
-			return ret;
+			break;
 		case 4:
 			__get_user_size(*(u32 *)to, from, 4, ret, 4);
-			return ret;
+			break;
+		default:
+			ret = __copy_from_user_ll(to, from, n);
 		}
-	}
-	return __copy_from_user_ll(to, from, n);
+	} else
+		ret = __copy_from_user_ll(to, from, n);
+	scribe_post_uaccess(to, n - ret, SCRIBE_DATA_INPUT);
+	return ret;
 }
 
 static __always_inline unsigned long __copy_from_user_nocache(void *to,

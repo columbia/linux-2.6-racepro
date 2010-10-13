@@ -14,12 +14,12 @@
 
 #ifdef CONFIG_SCRIBE
 
+#include <linux/scribe_api.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/list.h>
 #include <linux/wait.h>
 #include <asm/atomic.h>
-#include <linux/scribe_api.h>
 #include <linux/slab.h>
 
 struct proc_dir_entry;
@@ -210,6 +210,8 @@ struct scribe_ps {
 
 	struct scribe_insert_point syscall_ip;
 	int in_syscall;
+
+	int data_flags;
 };
 
 static inline int is_scribed(struct scribe_ps *scribe)
@@ -244,6 +246,10 @@ extern void exit_scribe(struct task_struct *p);
 extern int scribe_set_attach_on_exec(struct scribe_context *ctx, int enable);
 extern void scribe_attach(struct scribe_ps *scribe);
 extern void scribe_detach(struct scribe_ps *scribe);
+
+extern void scribe_pre_uaccess(void);
+extern void scribe_post_uaccess(const void *data, size_t size, int flags);
+extern void scribe_set_data_flags(struct scribe_ps *scribe, int flags);
 
 #else /* CONFIG_SCRIBE */
 
