@@ -384,7 +384,7 @@ extern void add_page_wait_queue(struct page *page, wait_queue_t *waiter);
  * This assumes that two userspace pages are always sufficient.  That's
  * not true if PAGE_CACHE_SIZE > PAGE_SIZE.
  */
-static inline int fault_in_pages_writeable(char __user *uaddr, int size)
+static inline int __fault_in_pages_writeable(char __user *uaddr, int size)
 {
 	int ret;
 
@@ -410,7 +410,7 @@ static inline int fault_in_pages_writeable(char __user *uaddr, int size)
 	return ret;
 }
 
-static inline int fault_in_pages_readable(const char __user *uaddr, int size)
+static inline int __fault_in_pages_readable(const char __user *uaddr, int size)
 {
 	volatile char c;
 	int ret;
@@ -428,6 +428,25 @@ static inline int fault_in_pages_readable(const char __user *uaddr, int size)
 	}
 	return ret;
 }
+
+#ifdef CONFIG_SCRIBE
+/*
+ * FIXME For now we don't want to do it inline with scribe because it would
+ * require us to include <linux/scribe.h>, which create kernel compilation
+ * painful.
+ */
+extern int fault_in_pages_writeable(char __user *uaddr, int size);
+extern int fault_in_pages_readable(char __user *uaddr, int size);
+#else /* CONFIG_SCRIBE */
+static inline int fault_in_pages_writeable(char __user *uaddr, int size)
+{
+	return __fault_in_pages_writeable(uaddr, size);
+}
+static inline int fault_in_pages_readable(const char __user *uaddr, int size)
+{
+	return fault_in_pages_readable(uaddr, size);
+}
+#endif /* CONFIG_SCRIBE */
 
 int add_to_page_cache_locked(struct page *page, struct address_space *mapping,
 				pgoff_t index, gfp_t gfp_mask);

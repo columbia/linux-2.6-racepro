@@ -10,6 +10,7 @@
 #include <linux/scribe.h>
 #include <linux/sched.h>
 #include <linux/hardirq.h>
+#include <linux/pagemap.h>
 
 void __scribe_allow_uaccess(struct scribe_ps *scribe)
 {
@@ -145,4 +146,38 @@ void scribe_post_schedule(void)
 	struct scribe_ps *scribe = current->scribe;
 	if (!is_scribed(scribe))
 		return;
+}
+
+int fault_in_pages_writeable(char __user *uaddr, int size)
+{
+	struct scribe_ps *scribe = current->scribe;
+	int data_flags = 0;
+	int ret;
+
+	if (scribe) {
+		data_flags = scribe_get_data_flags(scribe);
+		scribe_set_data_flags(scribe, SCRIBE_DATA_DONT_RECORD);
+	}
+	ret = __fault_in_pages_writeable(uaddr, size);
+	if (scribe)
+		scribe_set_data_flags(scribe, data_flags);
+
+	return ret;
+}
+
+int fault_in_pages_readable(char __user *uaddr, int size)
+{
+	struct scribe_ps *scribe = current->scribe;
+	int data_flags = 0;
+	int ret;
+
+	if (scribe) {
+		data_flags = scribe_get_data_flags(scribe);
+		scribe_set_data_flags(scribe, SCRIBE_DATA_DONT_RECORD);
+	}
+	ret = __fault_in_pages_readable(uaddr, size);
+	if (scribe)
+		scribe_set_data_flags(scribe, data_flags);
+
+	return ret;
 }
