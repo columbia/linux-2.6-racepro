@@ -66,7 +66,7 @@ void scribe_emergency_stop(struct scribe_context *ctx, int error)
 	 * The tasks list is most likely to be empty by now.
 	 * If it's not empty, it means that the userspace monitor process has
 	 * gone missing. We'll kill all the scribed tasks because we cannot
-	 * guarantee that they can continue (no more events).
+	 * guarantee that they can continue properly.
 	 */
 	if (unlikely(!list_empty(&ctx->tasks))) {
 		printk(KERN_WARNING "scribe: emergency stop (context=%d)\n",
@@ -80,6 +80,15 @@ void scribe_emergency_stop(struct scribe_context *ctx, int error)
 		spin_lock(&ctx->tasks_lock);
 	}
 	spin_unlock(&ctx->tasks_lock);
+
+	/*
+	 * If the current process called emergency_stop(), we must detach
+	 * ourselves, and die in peace. We cannot call do_exit() here because
+	 * we don't know the context, we may be holding locks for example.
+	 */
+	scribe = current->scribe;
+	if (is_scribed(scribe) && scribe->ctx == ctx)
+		scribe_detach(scribe);
 }
 
 void scribe_exit_context(struct scribe_context *ctx)
@@ -208,7 +217,7 @@ void scribe_attach(struct scribe_ps *scribe)
 		 *
 		 * 2) copy_process() was about to attach a child, when
 		 * suddenly scribe_exit_context() got called and distributed
-		 * some SIG_KILLs, but only to the parent, which is why we
+		 * some SIGKILLs, but only to the parent, which is why we
 		 * need to do our own cleanup.
 		 */
 		spin_lock(&ctx->queues_lock);
@@ -253,12 +262,17 @@ void scribe_attach(struct scribe_ps *scribe)
 
 	scribe->in_syscall = 0;
 	scribe->data_flags = 0;
+	scribe->pre_alloc_data_event = NULL;
+	scribe->can_uaccess = 0;
 }
 
 void scribe_detach(struct scribe_ps *scribe)
 {
 	struct scribe_context *ctx = scribe->ctx;
 	BUG_ON(!is_scribed(scribe));
+
+	if (scribe->pre_alloc_data_event)
+		scribe_free_event(scribe->pre_alloc_data_event);
 
 	spin_lock(&ctx->tasks_lock);
 	list_del(&scribe->node);

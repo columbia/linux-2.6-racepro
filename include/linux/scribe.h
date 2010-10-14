@@ -211,7 +211,9 @@ struct scribe_ps {
 	struct scribe_insert_point syscall_ip;
 	int in_syscall;
 
+	struct scribe_event_data *pre_alloc_data_event;
 	int data_flags;
+	int can_uaccess;
 };
 
 static inline int is_scribed(struct scribe_ps *scribe)
@@ -247,10 +249,27 @@ extern int scribe_set_attach_on_exec(struct scribe_context *ctx, int enable);
 extern void scribe_attach(struct scribe_ps *scribe);
 extern void scribe_detach(struct scribe_ps *scribe);
 
-extern void scribe_pre_uaccess(void);
-extern void scribe_post_uaccess(const void *data, size_t size,
-				const void __user *user_ptr, int flags);
-extern void scribe_set_data_flags(struct scribe_ps *scribe, int flags);
+extern void __scribe_allow_uaccess(struct scribe_ps *scribe);
+extern void __scribe_forbid_uaccess(struct scribe_ps *scribe);
+extern void scribe_allow_uaccess(void);
+extern void scribe_forbid_uaccess(void);
+extern void scribe_pre_alloc_data_event(size_t pre_alloc_size);
+
+#define SCRIBE_DATA_INPUT		1
+#define SCRIBE_DATA_STRING		2
+#define SCRIBE_DATA_NON_DETERMINISTIC	4
+#define SCRIBE_DATA_DONT_RECORD		8
+static inline void scribe_set_data_flags(struct scribe_ps *scribe, int flags)
+{
+	scribe->data_flags = flags;
+}
+static inline int scribe_get_data_flags(struct scribe_ps *scribe)
+{
+	return scribe->data_flags;
+}
+
+extern void scribe_pre_schedule(void);
+extern void scribe_post_schedule(void);
 
 #else /* CONFIG_SCRIBE */
 
@@ -261,6 +280,12 @@ extern void scribe_set_data_flags(struct scribe_ps *scribe, int flags);
 static inline int init_scribe(struct task_struct *p,
 			      struct scribe_context *ctx) { return 0; }
 static inline void exit_scribe(struct task_struct *tsk) {}
+
+static inline void scribe_allow_uaccess(void) {}
+static inline void scribe_forbid_uaccess(void) {}
+static inline void scribe_pre_alloc_data_event(size_t pre_alloc_size) {}
+static inline void scribe_pre_schedule(void) {}
+static inline void scribe_post_schedule(void) {}
 
 #endif /* CONFIG_SCRIBE */
 

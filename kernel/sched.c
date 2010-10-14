@@ -72,6 +72,7 @@
 #include <linux/ctype.h>
 #include <linux/ftrace.h>
 #include <linux/slab.h>
+#include <linux/scribe.h>
 
 #include <asm/tlb.h>
 #include <asm/irq_regs.h>
@@ -3592,6 +3593,8 @@ asmlinkage void __sched schedule(void)
 	struct rq *rq;
 	int cpu;
 
+	scribe_pre_schedule();
+
 need_resched:
 	preempt_disable();
 	cpu = smp_processor_id();
@@ -3656,6 +3659,8 @@ need_resched_nonpreemptible:
 	preempt_enable_no_resched();
 	if (need_resched())
 		goto need_resched;
+
+	scribe_post_schedule();
 }
 EXPORT_SYMBOL(schedule);
 

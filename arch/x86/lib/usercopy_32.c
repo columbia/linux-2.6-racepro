@@ -11,6 +11,7 @@
 #include <linux/module.h>
 #include <linux/backing-dev.h>
 #include <linux/interrupt.h>
+#include <linux/scribe.h>
 #include <asm/uaccess.h>
 #include <asm/mmx.h>
 
@@ -40,7 +41,8 @@ static inline int __movsl_is_ok(unsigned long a1, unsigned long a2, unsigned lon
 do {									   \
 	int __d0, __d1, __d2;						   \
 	might_fault();							   \
-	scribe_pre_uaccess();						   \
+	scribe_pre_uaccess(dst, src, count,				   \
+			   SCRIBE_DATA_INPUT | SCRIBE_DATA_STRING);        \
 	__asm__ __volatile__(						   \
 		"	testl %1,%1\n"					   \
 		"	jz 2f\n"					   \
@@ -61,8 +63,8 @@ do {									   \
 		  "=&D" (__d2)						   \
 		: "i"(-EFAULT), "0"(count), "1"(count), "3"(src), "4"(dst) \
 		: "memory");						   \
-	scribe_post_uaccess(dst, res < 0 ? 0 : res,			   \
-			    src, SCRIBE_DATA_INPUT | SCRIBE_DATA_STRING);  \
+	scribe_post_uaccess(dst, src, res < 0 ? 0 : res,		   \
+			    SCRIBE_DATA_INPUT | SCRIBE_DATA_STRING);       \
 } while (0)
 
 /**
@@ -130,7 +132,7 @@ EXPORT_SYMBOL(strncpy_from_user);
 do {									\
 	int __d0;							\
 	might_fault();							\
-	scribe_pre_uaccess();						\
+	scribe_allow_uaccess();						\
 	__asm__ __volatile__(						\
 		"0:	rep; stosl\n"					\
 		"	movl %2,%0\n"					\
@@ -144,7 +146,7 @@ do {									\
 		_ASM_EXTABLE(1b,2b)					\
 		: "=&c"(size), "=&D" (__d0)				\
 		: "r"(size & 3), "0"(size / 4), "1"(addr), "a"(0));	\
-	scribe_post_uaccess(NULL, 0, addr, 0);				\
+	scribe_forbid_uaccess();					\
 } while (0)
 
 /**
@@ -203,7 +205,8 @@ long strnlen_user(const char __user *s, long n)
 	unsigned long res, tmp;
 
 	might_fault();
-	scribe_pre_uaccess();
+
+	scribe_allow_uaccess();
 	__asm__ __volatile__(
 		"	testl %0, %0\n"
 		"	jz 3f\n"
@@ -226,7 +229,7 @@ long strnlen_user(const char __user *s, long n)
 		:"=&r" (n), "=&D" (s), "=&a" (res), "=&c" (tmp)
 		:"0" (n), "1" (s), "2" (0), "3" (mask)
 		:"cc");
-	scribe_post_uaccess(NULL, 0, s, SCRIBE_DATA_INPUT | SCRIBE_DATA_STRING);
+	scribe_forbid_uaccess();
 	return res & mask;
 }
 EXPORT_SYMBOL(strnlen_user);

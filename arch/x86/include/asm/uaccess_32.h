@@ -44,25 +44,29 @@ unsigned long __must_check __copy_from_user_ll_nocache_nozero
 static __always_inline unsigned long __must_check
 __copy_to_user_inatomic(void __user *to, const void *from, unsigned long n)
 {
+	unsigned long ret;
+	scribe_pre_uaccess(from, to, n, 0);
 	if (__builtin_constant_p(n)) {
-		unsigned long ret;
-
 		switch (n) {
 		case 1:
 			__put_user_size(*(u8 *)from, (u8 __user *)to,
 					1, ret, 1);
-			return ret;
+			break;
 		case 2:
 			__put_user_size(*(u16 *)from, (u16 __user *)to,
 					2, ret, 2);
-			return ret;
+			break;
 		case 4:
 			__put_user_size(*(u32 *)from, (u32 __user *)to,
 					4, ret, 4);
-			return ret;
+			break;
+		default:
+			ret = __copy_to_user_ll(to, from, n);
 		}
-	}
-	return __copy_to_user_ll(to, from, n);
+	} else
+		ret = __copy_to_user_ll(to, from, n);
+	scribe_post_uaccess(from, to, n - ret, 0);
+	return ret;
 }
 
 /**
@@ -82,12 +86,8 @@ __copy_to_user_inatomic(void __user *to, const void *from, unsigned long n)
 static __always_inline unsigned long __must_check
 __copy_to_user(void __user *to, const void *from, unsigned long n)
 {
-	unsigned long ret;
 	might_fault();
-	scribe_pre_uaccess();
-	ret = __copy_to_user_inatomic(to, from, n);
-	scribe_post_uaccess(from, n - ret, to, 0);
-	return ret;
+	return __copy_to_user_inatomic(to, from, n);
 }
 
 static __always_inline unsigned long
@@ -98,22 +98,26 @@ __copy_from_user_inatomic(void *to, const void __user *from, unsigned long n)
 	 * but as the zeroing behaviour is only significant when n is not
 	 * constant, that shouldn't be a problem.
 	 */
+	unsigned long ret;
+	scribe_pre_uaccess(to, from, n, SCRIBE_DATA_INPUT);
 	if (__builtin_constant_p(n)) {
-		unsigned long ret;
-
 		switch (n) {
 		case 1:
 			__get_user_size(*(u8 *)to, from, 1, ret, 1);
-			return ret;
+			break;
 		case 2:
 			__get_user_size(*(u16 *)to, from, 2, ret, 2);
-			return ret;
+			break;
 		case 4:
 			__get_user_size(*(u32 *)to, from, 4, ret, 4);
-			return ret;
+			break;
+		default:
+			ret = __copy_from_user_ll_nozero(to, from, n);
 		}
-	}
-	return __copy_from_user_ll_nozero(to, from, n);
+	} else
+		ret = __copy_from_user_ll_nozero(to, from, n);
+	scribe_post_uaccess(to, from, n - ret, SCRIBE_DATA_INPUT);
+	return ret;
 }
 
 /**
@@ -143,7 +147,7 @@ __copy_from_user(void *to, const void __user *from, unsigned long n)
 {
 	unsigned long ret;
 	might_fault();
-	scribe_pre_uaccess();
+	scribe_pre_uaccess(to, from, n, SCRIBE_DATA_INPUT);
 	if (__builtin_constant_p(n)) {
 		switch (n) {
 		case 1:
@@ -160,37 +164,45 @@ __copy_from_user(void *to, const void __user *from, unsigned long n)
 		}
 	} else
 		ret = __copy_from_user_ll(to, from, n);
-	scribe_post_uaccess(to, n - ret, from, SCRIBE_DATA_INPUT);
+	scribe_post_uaccess(to, from, n - ret, SCRIBE_DATA_INPUT);
 	return ret;
 }
 
 static __always_inline unsigned long __copy_from_user_nocache(void *to,
 				const void __user *from, unsigned long n)
 {
+	unsigned long ret;
 	might_fault();
+	scribe_pre_uaccess(to, from, n, SCRIBE_DATA_INPUT);
 	if (__builtin_constant_p(n)) {
-		unsigned long ret;
-
 		switch (n) {
 		case 1:
 			__get_user_size(*(u8 *)to, from, 1, ret, 1);
-			return ret;
+			break;
 		case 2:
 			__get_user_size(*(u16 *)to, from, 2, ret, 2);
-			return ret;
+			break;
 		case 4:
 			__get_user_size(*(u32 *)to, from, 4, ret, 4);
-			return ret;
+			break;
+		default:
+			ret = __copy_from_user_ll_nocache(to, from, n);
 		}
-	}
-	return __copy_from_user_ll_nocache(to, from, n);
+	} else
+		ret = __copy_from_user_ll_nocache(to, from, n);
+	scribe_post_uaccess(to, from, n - ret, SCRIBE_DATA_INPUT);
+	return ret;
 }
 
 static __always_inline unsigned long
 __copy_from_user_inatomic_nocache(void *to, const void __user *from,
 				  unsigned long n)
 {
-       return __copy_from_user_ll_nocache_nozero(to, from, n);
+	unsigned long ret;
+	scribe_pre_uaccess(to, from, n, SCRIBE_DATA_INPUT);
+	ret = __copy_from_user_ll_nocache_nozero(to, from, n);
+	scribe_post_uaccess(to, from, n - ret, SCRIBE_DATA_INPUT);
+	return ret;
 }
 
 unsigned long __must_check copy_to_user(void __user *to,
