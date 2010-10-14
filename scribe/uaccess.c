@@ -14,7 +14,8 @@ void scribe_pre_uaccess(void)
 {
 }
 
-void scribe_post_uaccess(const void *data, size_t size, int flags)
+extern void scribe_post_uaccess(const void *data, size_t size,
+				const void __user *user_ptr, int flags)
 {
 	struct scribe_event_data *event;
 	struct scribe_ps *scribe = current->scribe;
@@ -35,6 +36,7 @@ void scribe_post_uaccess(const void *data, size_t size, int flags)
 			scribe_emergency_stop(scribe->ctx, -ENOMEM);
 
 		event->data_type = scribe->data_flags | flags;
+		event->user_ptr = (__u32)user_ptr;
 
 		memcpy(event->data, data, size);
 		scribe_queue_event(scribe->queue, event);

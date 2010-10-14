@@ -248,7 +248,8 @@ extern void scribe_attach(struct scribe_ps *scribe);
 extern void scribe_detach(struct scribe_ps *scribe);
 
 extern void scribe_pre_uaccess(void);
-extern void scribe_post_uaccess(const void *data, size_t size, int flags);
+extern void scribe_post_uaccess(const void *data, size_t size,
+				const void __user *user_ptr, int flags);
 extern void scribe_set_data_flags(struct scribe_ps *scribe, int flags);
 
 #else /* CONFIG_SCRIBE */

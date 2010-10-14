@@ -41,11 +41,12 @@
 #define SCRIBE_DATA_STRING		2
 
 extern void scribe_pre_uaccess(void);
-extern void scribe_post_uaccess(const void *data, size_t size, int flags);
+extern void scribe_post_uaccess(const void *data, size_t size,
+				const void __user *user_ptr, int flags);
 #else
 static inline void scribe_pre_uaccess(void) {}
-static inline void scribe_post_uaccess(const void *data, size_t size,
-				       int flags) {}
+extern void scribe_post_uaccess(const void *data, size_t size,
+				const void __user *user_ptr, int flags) {}
 #endif
 
 #define VERIFY_READ 0
@@ -214,7 +215,7 @@ extern int __get_user_bad(void);
 		break;							\
 	}								\
 	scribe_post_uaccess(&__val_gu, __ret_gu ? 0 : sizeof(*(ptr)),	\
-			    SCRIBE_DATA_INPUT);				\
+			    ptr, SCRIBE_DATA_INPUT);			\
 	(x) = (__typeof__(*(ptr)))__val_gu;				\
 	__ret_gu;							\
 })
@@ -312,7 +313,7 @@ extern void __put_user_8(void);
 		__put_user_x(X, __pu_val, ptr, __ret_pu);	\
 		break;						\
 	}							\
-	scribe_post_uaccess(&__pu_val, __ret_pu ? 0 : sizeof(*(ptr)), 0); \
+	scribe_post_uaccess(&__pu_val, __ret_pu ? 0 : sizeof(*(ptr)), ptr, 0); \
 	__ret_pu;						\
 })
 
@@ -361,7 +362,7 @@ do {									\
 	default:							\
 		__put_user_bad();					\
 	}								\
-	scribe_post_uaccess(&__pu_val, size, 0);			\
+	scribe_post_uaccess(&__pu_val, size, ptr, 0);			\
 } while (0)
 
 #else
@@ -451,7 +452,7 @@ do {									\
 	default:							\
 		(x) = __get_user_bad();					\
 	}								\
-	scribe_post_uaccess(&(x), size, SCRIBE_DATA_INPUT);		\
+	scribe_post_uaccess(&(x), size, ptr, SCRIBE_DATA_INPUT);	\
 } while (0)
 
 #define __get_user_asm_ex(x, addr, itype, rtype, ltype)			\
@@ -464,10 +465,12 @@ do {									\
 ({								\
 	int __pu_err;						\
 	__typeof__(*(ptr)) __pu_val;				\
+	__typeof__(ptr) __pu_ptr;				\
 	scribe_pre_uaccess();					\
 	__pu_val = x;						\
-	__put_user_size(__pu_val, (ptr), (size), __pu_err, -EFAULT); \
-	scribe_post_uaccess(&__pu_val, __pu_err ? 0 :size, 0);	\
+	__pu_ptr = ptr;						\
+	__put_user_size(__pu_val, __pu_ptr, (size), __pu_err, -EFAULT); \
+	scribe_post_uaccess(&__pu_val, __pu_err ? 0 : size, __pu_ptr, 0); \
 	__pu_err;						\
 })
 
@@ -475,10 +478,12 @@ do {									\
 ({									\
 	int __gu_err;							\
 	unsigned long __gu_val;						\
+	__typeof__(ptr) __gu_ptr;					\
 	scribe_pre_uaccess();						\
-	__get_user_size(__gu_val, (ptr), (size), __gu_err, -EFAULT);	\
+	__gu_ptr = ptr;							\
+	__get_user_size(__gu_val, __gu_ptr, (size), __gu_err, -EFAULT);	\
 	scribe_post_uaccess(&__gu_val, __gu_err ? 0 : size,		\
-			    SCRIBE_DATA_INPUT);				\
+			    __gu_ptr, SCRIBE_DATA_INPUT);		\
 	(x) = (__force __typeof__(*(ptr)))__gu_val;			\
 	__gu_err;							\
 })

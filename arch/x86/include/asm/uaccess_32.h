@@ -86,7 +86,7 @@ __copy_to_user(void __user *to, const void *from, unsigned long n)
 	might_fault();
 	scribe_pre_uaccess();
 	ret = __copy_to_user_inatomic(to, from, n);
-	scribe_post_uaccess(from, n - ret, 0);
+	scribe_post_uaccess(from, n - ret, to, 0);
 	return ret;
 }
 
@@ -160,7 +160,7 @@ __copy_from_user(void *to, const void __user *from, unsigned long n)
 		}
 	} else
 		ret = __copy_from_user_ll(to, from, n);
-	scribe_post_uaccess(to, n - ret, SCRIBE_DATA_INPUT);
+	scribe_post_uaccess(to, n - ret, from, SCRIBE_DATA_INPUT);
 	return ret;
 }
 
