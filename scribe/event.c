@@ -292,7 +292,12 @@ void *__scribe_alloc_event(__u8 type)
 	return __scribe_alloc_event_const(type);
 }
 
-#define SCRIBE_KMALLOC_MAX_SIZE 0x4000
+/*
+ * FIXME Disabling vmalloc since event->size can now change (see in
+ * uaccess.c). We could potentially call kfree() instead of vfree().
+ */
+/* #define SCRIBE_KMALLOC_MAX_SIZE 0x4000 */
+#define SCRIBE_KMALLOC_MAX_SIZE -1
 struct scribe_event_data *scribe_alloc_event_data(size_t size)
 {
 	struct scribe_event_data *event;
