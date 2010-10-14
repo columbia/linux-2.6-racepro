@@ -13,7 +13,6 @@
 #include <linux/kernel.h>
 #include <linux/sched.h>
 #include <linux/module.h>
-#include <linux/scribe.h>
 
 static const struct file_operations fuse_direct_io_file_operations;
 
@@ -817,7 +816,6 @@ static ssize_t fuse_fill_write_pages(struct fuse_req *req,
 	unsigned offset = pos & (PAGE_CACHE_SIZE - 1);
 	size_t count = 0;
 	int err;
-	int is_current_scribed = is_ps_scribed(current);
 
 	req->in.argpages = 1;
 	req->page_offset = offset;
@@ -844,14 +842,9 @@ static ssize_t fuse_fill_write_pages(struct fuse_req *req,
 		if (mapping_writably_mapped(mapping))
 			flush_dcache_page(page);
 
-		if (is_current_scribed)
-			tmp = iov_iter_copy_from_user(page, ii, offset, bytes);
-		else {
-			pagefault_disable();
-			tmp = iov_iter_copy_from_user_atomic(page, ii, offset,
-							     bytes);
-			pagefault_enable();
-		}
+		pagefault_disable();
+		tmp = iov_iter_copy_from_user_atomic(page, ii, offset, bytes);
+		pagefault_enable();
 		flush_dcache_page(page);
 
 		if (!tmp) {

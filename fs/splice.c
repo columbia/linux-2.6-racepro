@@ -31,7 +31,6 @@
 #include <linux/uio.h>
 #include <linux/security.h>
 #include <linux/gfp.h>
-#include <linux/scribe.h>
 
 /*
  * Attempt to steal a page from a pipe buffer. This should perhaps go into
@@ -1527,11 +1526,8 @@ static int pipe_to_user(struct pipe_inode_info *pipe, struct pipe_buffer *buf,
 	/*
 	 * See if we can use the atomic maps, by prefaulting in the
 	 * pages and doing an atomic copy
-	 * For scribed processes, we cannot do inatomic userspace copies,
-	 * so we'll use the slow path.
 	 */
-	if (!fault_in_pages_writeable(sd->u.userptr, sd->len) &&
-	    !is_ps_scribed(current)) {
+	if (!fault_in_pages_writeable(sd->u.userptr, sd->len)) {
 		src = buf->ops->map(pipe, buf, 1);
 		ret = __copy_to_user_inatomic(sd->u.userptr, src + buf->offset,
 							sd->len);
