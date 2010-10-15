@@ -32,6 +32,7 @@
  */
 #include <linux/highmem.h>
 #include <linux/gfp.h>
+#include <linux/scribe.h>
 
 #include "rds.h"
 
@@ -62,7 +63,9 @@ int rds_page_copy_user(struct page *page, unsigned long offset,
 	else
 		rds_stats_add(s_copy_from_user, bytes);
 
+	scribe_pre_alloc_data_event(bytes);
 	addr = kmap_atomic(page, KM_USER0);
+	scribe_allow_uaccess();
 	if (to_user)
 		ret = __copy_to_user_inatomic(ptr, addr + offset, bytes);
 	else
@@ -79,6 +82,7 @@ int rds_page_copy_user(struct page *page, unsigned long offset,
 		if (ret)
 			return -EFAULT;
 	}
+	scribe_forbid_uaccess();
 
 	return 0;
 }

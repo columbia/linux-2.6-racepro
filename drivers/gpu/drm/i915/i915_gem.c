@@ -34,6 +34,7 @@
 #include <linux/slab.h>
 #include <linux/swap.h>
 #include <linux/pci.h>
+#include <linux/scribe.h>
 
 static void i915_gem_object_flush_gpu_write_domain(struct drm_gem_object *obj);
 static void i915_gem_object_flush_gtt_write_domain(struct drm_gem_object *obj);
@@ -146,11 +147,14 @@ fast_shmem_read(struct page **pages,
 	char __iomem *vaddr;
 	int unwritten;
 
+	scribe_pre_alloc_data_event(length);
 	vaddr = kmap_atomic(pages[page_base >> PAGE_SHIFT], KM_USER0);
 	if (vaddr == NULL)
 		return -ENOMEM;
+	scribe_allow_uaccess();
 	unwritten = __copy_to_user_inatomic(data, vaddr + page_offset, length);
 	kunmap_atomic(vaddr, KM_USER0);
+	scribe_forbid_uaccess();
 
 	if (unwritten)
 		return -EFAULT;
@@ -496,10 +500,14 @@ fast_user_write(struct io_mapping *mapping,
 	char *vaddr_atomic;
 	unsigned long unwritten;
 
+	scribe_pre_alloc_data_event(length);
 	vaddr_atomic = io_mapping_map_atomic_wc(mapping, page_base);
+	scribe_allow_uaccess();
 	unwritten = __copy_from_user_inatomic_nocache(vaddr_atomic + page_offset,
 						      user_data, length);
 	io_mapping_unmap_atomic(vaddr_atomic);
+	scribe_forbid_uaccess();
+
 	if (unwritten)
 		return -EFAULT;
 	return 0;
@@ -538,11 +546,14 @@ fast_shmem_write(struct page **pages,
 	char __iomem *vaddr;
 	unsigned long unwritten;
 
+	scribe_pre_alloc_data_event(length);
 	vaddr = kmap_atomic(pages[page_base >> PAGE_SHIFT], KM_USER0);
 	if (vaddr == NULL)
 		return -ENOMEM;
+	scribe_allow_uaccess();
 	unwritten = __copy_from_user_inatomic(vaddr + page_offset, data, length);
 	kunmap_atomic(vaddr, KM_USER0);
+	scribe_forbid_uaccess();
 
 	if (unwritten)
 		return -EFAULT;

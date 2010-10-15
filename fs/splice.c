@@ -31,6 +31,7 @@
 #include <linux/uio.h>
 #include <linux/security.h>
 #include <linux/gfp.h>
+#include <linux/scribe.h>
 
 /*
  * Attempt to steal a page from a pipe buffer. This should perhaps go into
@@ -1528,10 +1529,13 @@ static int pipe_to_user(struct pipe_inode_info *pipe, struct pipe_buffer *buf,
 	 * pages and doing an atomic copy
 	 */
 	if (!fault_in_pages_writeable(sd->u.userptr, sd->len)) {
+		scribe_pre_alloc_data_event(sd->len);
 		src = buf->ops->map(pipe, buf, 1);
+		scribe_allow_uaccess();
 		ret = __copy_to_user_inatomic(sd->u.userptr, src + buf->offset,
 							sd->len);
 		buf->ops->unmap(pipe, buf, src);
+		scribe_forbid_uaccess();
 		if (!ret) {
 			ret = sd->len;
 			goto out;

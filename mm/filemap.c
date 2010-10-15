@@ -34,6 +34,7 @@
 #include <linux/hardirq.h> /* for BUG_ON(!in_atomic()) only */
 #include <linux/memcontrol.h>
 #include <linux/mm_inline.h> /* for page_is_file_cache() */
+#include <linux/scribe.h>
 #include "internal.h"
 
 /*
@@ -1197,10 +1198,13 @@ int file_read_actor(read_descriptor_t *desc, struct page *page,
 	 * taking the kmap.
 	 */
 	if (!fault_in_pages_writeable(desc->arg.buf, size)) {
+		scribe_pre_alloc_data_event(size);
 		kaddr = kmap_atomic(page, KM_USER0);
+		scribe_allow_uaccess();
 		left = __copy_to_user_inatomic(desc->arg.buf,
 						kaddr + offset, size);
 		kunmap_atomic(kaddr, KM_USER0);
+		scribe_forbid_uaccess();
 		if (left == 0)
 			goto success;
 	}
@@ -2274,9 +2278,12 @@ again:
 		if (mapping_writably_mapped(mapping))
 			flush_dcache_page(page);
 
+		scribe_pre_alloc_data_event(bytes);
 		pagefault_disable();
+		scribe_allow_uaccess();
 		copied = iov_iter_copy_from_user_atomic(page, i, offset, bytes);
 		pagefault_enable();
+		scribe_forbid_uaccess();
 		flush_dcache_page(page);
 
 		mark_page_accessed(page);

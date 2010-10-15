@@ -57,6 +57,7 @@
 #include <linux/swapops.h>
 #include <linux/elf.h>
 #include <linux/gfp.h>
+#include <linux/scribe.h>
 
 #include <asm/io.h>
 #include <asm/pgalloc.h>
@@ -2074,6 +2075,13 @@ static inline void cow_user_page(struct page *dst, struct page *src, unsigned lo
 	if (unlikely(!src)) {
 		void *kaddr = kmap_atomic(dst, KM_USER0);
 		void __user *uaddr = (void __user *)(va & PAGE_MASK);
+		struct scribe_ps *scribe = current->scribe;
+		int data_flags;
+
+		if (scribe) {
+			data_flags = scribe_get_data_flags(scribe);
+			scribe_set_data_flags(scribe, SCRIBE_DATA_DONT_RECORD);
+		}
 
 		/*
 		 * This really shouldn't fail, because the page is there
@@ -2081,10 +2089,15 @@ static inline void cow_user_page(struct page *dst, struct page *src, unsigned lo
 		 * in which case we just give up and fill the result with
 		 * zeroes.
 		 */
+		scribe_allow_uaccess();
 		if (__copy_from_user_inatomic(kaddr, uaddr, PAGE_SIZE))
 			memset(kaddr, 0, PAGE_SIZE);
 		kunmap_atomic(kaddr, KM_USER0);
+		scribe_forbid_uaccess();
 		flush_dcache_page(dst);
+
+		if (scribe)
+			scribe_set_data_flags(scribe, data_flags);
 	} else
 		copy_user_highpage(dst, src, va, vma);
 }

@@ -20,6 +20,7 @@
 #include <linux/audit.h>
 #include <linux/syscalls.h>
 #include <linux/fcntl.h>
+#include <linux/scribe.h>
 
 #include <asm/uaccess.h>
 #include <asm/ioctls.h>
@@ -356,12 +357,14 @@ pipe_read(struct kiocb *iocb, const struct iovec *_iov,
 	ssize_t ret;
 	struct iovec *iov = (struct iovec *)_iov;
 	size_t total_len;
+	int is_current_scribed;
 
 	total_len = iov_length(iov, nr_segs);
 	/* Null read succeeds. */
 	if (unlikely(total_len == 0))
 		return 0;
 
+	is_current_scribed = is_ps_scribed(current);
 	do_wakeup = 0;
 	ret = 0;
 	mutex_lock(&inode->i_mutex);
@@ -386,7 +389,11 @@ pipe_read(struct kiocb *iocb, const struct iovec *_iov,
 				break;
 			}
 
-			atomic = !iov_fault_in_pages_write(iov, chars);
+			/* FIXME Scribe: handle atomic writes */
+			if (is_current_scribed)
+				atomic = 0;
+			else
+				atomic = !iov_fault_in_pages_write(iov, chars);
 redo:
 			addr = ops->map(pipe, buf, atomic);
 			error = pipe_iov_copy_to_user(iov, addr + buf->offset, chars, atomic);
@@ -470,12 +477,14 @@ pipe_write(struct kiocb *iocb, const struct iovec *_iov,
 	struct iovec *iov = (struct iovec *)_iov;
 	size_t total_len;
 	ssize_t chars;
+	int is_current_scribed;
 
 	total_len = iov_length(iov, nr_segs);
 	/* Null write succeeds. */
 	if (unlikely(total_len == 0))
 		return 0;
 
+	is_current_scribed = is_ps_scribed(current);
 	do_wakeup = 0;
 	ret = 0;
 	mutex_lock(&inode->i_mutex);
@@ -497,7 +506,7 @@ pipe_write(struct kiocb *iocb, const struct iovec *_iov,
 		int offset = buf->offset + buf->len;
 
 		if (ops->can_merge && offset + chars <= PAGE_SIZE) {
-			int error, atomic = 1;
+			int error, atomic = !is_current_scribed;
 			void *addr;
 
 			error = ops->confirm(pipe, buf);
@@ -506,6 +515,7 @@ pipe_write(struct kiocb *iocb, const struct iovec *_iov,
 
 			iov_fault_in_pages_read(iov, chars);
 redo1:
+			/* FIXME Scribe: handle atomic reads */
 			addr = ops->map(pipe, buf, atomic);
 			error = pipe_iov_copy_from_user(offset + addr, iov,
 							chars, atomic);
@@ -542,7 +552,7 @@ redo1:
 			struct pipe_buffer *buf = pipe->bufs + newbuf;
 			struct page *page = pipe->tmp_page;
 			char *src;
-			int error, atomic = 1;
+			int error, atomic = !is_current_scribed;
 
 			if (!page) {
 				page = alloc_page(GFP_HIGHUSER);

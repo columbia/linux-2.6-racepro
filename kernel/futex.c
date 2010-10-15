@@ -59,6 +59,7 @@
 #include <linux/magic.h>
 #include <linux/pid.h>
 #include <linux/nsproxy.h>
+#include <linux/scribe.h>
 
 #include <asm/futex.h>
 
@@ -1697,6 +1698,7 @@ static void futex_wait_queue_me(struct futex_hash_bucket *hb, struct futex_q *q,
 	 * has tried to wake us, and we can skip the call to schedule().
 	 */
 	if (likely(!plist_node_empty(&q->list))) {
+		scribe_forbid_uaccess();
 		/*
 		 * If the timer has already expired, current will already be
 		 * flagged for rescheduling. Only call schedule if there
@@ -1704,6 +1706,7 @@ static void futex_wait_queue_me(struct futex_hash_bucket *hb, struct futex_q *q,
 		 */
 		if (!timeout || timeout->task)
 			schedule();
+		scribe_allow_uaccess();
 	}
 	__set_current_state(TASK_RUNNING);
 }
@@ -2545,6 +2548,7 @@ long do_futex(u32 __user *uaddr, int op, u32 val, ktime_t *timeout,
 	int clockrt, ret = -ENOSYS;
 	int cmd = op & FUTEX_CMD_MASK;
 	int fshared = 0;
+	struct scribe_ps *scribe = current->scribe;
 
 	if (!(op & FUTEX_PRIVATE_FLAG))
 		fshared = 1;
@@ -2552,6 +2556,11 @@ long do_futex(u32 __user *uaddr, int op, u32 val, ktime_t *timeout,
 	clockrt = op & FUTEX_CLOCK_REALTIME;
 	if (clockrt && cmd != FUTEX_WAIT_BITSET && cmd != FUTEX_WAIT_REQUEUE_PI)
 		return -ENOSYS;
+
+	if (scribe) {
+		scribe_allow_uaccess();
+		scribe_set_data_flags(scribe, SCRIBE_DATA_DONT_RECORD);
+	}
 
 	switch (cmd) {
 	case FUTEX_WAIT:
@@ -2598,6 +2607,10 @@ long do_futex(u32 __user *uaddr, int op, u32 val, ktime_t *timeout,
 	default:
 		ret = -ENOSYS;
 	}
+
+	if (scribe)
+		scribe_forbid_uaccess();
+
 	return ret;
 }
 
