@@ -989,7 +989,7 @@ err:
 	return ret;
 }
 
-int copy_scribe(unsigned long long clone_flags, struct task_struct *p)
+static int copy_scribe(unsigned long long clone_flags, struct task_struct *p)
 {
 	if (!is_scribed(current->scribe))
 		return 0;
@@ -1003,7 +1003,15 @@ int copy_scribe(unsigned long long clone_flags, struct task_struct *p)
 	return init_scribe(p, current->scribe->ctx);
 }
 
-#endif
+#else /* CONFIG_SCRIBE */
+
+static inline int copy_scribe(unsigned long long clone_flags,
+			      struct task_struct *p)
+{
+	return 0;
+}
+
+#endif /* CONFIG_SCRIBE */
 
 /*
  * This creates a new process as a copy of the old one,
@@ -1344,8 +1352,17 @@ static struct task_struct *copy_process(unsigned long long clone_flags,
 	spin_unlock(&current->sighand->siglock);
 	write_unlock_irq(&tasklist_lock);
 
-	if (p->scribe)
+#ifdef CONFIG_SCRIBE
+	if (p->scribe) {
 		scribe_attach(p->scribe);
+
+		/*
+		 * ret_from_fork will get executed, we want to be ready for
+		 * user accesses.
+		 */
+		__scribe_allow_uaccess(p->scribe);
+	}
+#endif /* CONFIG_SCRIBE */
 
 	proc_fork_connector(p);
 	cgroup_post_fork(p);
