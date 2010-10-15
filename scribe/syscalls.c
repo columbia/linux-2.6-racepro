@@ -10,6 +10,7 @@
 #include <linux/sched.h>
 #include <linux/seq_file.h>
 #include <linux/scribe.h>
+#include <asm/syscall.h>
 
 void scribe_enter_syscall(struct pt_regs *regs)
 {
@@ -17,6 +18,8 @@ void scribe_enter_syscall(struct pt_regs *regs)
 
 	if (!is_scribed(scribe))
 		return;
+
+	__scribe_forbid_uaccess(scribe);
 
 	if (is_stopping(scribe)) {
 		scribe_detach(scribe);
@@ -37,6 +40,8 @@ void scribe_exit_syscall(struct pt_regs *regs)
 	if (!is_scribed(scribe))
 		return;
 
+	__scribe_allow_uaccess(scribe);
+
 	if (!scribe->in_syscall) {
 		/*
 		 * The current process was freshly attached. This syscall
@@ -48,17 +53,20 @@ void scribe_exit_syscall(struct pt_regs *regs)
 	if (is_recording(scribe)) {
 		event = scribe_alloc_event(SCRIBE_EVENT_SYSCALL);
 		if (!event)
-			scribe_emergency_stop(scribe->ctx, -ENOMEM);
-		event->nr = regs->orig_ax;
-		event->ret = regs->ax;
+			goto bad;
+		event->nr = syscall_get_nr(current, regs);
+		event->ret = syscall_get_return_value(current, regs);
 		scribe_queue_event_at(&scribe->syscall_ip, event);
 		scribe_commit_insert_point(&scribe->syscall_ip);
 
-
 		if (scribe_queue_new_event(scribe->queue,
 					   SCRIBE_EVENT_SYSCALL_END))
-			scribe_emergency_stop(scribe->ctx, -ENOMEM);
+			goto bad;
 	}
 
 	scribe->in_syscall = 0;
+	return;
+
+bad:
+	scribe_emergency_stop(scribe->ctx, -ENOMEM);
 }
