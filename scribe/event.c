@@ -246,10 +246,16 @@ struct scribe_event *scribe_dequeue_event(struct scribe_event_queue *queue,
 	events = &queue->master.events;
 
 retry:
-	if (wait && wait_event_interruptible(*queue->wait,
-					     !scribe_is_queue_empty(queue) ||
-					     (queue->flags & SCRIBE_WONT_GROW)))
-		return ERR_PTR(-EINTR);
+	if (wait == SCRIBE_WAIT_INTERRUPTIBLE &&
+	    wait_event_interruptible(*queue->wait,
+				     !scribe_is_queue_empty(queue) ||
+				     (queue->flags & SCRIBE_WONT_GROW)))
+		return ERR_PTR(-ERESTARTSYS);
+
+	if (wait == SCRIBE_WAIT)
+	    wait_event(*queue->wait,
+		       !scribe_is_queue_empty(queue) ||
+		       (queue->flags & SCRIBE_WONT_GROW));
 
 	spin_lock(&queue->lock);
 	if (list_empty(events)) {

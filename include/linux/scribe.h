@@ -151,6 +151,7 @@ extern void scribe_queue_event(struct scribe_event_queue *queue, void *event);
 
 #define SCRIBE_NO_WAIT 0
 #define SCRIBE_WAIT 1
+#define SCRIBE_WAIT_INTERRUPTIBLE 2
 extern struct scribe_event *scribe_dequeue_event(
 				struct scribe_event_queue *queue, int wait);
 

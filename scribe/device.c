@@ -248,8 +248,6 @@ static void event_pump_record(struct scribe_context *ctx,
 		ret = serialize_events(ctx, buf, PUMP_BUFFER_SIZE,
 				       &last_pid, &current_queue,
 				       &pending_event, &pending_offset);
-		if (ret == -EINTR)
-			continue;
 		if (ret < 0)
 			goto err;
 		if (!ret)
@@ -629,11 +627,9 @@ static ssize_t dev_read(struct file *file,
 		dev->pending_notification_event = NULL;
 	} else {
 		event = scribe_dequeue_event(ctx->notification_queue,
-					     SCRIBE_WAIT);
+					     SCRIBE_WAIT_INTERRUPTIBLE);
 		if (IS_ERR(event)) {
 			ret = PTR_ERR(event);
-			if (ret == -EINTR)
-				ret = -ERESTARTSYS;
 			goto out;
 		}
 	}
