@@ -201,17 +201,18 @@ static ssize_t serialize_events(struct scribe_context *ctx,
 		}
 
 		to_write = sizeof_event_payload(event) - *pending_offset;
-		if (count < to_write) {
+		if (to_write > count) {
 			to_write = count;
-			*pending_offset += to_write;
 			*pending_event = event;
 		}
 		memcpy(buf,
 		       get_event_payload(event) + *pending_offset, to_write);
 		ret += to_write;
 
-		if (*pending_event)
+		if (*pending_event) {
+			*pending_offset += to_write;
 			goto out;
+		}
 
 		scribe_free_event(event);
 		event = NULL;
@@ -365,9 +366,8 @@ static ssize_t deserialize_events(struct scribe_context *ctx,
 
 		to_copy = sizeof_event_payload(event) - *pending_offset;
 
-		if (count < to_copy) {
+		if (to_copy > count) {
 			to_copy = count;
-			*pending_offset += to_copy;
 			*pending_event = event;
 		}
 		memcpy(get_event_payload(event) + *pending_offset,
@@ -375,6 +375,7 @@ static ssize_t deserialize_events(struct scribe_context *ctx,
 
 		if (*pending_event) {
 			ret += to_copy;
+			*pending_offset += to_copy;
 			goto out;
 		}
 		*pending_offset = 0;
