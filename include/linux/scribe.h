@@ -257,7 +257,7 @@ extern void __scribe_allow_uaccess(struct scribe_ps *scribe);
 extern void __scribe_forbid_uaccess(struct scribe_ps *scribe);
 extern void scribe_allow_uaccess(void);
 extern void scribe_forbid_uaccess(void);
-extern void scribe_pre_alloc_data_event(size_t pre_alloc_size);
+extern void scribe_prepare_data_event(size_t pre_alloc_size);
 
 #define SCRIBE_DATA_INPUT		1
 #define SCRIBE_DATA_STRING		2
@@ -287,7 +287,7 @@ static inline void exit_scribe(struct task_struct *tsk) {}
 
 static inline void scribe_allow_uaccess(void) {}
 static inline void scribe_forbid_uaccess(void) {}
-static inline void scribe_pre_alloc_data_event(size_t pre_alloc_size) {}
+static inline void scribe_prepare_data_event(size_t pre_alloc_size) {}
 static inline void scribe_pre_schedule(void) {}
 static inline void scribe_post_schedule(void) {}
 

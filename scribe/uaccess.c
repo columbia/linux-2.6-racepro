@@ -14,6 +14,10 @@
 
 void __scribe_allow_uaccess(struct scribe_ps *scribe)
 {
+	/* If we are already at 3 level deep... Something must be wrong */
+	WARN(scribe->can_uaccess > 3,
+	     "scribe->can_uaccess == %d\n", scribe->can_uaccess);
+
 	scribe->can_uaccess++;
 }
 
@@ -50,7 +54,7 @@ static struct scribe_event_data *get_data_event(struct scribe_ps *scribe,
 	return event;
 }
 
-void scribe_pre_alloc_data_event(size_t pre_alloc_size)
+void scribe_prepare_data_event(size_t pre_alloc_size)
 {
 	struct scribe_ps *scribe = current->scribe;
 	if (!is_scribed(scribe))

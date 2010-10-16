@@ -1198,7 +1198,7 @@ int file_read_actor(read_descriptor_t *desc, struct page *page,
 	 * taking the kmap.
 	 */
 	if (!fault_in_pages_writeable(desc->arg.buf, size)) {
-		scribe_pre_alloc_data_event(size);
+		scribe_prepare_data_event(size);
 		kaddr = kmap_atomic(page, KM_USER0);
 		scribe_allow_uaccess();
 		left = __copy_to_user_inatomic(desc->arg.buf,
@@ -2278,7 +2278,7 @@ again:
 		if (mapping_writably_mapped(mapping))
 			flush_dcache_page(page);
 
-		scribe_pre_alloc_data_event(bytes);
+		scribe_prepare_data_event(bytes);
 		pagefault_disable();
 		scribe_allow_uaccess();
 		copied = iov_iter_copy_from_user_atomic(page, i, offset, bytes);

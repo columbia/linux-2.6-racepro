@@ -1288,7 +1288,7 @@ static inline size_t ntfs_copy_from_user(struct page **pages,
 		len = PAGE_CACHE_SIZE - ofs;
 		if (len > bytes)
 			len = bytes;
-		scribe_pre_alloc_data_event(len);
+		scribe_prepare_data_event(len);
 		addr = kmap_atomic(*pages, KM_USER0);
 		scribe_allow_uaccess();
 		left = __copy_from_user_inatomic(addr + ofs, buf, len);

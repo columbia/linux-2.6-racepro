@@ -843,7 +843,7 @@ static ssize_t fuse_fill_write_pages(struct fuse_req *req,
 		if (mapping_writably_mapped(mapping))
 			flush_dcache_page(page);
 
-		scribe_pre_alloc_data_event(bytes);
+		scribe_prepare_data_event(bytes);
 		pagefault_disable();
 		scribe_allow_uaccess();
 		tmp = iov_iter_copy_from_user_atomic(page, ii, offset, bytes);

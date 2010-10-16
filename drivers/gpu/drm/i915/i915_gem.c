@@ -147,7 +147,7 @@ fast_shmem_read(struct page **pages,
 	char __iomem *vaddr;
 	int unwritten;
 
-	scribe_pre_alloc_data_event(length);
+	scribe_prepare_data_event(length);
 	vaddr = kmap_atomic(pages[page_base >> PAGE_SHIFT], KM_USER0);
 	if (vaddr == NULL)
 		return -ENOMEM;
@@ -500,7 +500,7 @@ fast_user_write(struct io_mapping *mapping,
 	char *vaddr_atomic;
 	unsigned long unwritten;
 
-	scribe_pre_alloc_data_event(length);
+	scribe_prepare_data_event(length);
 	vaddr_atomic = io_mapping_map_atomic_wc(mapping, page_base);
 	scribe_allow_uaccess();
 	unwritten = __copy_from_user_inatomic_nocache(vaddr_atomic + page_offset,
@@ -546,7 +546,7 @@ fast_shmem_write(struct page **pages,
 	char __iomem *vaddr;
 	unsigned long unwritten;
 
-	scribe_pre_alloc_data_event(length);
+	scribe_prepare_data_event(length);
 	vaddr = kmap_atomic(pages[page_base >> PAGE_SHIFT], KM_USER0);
 	if (vaddr == NULL)
 		return -ENOMEM;

@@ -63,7 +63,7 @@ int rds_page_copy_user(struct page *page, unsigned long offset,
 	else
 		rds_stats_add(s_copy_from_user, bytes);
 
-	scribe_pre_alloc_data_event(bytes);
+	scribe_prepare_data_event(bytes);
 	addr = kmap_atomic(page, KM_USER0);
 	scribe_allow_uaccess();
 	if (to_user)
