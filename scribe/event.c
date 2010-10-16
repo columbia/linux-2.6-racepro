@@ -232,8 +232,8 @@ void scribe_queue_event(struct scribe_event_queue *queue, void *event)
 	__scribe_queue_event_at(queue, &queue->master, event);
 }
 
-struct scribe_event *scribe_dequeue_event(struct scribe_event_queue *queue,
-					  int wait)
+static struct scribe_event *__scribe_peek_event(
+		struct scribe_event_queue *queue, int wait, int remove)
 {
 	struct scribe_event *event;
 	struct list_head *events;
@@ -270,10 +270,29 @@ retry:
 		return ERR_PTR(-EAGAIN);
 	}
 	event = list_first_entry(events, typeof(*event), node);
-	list_del(&event->node);
+	if (likely(remove))
+		list_del(&event->node);
 	spin_unlock(&queue->lock);
 
 	return event;
+}
+
+struct scribe_event *scribe_dequeue_event(struct scribe_event_queue *queue,
+					  int wait)
+{
+	return __scribe_peek_event(queue, wait, 1);
+}
+
+/*
+ * scribe_peek_event() returns the first event (like dequeue), but doesn't
+ * remove it from the queue.
+ * XXX BE CAREFUL: do not free the event, do not access the event list node.
+ * If you want to consume the event, dequeue it.
+ */
+struct scribe_event *scribe_peek_event(struct scribe_event_queue *queue,
+				       int wait)
+{
+	return __scribe_peek_event(queue, wait, 0);
 }
 
 int scribe_is_queue_empty(struct scribe_event_queue *queue)
