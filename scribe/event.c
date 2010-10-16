@@ -107,7 +107,7 @@ void scribe_put_queue(struct scribe_event_queue *queue)
 {
 	struct scribe_context *ctx = queue->ctx;
 
-	if (!ctx) {
+	if (unlikely(!ctx)) {
 		/* The queue is not attached in the context queues list */
 		scribe_put_queue_nolock(queue);
 		return;

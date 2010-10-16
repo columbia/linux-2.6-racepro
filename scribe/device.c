@@ -54,37 +54,30 @@ static inline int is_interrupted(int ret)
 
 /* Record */
 
-/*
- * __get_non_empty_queue() try to find the the first non empty queue. It
- * returns 0 on success, -ENODATA if the queue list is empty and will
- * stay empty, -EAGAIN if at least one queue is present and all queues are
- * empty.
- *
- * Note: scribe_get_non_empty_queue() also remove dead queues.
- */
-static int __get_non_empty_queue(struct scribe_context *ctx,
-				 struct scribe_event_queue **ptr_queue)
+static inline int is_queue_active(struct scribe_event_queue *queue)
 {
-	struct scribe_event_queue *queue, *tmp;
+	return !scribe_is_queue_empty(queue) || queue->flags & SCRIBE_WONT_GROW;
+}
+
+/*
+ * __get_active_queue() tries to find the the first non empty queue, or ready
+ * to be ripped off. Returns -ENODATA if the queue list is empty and will stay
+ * empty, -EAGAIN if at least one queue is present and all queues are empty.
+ */
+static int __get_active_queue(struct scribe_context *ctx,
+			      struct scribe_event_queue **ptr_queue)
+{
+	struct scribe_event_queue *queue;
 	int ret;
 
 	spin_lock(&ctx->queues_lock);
-	list_for_each_entry_safe(queue, tmp, &ctx->queues, node) {
-		if (!scribe_is_queue_empty(queue)) {
+	list_for_each_entry(queue, &ctx->queues, node) {
+		if (is_queue_active(queue)) {
 			scribe_get_queue(queue);
 			spin_unlock(&ctx->queues_lock);
 			*ptr_queue = queue;
 			return 0;
 		}
-
-		/*
-		 * When the queue is empty and set to not growing, we can
-		 * consider it as dead. Releasing our persistent token on it
-		 * will make the queue go away if the associated process
-		 * detaches.
-		 */
-		if (queue->flags & SCRIBE_WONT_GROW)
-			scribe_make_persistent(queue, 0);
 	}
 
 	ret = -EAGAIN;
@@ -94,7 +87,7 @@ static int __get_non_empty_queue(struct scribe_context *ctx,
 		 * there are no tasks attached as well. Thus the context
 		 * status is either set to:
 		 * - SCRIBE_IDLE: the recording is over, and so we want
-		 *   dev_read() to return 0
+		 *   serialize_events() to return 0
 		 * - SCRIBE_RECORD: the recording has not started yet, we want
 		 *   to wait.
 		 */
@@ -106,16 +99,16 @@ static int __get_non_empty_queue(struct scribe_context *ctx,
 	return ret;
 }
 
-static int get_non_empty_queue(struct scribe_context *ctx,
-			       struct scribe_event_queue **current_queue,
-			       int wait)
+static int get_active_queue(struct scribe_context *ctx,
+			    struct scribe_event_queue **current_queue,
+			    int wait)
 {
 	struct scribe_event_queue *queue;
 	int ret;
 
 	queue = *current_queue;
 	if (queue) {
-		if (!scribe_is_queue_empty(queue))
+		if (is_queue_active(queue))
 			return 0;
 		scribe_put_queue(queue);
 		*current_queue = NULL;
@@ -123,9 +116,9 @@ static int get_non_empty_queue(struct scribe_context *ctx,
 
 	if (wait == SCRIBE_WAIT)
 		wait_event(ctx->queues_wait,
-			(ret = __get_non_empty_queue(ctx, &queue)) != -EAGAIN);
+			   (ret = __get_active_queue(ctx, &queue)) != -EAGAIN);
 	else /* SCRIBE_NO_WAIT */
-		ret = __get_non_empty_queue(ctx, &queue);
+		ret = __get_active_queue(ctx, &queue);
 
 	if (ret)
 		return ret;
@@ -134,27 +127,57 @@ static int get_non_empty_queue(struct scribe_context *ctx,
 	return 0;
 }
 
+/*
+ * get_next_event() returns in most cases the next event on the
+ * @current_queue. When switching queues, it returns a PID event, and when the
+ * queue is dead, it returned a QUEUE_EOF event.
+ *
+ * Note: This is where queues get to be freed when dead
+ */
 static int get_next_event(pid_t *last_pid, struct scribe_event **event,
-			  struct scribe_event_queue *queue)
+			  struct scribe_event_queue **current_queue)
 {
+	struct scribe_event_queue *queue;
 	struct scribe_event_pid *event_pid;
+	struct scribe_event_queue_eof *event_eof;
 
-	if (likely(*last_pid == queue->pid)) {
+	queue = *current_queue;
+
+	if (unlikely(*last_pid != queue->pid)) {
+		/* We've changed pid, inserting a pid event */
+		event_pid = scribe_alloc_event(SCRIBE_EVENT_PID);
+		if (!event_pid)
+			return -ENOMEM;
+
+		event_pid->pid = queue->pid;
+		*last_pid = queue->pid;
+
+		*event = (struct scribe_event *)event_pid;
+	} else if (likely(!scribe_is_queue_empty(queue))) {
 		*event = scribe_dequeue_event(queue, SCRIBE_NO_WAIT);
-		/* The queue should be non-empty, so it should not fail */
-		BUG_ON(IS_ERR(*event));
-		return 0;
+	} else {
+		BUG_ON(!(queue->flags & SCRIBE_WONT_GROW));
+
+		event_eof = scribe_alloc_event(SCRIBE_EVENT_QUEUE_EOF);
+		if (!event_eof)
+			return -ENOMEM;
+
+		*event = (struct scribe_event *)event_eof;
+
+		/*
+		 * When the queue is empty and set to not growing, we can
+		 * consider it as dead. Releasing our persistent token on it
+		 * will make the queue go away if the associated process
+		 * detaches.
+		 */
+		spin_lock(&queue->ctx->queues_lock);
+		scribe_make_persistent(queue, 0);
+		spin_unlock(&queue->ctx->queues_lock);
+
+		scribe_put_queue(queue);
+		*current_queue = NULL;
 	}
 
-	/* We've changed pid, inserting a pid event */
-	event_pid = scribe_alloc_event(SCRIBE_EVENT_PID);
-	if (!event_pid)
-		return -ENOMEM;
-
-	event_pid->pid = queue->pid;
-	*last_pid = queue->pid;
-
-	*event = (struct scribe_event *)event_pid;
 	return 0;
 }
 
@@ -180,7 +203,7 @@ static ssize_t serialize_events(struct scribe_context *ctx,
 	event = *pending_event;
 	*pending_event = NULL;
 	if (!event) {
-		err = get_non_empty_queue(ctx, current_queue, SCRIBE_WAIT);
+		err = get_active_queue(ctx, current_queue, SCRIBE_WAIT);
 		if (err) {
 			/*
 			 * if err == -ENODATA, it means that the context is in
@@ -195,7 +218,7 @@ static ssize_t serialize_events(struct scribe_context *ctx,
 
 	for (;;) {
 		if (!event) {
-			err = get_next_event(last_pid, &event, *current_queue);
+			err = get_next_event(last_pid, &event, current_queue);
 			if (err)
 				goto out;
 		}
@@ -221,7 +244,7 @@ static ssize_t serialize_events(struct scribe_context *ctx,
 		buf += to_write;
 		count -= to_write;
 
-		err = get_non_empty_queue(ctx, current_queue, SCRIBE_NO_WAIT);
+		err = get_active_queue(ctx, current_queue, SCRIBE_NO_WAIT);
 		if (err)
 			goto out;
 	}
@@ -384,6 +407,9 @@ static ssize_t deserialize_events(struct scribe_context *ctx,
 			scribe_free_event(event);
 			if (err)
 				goto out;
+		} else if (event->type == SCRIBE_EVENT_QUEUE_EOF) {
+			scribe_set_queue_wont_grow(*current_queue);
+			scribe_free_event(event);
 		} else { /* generic event handling */
 			scribe_queue_event(*current_queue, event);
 		}
@@ -411,6 +437,7 @@ static void event_pump_replay(struct scribe_context *ctx, char *buf,
 			      struct file *file)
 
 {
+	struct scribe_event_queue *queue;
 	struct scribe_event_queue *current_queue = NULL;
 	struct scribe_event_queue *pre_alloc_queue = NULL;
 	struct scribe_event *pending_event = NULL;
@@ -471,6 +498,12 @@ free:
 	return;
 err:
 	scribe_emergency_stop(ctx, ret);
+
+	spin_lock(&ctx->queues_lock);
+	list_for_each_entry(queue, &ctx->queues, node)
+		scribe_set_queue_wont_grow(queue);
+	spin_unlock(&ctx->queues_lock);
+
 	goto free;
 }
 
