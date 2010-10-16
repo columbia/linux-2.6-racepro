@@ -37,30 +37,40 @@ static struct scribe_event_data *get_data_event(struct scribe_ps *scribe,
 {
 	struct scribe_event_data *event;
 
-	event = scribe->pre_alloc_data_event;
-	if (event) {
-		scribe->pre_alloc_data_event = NULL;
-		if (event->size >= size) {
-			event->size = size;
-			return event;
+	if (is_recording(scribe)) {
+		event = scribe->prepared_data_event;
+		if (event) {
+			scribe->prepared_data_event = NULL;
+			if (event->size >= size) {
+				event->size = size;
+				return event;
+			}
+			WARN(1, "Event too small ?!");
+			scribe_free_event(event);
 		}
-		scribe_free_event(event);
-	}
 
-	event = scribe_alloc_event_data(size);
-	if (!event)
-		scribe_emergency_stop(scribe->ctx, -ENOMEM);
+		event = scribe_alloc_event_data(size);
+		if (!event)
+			event = ERR_PTR(-ENOMEM);
+	} else
+		event = scribe_dequeue_event(scribe->queue, SCRIBE_WAIT);
 
 	return event;
 }
 
 void scribe_prepare_data_event(size_t pre_alloc_size)
 {
+	struct scribe_event_data *event;
 	struct scribe_ps *scribe = current->scribe;
 	if (!is_scribed(scribe))
 		return;
 
-	scribe->pre_alloc_data_event = get_data_event(scribe, pre_alloc_size);
+	event = get_data_event(scribe, pre_alloc_size);
+	if (IS_ERR(event)) {
+		scribe_emergency_stop(scribe->ctx, PTR_ERR(event));
+		return;
+	}
+	scribe->prepared_data_event = event;
 }
 
 void scribe_pre_uaccess(const void *data, const void __user *user_ptr,
@@ -79,43 +89,51 @@ void scribe_post_uaccess(const void *data, const void __user *user_ptr,
 	struct scribe_event_data *event;
 	struct scribe_ps *scribe = current->scribe;
 	int data_flags;
+	int err;
 
 	if (!is_scribed(scribe))
 		return;
 
 	/*
 	 * @size is the number of bytes that have been copied from/to
-	 * userspace. We do not care about bytes that have not been copied.
+	 * userspace.
+	 * For convenience during the replay, we will record a 0 sized
+	 * data event.
 	 */
-	if (!size)
-		goto out_forbid;
 
 	data_flags = scribe->data_flags | flags;
 
 	if (data_flags & SCRIBE_DATA_DONT_RECORD)
 		goto out_forbid;
 
-	if (is_recording(scribe)) {
-		event = get_data_event(scribe, size);
-		if (!event)
-			return;
+	event = get_data_event(scribe, size);
+	if (IS_ERR(event)) {
+		scribe_emergency_stop(scribe->ctx, PTR_ERR(event));
+		return;
+	}
 
+	if (is_recording(scribe)) {
 		event->data_type = data_flags;
 		event->user_ptr = (__u32)user_ptr;
 
 		memcpy(event->data, data, size);
 		scribe_queue_event(scribe->queue, event);
+	} else {
+		err = event->data_type != data_flags ||
+			event->size != size ||
+			event->user_ptr != user_ptr ||
+			memcmp(event->data, data, size);
+		if (err) {
+			scribe_emergency_stop(scribe->ctx, -EDIVERGE);
+			return;
+		}
 	}
 
 out_forbid:
 	__scribe_forbid_uaccess(scribe);
 
-	/* TODO this is a failsafe, it can be removed later */
-	event = scribe->pre_alloc_data_event;
-	if (event) {
-		scribe->pre_alloc_data_event = NULL;
-		scribe_free_event(scribe->pre_alloc_data_event);
-	}
+	WARN(scribe->prepared_data_event,
+	     "pre-allocated data event not used\n");
 }
 
 void scribe_allow_uaccess(void)

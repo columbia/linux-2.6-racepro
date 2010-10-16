@@ -154,6 +154,8 @@ extern void scribe_queue_event(struct scribe_event_queue *queue, void *event);
 #define SCRIBE_WAIT_INTERRUPTIBLE 2
 extern struct scribe_event *scribe_dequeue_event(
 				struct scribe_event_queue *queue, int wait);
+extern struct scribe_event *scribe_peek_event(
+				struct scribe_event_queue *queue, int wait);
 
 extern int scribe_is_queue_empty(struct scribe_event_queue *queue);
 extern void scribe_set_queue_wont_grow(struct scribe_event_queue *queue);
@@ -215,7 +217,7 @@ struct scribe_ps {
 	struct scribe_insert_point syscall_ip;
 	int in_syscall;
 
-	struct scribe_event_data *pre_alloc_data_event;
+	struct scribe_event_data *prepared_data_event;
 	int data_flags;
 	int can_uaccess;
 };

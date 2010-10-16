@@ -262,7 +262,7 @@ void scribe_attach(struct scribe_ps *scribe)
 
 	scribe->in_syscall = 0;
 	scribe->data_flags = 0;
-	scribe->pre_alloc_data_event = NULL;
+	scribe->prepared_data_event = NULL;
 	scribe->can_uaccess = 0;
 }
 
@@ -271,8 +271,10 @@ void scribe_detach(struct scribe_ps *scribe)
 	struct scribe_context *ctx = scribe->ctx;
 	BUG_ON(!is_scribed(scribe));
 
-	if (scribe->pre_alloc_data_event)
-		scribe_free_event(scribe->pre_alloc_data_event);
+	if (scribe->prepared_data_event) {
+		WARN(1, "prepared_data_event present");
+		scribe_free_event(scribe->prepared_data_event);
+	}
 
 	spin_lock(&ctx->tasks_lock);
 	list_del(&scribe->node);

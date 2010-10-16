@@ -24,6 +24,8 @@
 #endif /* __KERNEL__ */
 
 
+#define EDIVERGE	139	/* Replay diverged */
+
 #define SCRIBE_IDLE		0x00000000
 #define SCRIBE_RECORD		0x00000001
 #define SCRIBE_REPLAY		0x00000002
