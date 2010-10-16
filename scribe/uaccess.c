@@ -97,7 +97,6 @@ void scribe_post_uaccess(const void *data, const void __user *user_ptr,
 	struct scribe_event_data *event;
 	struct scribe_ps *scribe = current->scribe;
 	int data_flags;
-	int err;
 
 	if (!is_scribed(scribe))
 		return;
@@ -127,15 +126,38 @@ void scribe_post_uaccess(const void *data, const void __user *user_ptr,
 
 		memcpy(event->data, data, size);
 		scribe_queue_event(scribe->queue, event);
-	} else {
-		err = event->data_type != data_flags ||
-			event->size != size ||
-			(void *)event->user_ptr != user_ptr ||
-			memcmp(event->data, data, size);
-		if (err) {
+	} else { /* replay */
+		if (event->data_type != data_flags ||
+		    event->size != size ||
+		    (void *)event->user_ptr != user_ptr)
 			scribe_emergency_stop(scribe->ctx, -EDIVERGE);
-			return;
+
+		else if (data_flags == SCRIBE_DATA_NON_DETERMINISTIC) {
+			/*
+			 * FIXME Do the copying in pre_uaccess and skip the
+			 * extra copy_to_user that happened before.
+			 */
+
+			data_flags = scribe_get_data_flags(scribe);
+			scribe_set_data_flags(scribe, SCRIBE_DATA_IGNORE);
+
+			if (__copy_to_user_inatomic((void __user *)user_ptr,
+						    event->data, size)) {
+				/*
+				 * FIXME If we are in an atomic region, the
+				 * copy may or may not have happended. We need
+				 * to make sure that the copy happens anyway.
+				 */
+				scribe_emergency_stop(scribe->ctx, -EDIVERGE);
+			}
+
+			scribe_set_data_flags(scribe, data_flags);
+
+		} else {
+			if (memcmp(event->data, data, size))
+				scribe_emergency_stop(scribe->ctx, -EDIVERGE);
 		}
+
 	}
 
 out_forbid:
