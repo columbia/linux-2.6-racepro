@@ -79,7 +79,13 @@ void scribe_pre_uaccess(const void *data, const void __user *user_ptr,
 			size_t size, int flags)
 {
 	struct scribe_ps *scribe = current->scribe;
+	int data_flags;
 	if (!is_scribed(scribe))
+		return;
+
+	data_flags = scribe->data_flags | flags;
+
+	if (data_flags & SCRIBE_DATA_IGNORE)
 		return;
 
 	__scribe_allow_uaccess(scribe);
@@ -104,6 +110,9 @@ void scribe_post_uaccess(const void *data, const void __user *user_ptr,
 	 */
 
 	data_flags = scribe->data_flags | flags;
+
+	if (data_flags & SCRIBE_DATA_IGNORE)
+		return;
 
 	if (data_flags & SCRIBE_DATA_DONT_RECORD)
 		goto out_forbid;
