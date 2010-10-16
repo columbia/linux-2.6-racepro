@@ -252,7 +252,7 @@ retry:
 		return ERR_PTR(-ERESTARTSYS);
 
 	if (wait == SCRIBE_WAIT)
-	    wait_event(*queue->wait,
+		wait_event(*queue->wait,
 		       !scribe_is_queue_empty(queue) ||
 		       (queue->flags & SCRIBE_WONT_GROW));
 

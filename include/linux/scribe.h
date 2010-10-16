@@ -156,6 +156,18 @@ extern struct scribe_event *scribe_dequeue_event(
 				struct scribe_event_queue *queue, int wait);
 extern struct scribe_event *scribe_peek_event(
 				struct scribe_event_queue *queue, int wait);
+#define scribe_dequeue_event_specific(_type, queue, wait)		\
+({									\
+	struct scribe_event *__event;					\
+									\
+	__event = scribe_dequeue_event(queue, wait);			\
+	if (__event->type != _type) {					\
+		scribe_free_event(__event);				\
+		scribe_emergency_stop(queue->ctx, -EDIVERGE);		\
+		__event = ERR_PTR(-EDIVERGE);				\
+	}								\
+	(struct_##_type *)__event;					\
+})
 
 extern int scribe_is_queue_empty(struct scribe_event_queue *queue);
 extern void scribe_set_queue_wont_grow(struct scribe_event_queue *queue);

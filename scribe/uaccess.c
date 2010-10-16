@@ -50,10 +50,14 @@ static struct scribe_event_data *get_data_event(struct scribe_ps *scribe,
 		}
 
 		event = scribe_alloc_event_data(size);
-		if (!event)
+		if (!event) {
+			scribe_emergency_stop(scribe->ctx, -ENOMEM);
 			event = ERR_PTR(-ENOMEM);
-	} else
-		event = scribe_dequeue_event(scribe->queue, SCRIBE_WAIT);
+		}
+	} else {
+		event = scribe_dequeue_event_specific(
+				SCRIBE_EVENT_DATA, scribe->queue, SCRIBE_WAIT);
+	}
 
 	return event;
 }
@@ -66,10 +70,8 @@ void scribe_prepare_data_event(size_t pre_alloc_size)
 		return;
 
 	event = get_data_event(scribe, pre_alloc_size);
-	if (IS_ERR(event)) {
-		scribe_emergency_stop(scribe->ctx, PTR_ERR(event));
+	if (IS_ERR(event))
 		return;
-	}
 	scribe->prepared_data_event = event;
 }
 
@@ -107,10 +109,8 @@ void scribe_post_uaccess(const void *data, const void __user *user_ptr,
 		goto out_forbid;
 
 	event = get_data_event(scribe, size);
-	if (IS_ERR(event)) {
-		scribe_emergency_stop(scribe->ctx, PTR_ERR(event));
+	if (IS_ERR(event))
 		return;
-	}
 
 	if (is_recording(scribe)) {
 		event->data_type = data_flags;
@@ -121,7 +121,7 @@ void scribe_post_uaccess(const void *data, const void __user *user_ptr,
 	} else {
 		err = event->data_type != data_flags ||
 			event->size != size ||
-			event->user_ptr != user_ptr ||
+			(void *)event->user_ptr != user_ptr ||
 			memcmp(event->data, data, size);
 		if (err) {
 			scribe_emergency_stop(scribe->ctx, -EDIVERGE);
