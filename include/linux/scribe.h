@@ -185,7 +185,10 @@ static __always_inline void *scribe_alloc_event(__u8 type)
 	}
 	return __scribe_alloc_event(type);
 }
-void scribe_free_event(void *event);
+static inline void scribe_free_event(void *event)
+{
+	kfree(event);
+}
 
 
 /* Per-process state */

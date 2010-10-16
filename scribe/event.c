@@ -8,7 +8,6 @@
  */
 
 #include <linux/scribe.h>
-#include <linux/vmalloc.h>
 #include <linux/sched.h>
 
 static void init_insert_point(struct scribe_event_queue *queue,
@@ -298,12 +297,6 @@ void *__scribe_alloc_event(__u8 type)
 	return __scribe_alloc_event_const(type);
 }
 
-/*
- * FIXME Disabling vmalloc since event->size can now change (see in
- * uaccess.c). We could potentially call kfree() instead of vfree().
- */
-/* #define SCRIBE_KMALLOC_MAX_SIZE 0x4000 */
-#define SCRIBE_KMALLOC_MAX_SIZE -1
 struct scribe_event_data *scribe_alloc_event_data(size_t size)
 {
 	struct scribe_event_data *event;
@@ -311,34 +304,12 @@ struct scribe_event_data *scribe_alloc_event_data(size_t size)
 
 	event_size = size + sizeof_event_from_type(SCRIBE_EVENT_DATA);
 
-	if (event_size > SCRIBE_KMALLOC_MAX_SIZE)
-		event = vmalloc(event_size);
-	else
-		event = kmalloc(event_size, GFP_KERNEL);
+	event = kmalloc(event_size, GFP_KERNEL);
+
 	if (event) {
 		event->h.type = SCRIBE_EVENT_DATA;
 		event->size = size;
 	}
 
 	return event;
-}
-
-static void scribe_free_event_data(struct scribe_event_data *event)
-{
-	size_t event_size;
-
-	event_size = sizeof_event_from_type(SCRIBE_EVENT_DATA) + event->size;
-	if (event_size > SCRIBE_KMALLOC_MAX_SIZE)
-		vfree(event);
-	else
-		kfree(event);
-}
-
-void scribe_free_event(void *event)
-{
-	struct scribe_event_data *event_data = event;
-	if (event_data->h.type == SCRIBE_EVENT_DATA)
-		scribe_free_event_data(event_data);
-	else
-		kfree(event);
 }
