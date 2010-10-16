@@ -210,6 +210,13 @@ create_elf_tables(struct linux_binprm *bprm, struct elfhdr *exec,
 	if (scribe) {
 		data_flags = scribe_get_data_flags(scribe);
 		scribe_set_data_flags(scribe, SCRIBE_DATA_NON_DETERMINISTIC);
+
+		/*
+		 * If we are doing an attach_on_exec, we need to throw any
+		 * randomness out of the window, because we cannot record it.
+		 */
+		if (scribe->flags & SCRIBE_PS_ATTACH_ON_EXEC)
+			memset(k_rand_bytes, 0, sizeof(k_rand_bytes));
 	}
 #endif
 	if (__copy_to_user(u_rand_bytes, k_rand_bytes, sizeof(k_rand_bytes)))

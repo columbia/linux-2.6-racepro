@@ -486,7 +486,22 @@ EXPORT_SYMBOL(copy_strings_kernel);
 
 #ifdef CONFIG_SCRIBE
 
-static void scribe_maybe_attach_on_exec(void)
+static void scribe_prepare_attach_on_exec(void)
+{
+	struct scribe_ps *scribe = current->scribe;
+
+	/*
+	 * We need to disable randomization for attach_on_exec.
+	 * (because we are not recording yet we won't be able to save those
+	 * random values).
+	 */
+	if (scribe && (scribe->flags & SCRIBE_PS_ATTACH_ON_EXEC)) {
+		current->flags &= ~PF_RANDOMIZE;
+		current->personality &= ~ADDR_NO_RANDOMIZE;
+	}
+}
+
+static void scribe_attach_on_exec(void)
 {
 	struct scribe_ps *scribe = current->scribe;
 
@@ -497,7 +512,8 @@ static void scribe_maybe_attach_on_exec(void)
 }
 
 #else
-static inline void scribe_maybe_attach_on_exec(void) {}
+static inline void scribe_prepare_attach_on_exec(void) {}
+static inline void scribe_attach_on_exec(void) {}
 #endif /* CONFIG_SCRIBE */
 
 
@@ -1405,12 +1421,14 @@ int do_execve(char * filename,
 	if (retval < 0)
 		goto out;
 
+	scribe_prepare_attach_on_exec();
+
 	current->flags &= ~PF_KTHREAD;
 	retval = search_binary_handler(bprm,regs);
 	if (retval < 0)
 		goto out;
 
-	scribe_maybe_attach_on_exec();
+	scribe_attach_on_exec();
 
 	/* execve succeeded */
 	current->fs->in_exec = 0;
