@@ -12,8 +12,8 @@
 #ifndef _LINUX_SCRIBE_UACCESS_H_
 #define _LINUX_SCRIBE_UACCESS_H_
 
-#define SCRIBE_DATA_INPUT		1
-#define SCRIBE_DATA_STRING		2
+#define SCRIBE_DATA_INPUT		0x01
+#define SCRIBE_DATA_STRING		0x02
 
 /*
  * For x86, all user accesses can be probed by hooking on:

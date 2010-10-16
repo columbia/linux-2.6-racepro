@@ -32,6 +32,7 @@
 #include <linux/elf.h>
 #include <linux/utsname.h>
 #include <linux/coredump.h>
+#include <linux/scribe.h>
 #include <asm/uaccess.h>
 #include <asm/param.h>
 #include <asm/page.h>
@@ -155,14 +156,20 @@ create_elf_tables(struct linux_binprm *bprm, struct elfhdr *exec,
 	int ei_index = 0;
 	const struct cred *cred = current_cred();
 	struct vm_area_struct *vma;
+	int ret;
+#ifdef CONFIG_SCRIBE
+	struct scribe_ps *scribe = current->scribe;
+	int data_flags;
+#endif
 
 	/*
 	 * In some cases (e.g. Hyper-Threading), we want to avoid L1
 	 * evictions by the processes running on the same package. One
 	 * thing we can do is to shuffle the initial stack for them.
 	 */
-
-	p = arch_align_stack(p);
+	ret = scribe_interpose_value(p, arch_align_stack(p));
+	if (ret)
+		return ret;
 
 	/*
 	 * If this architecture has a platform capability string, copy it
@@ -198,8 +205,19 @@ create_elf_tables(struct linux_binprm *bprm, struct elfhdr *exec,
 	get_random_bytes(k_rand_bytes, sizeof(k_rand_bytes));
 	u_rand_bytes = (elf_addr_t __user *)
 		       STACK_ALLOC(p, sizeof(k_rand_bytes));
+#ifdef CONFIG_SCRIBE
+	data_flags = 0;
+	if (scribe) {
+		data_flags = scribe_get_data_flags(scribe);
+		scribe_set_data_flags(scribe, SCRIBE_DATA_NON_DETERMINISTIC);
+	}
+#endif
 	if (__copy_to_user(u_rand_bytes, k_rand_bytes, sizeof(k_rand_bytes)))
 		return -EFAULT;
+#ifdef CONFIG_SCRIBE
+	if (scribe)
+		scribe_set_data_flags(scribe, data_flags);
+#endif
 
 	/* Create the ELF interpreter info */
 	elf_info = (elf_addr_t *)current->mm->saved_auxv;
@@ -578,10 +596,16 @@ static int load_elf_binary(struct linux_binprm *bprm, struct pt_regs *regs)
 	unsigned long reloc_func_desc = 0;
 	int executable_stack = EXSTACK_DEFAULT;
 	unsigned long def_flags = 0;
+	unsigned long randomized_stack_top;
 	struct {
 		struct elfhdr elf_ex;
 		struct elfhdr interp_elf_ex;
 	} *loc;
+
+	retval = scribe_interpose_value(randomized_stack_top,
+					randomize_stack_top(STACK_TOP));
+	if (retval)
+		return retval;
 
 	loc = kmalloc(sizeof(*loc), GFP_KERNEL);
 	if (!loc) {
@@ -736,8 +760,8 @@ static int load_elf_binary(struct linux_binprm *bprm, struct pt_regs *regs)
 	   change some of these later */
 	current->mm->free_area_cache = current->mm->mmap_base;
 	current->mm->cached_hole_size = 0;
-	retval = setup_arg_pages(bprm, randomize_stack_top(STACK_TOP),
-				 executable_stack);
+
+	retval = setup_arg_pages(bprm, randomized_stack_top, executable_stack);
 	if (retval < 0) {
 		send_sig(SIGKILL, current, 0);
 		goto out_free_dentry;

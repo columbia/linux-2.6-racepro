@@ -273,11 +273,12 @@ extern void scribe_allow_uaccess(void);
 extern void scribe_forbid_uaccess(void);
 extern void scribe_prepare_data_event(size_t pre_alloc_size);
 
-#define SCRIBE_DATA_INPUT		1
-#define SCRIBE_DATA_STRING		2
-#define SCRIBE_DATA_NON_DETERMINISTIC	4
-#define SCRIBE_DATA_DONT_RECORD		8
-#define SCRIBE_DATA_IGNORE		16
+#define SCRIBE_DATA_INPUT		0x01
+#define SCRIBE_DATA_STRING		0x02
+#define SCRIBE_DATA_NON_DETERMINISTIC	0x04
+#define SCRIBE_DATA_INTERNAL		0x08
+#define SCRIBE_DATA_DONT_RECORD		0x10
+#define SCRIBE_DATA_IGNORE		0x20
 static inline void scribe_set_data_flags(struct scribe_ps *scribe, int flags)
 {
 	scribe->data_flags = flags;
@@ -286,9 +287,50 @@ static inline int scribe_get_data_flags(struct scribe_ps *scribe)
 {
 	return scribe->data_flags;
 }
-
 extern void scribe_pre_schedule(void);
 extern void scribe_post_schedule(void);
+
+#define scribe_interpose_value(dst, src)				\
+({									\
+	int __ret = 0;							\
+	struct scribe_ps *__scribe = current->scribe;			\
+	struct scribe_event_data *__event;				\
+									\
+	if (is_recording(__scribe)) {					\
+		__event = scribe_alloc_event_data(sizeof(src));		\
+		if (!__event)						\
+			__ret = -ENOMEM;				\
+		else {							\
+			__event->data_type = SCRIBE_DATA_INTERNAL;	\
+			__event->user_ptr = 0;				\
+			(dst) = *((__typeof__(src) *)__event->data)	\
+			      = (src);					\
+			scribe_queue_event(__scribe->queue, __event);	\
+		}							\
+	} else if (is_replaying(__scribe)) {				\
+		__event = scribe_dequeue_event_specific(		\
+				SCRIBE_EVENT_DATA,			\
+				__scribe->queue, SCRIBE_WAIT);		\
+		if (IS_ERR(__event)) {					\
+			__ret = PTR_ERR(__event);			\
+			/* the next line fixes a compiler warning */	\
+			__ret = __ret ? : -EDIVERGE;			\
+		}							\
+		else if (__event->data_type != SCRIBE_DATA_INTERNAL ||	\
+			 __event->size != sizeof(src)) {		\
+			scribe_free_event(__event);			\
+			scribe_emergency_stop(__scribe->ctx,		\
+					      -EDIVERGE);		\
+			__ret = -EDIVERGE;				\
+		} else {						\
+			(dst) = __event->ldata[0];			\
+			scribe_free_event(__event);			\
+		}							\
+	} else								\
+		(dst) = (src);						\
+									\
+	__ret;								\
+})
 
 #else /* CONFIG_SCRIBE */
 
@@ -305,6 +347,8 @@ static inline void scribe_forbid_uaccess(void) {}
 static inline void scribe_prepare_data_event(size_t pre_alloc_size) {}
 static inline void scribe_pre_schedule(void) {}
 static inline void scribe_post_schedule(void) {}
+
+#define scribe_interpose_value(dst, src) ({ (dst) = (src); 0; })
 
 #endif /* CONFIG_SCRIBE */
 
