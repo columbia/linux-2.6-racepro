@@ -8,46 +8,9 @@
 #include <linux/thread_info.h>
 #include <linux/prefetch.h>
 #include <linux/string.h>
+#include <linux/scribe_uaccess.h>
 #include <asm/asm.h>
 #include <asm/page.h>
-
-#ifdef CONFIG_SCRIBE
-/*
- * All user accesses can be probed by hooking on:
- *	get_user
- *	put_user
- *	__get_user_nocheck
- *	__put_user_nocheck
- *	__get_user_size_ex
- *	__put_user_size_ex
- *	__copy_to_user
- *	__copy_from_user
- *
- *	__copy_to_user_inatomic
- *	__copy_from_user_inatomic
- *	__copy_from_user_nocache
- *	__copy_from_user_inatomic_nocache
- *
- *	__do_strncpy_from_user
- *	__do_clear_user
- *	strnlen_user
- */
-
-#define SCRIBE_DATA_INPUT		1
-#define SCRIBE_DATA_STRING		2
-
-extern void scribe_pre_uaccess(const void *data, const void __user *user_ptr,
-			       size_t size, int flags);
-extern void scribe_post_uaccess(const void *data, const void __user *user_ptr,
-				size_t size, int flags);
-#else
-static inline void scribe_pre_uaccess(const void *data,
-				      const void __user *user_ptr, size_t size,
-				      int flags) {}
-static inline void scribe_post_uaccess(const void *data,
-				       const void __user *user_ptr,
-				       size_t size, int flags) {}
-#endif
 
 #define VERIFY_READ 0
 #define VERIFY_WRITE 1
