@@ -16,7 +16,6 @@
 #include <linux/types.h>
 #ifdef __KERNEL__
 #include <linux/list.h>
-#include <asm/atomic.h>
 #else
 #ifndef __always_inline
 #define __always_inline inline
@@ -56,7 +55,6 @@ enum scribe_event_type {
 struct scribe_event {
 #ifdef __KERNEL__
 	struct list_head node;
-	atomic_t ref_cnt;
 	__u8 __align__[3];
 	char payload_offset[0];
 	/*

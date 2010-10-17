@@ -237,7 +237,7 @@ static ssize_t serialize_events(struct scribe_context *ctx,
 			goto out;
 		}
 
-		scribe_put_event(event);
+		scribe_free_event(event);
 		event = NULL;
 		*pending_offset = 0;
 
@@ -296,7 +296,7 @@ free:
 	if (current_queue)
 		scribe_put_queue(current_queue);
 	if (pending_event)
-		scribe_put_event(pending_event);
+		scribe_free_event(pending_event);
 	return;
 err:
 	scribe_emergency_stop(ctx, ret);
@@ -404,17 +404,16 @@ static ssize_t deserialize_events(struct scribe_context *ctx,
 		if (event->type == SCRIBE_EVENT_PID) {
 			err = handle_event_pid(ctx, event,
 					       current_queue, pre_alloc_queue);
-			if (err) {
-				scribe_put_event(event);
+			scribe_free_event(event);
+			if (err)
 				goto out;
-			}
 		} else if (event->type == SCRIBE_EVENT_QUEUE_EOF) {
 			scribe_set_queue_wont_grow(*current_queue);
+			scribe_free_event(event);
 		} else { /* generic event handling */
 			scribe_queue_event(*current_queue, event);
 		}
 
-		scribe_put_event(event);
 		event = NULL;
 		ret += to_copy;
 		buf += to_copy;
@@ -510,7 +509,7 @@ free:
 	if (pre_alloc_queue)
 		scribe_put_queue(pre_alloc_queue);
 	if (pending_event)
-		scribe_put_event(pending_event);
+		scribe_free_event(pending_event);
 	return;
 err:
 	scribe_emergency_stop(ctx, ret);
@@ -634,12 +633,12 @@ static ssize_t dev_write(struct file *file,
 
 	to_copy = sizeof_event_payload(event);
 	if (count < to_copy) {
-		scribe_put_event(event);
+		scribe_free_event(event);
 		return -EINVAL;
 	}
 
 	if (copy_from_user(get_event_payload(event), buf, to_copy)) {
-		scribe_put_event(event);
+		scribe_free_event(event);
 		return -EFAULT;
 	}
 	event->type = type; /* guard against TOCTTOU */
@@ -648,7 +647,7 @@ static ssize_t dev_write(struct file *file,
 	ret = handle_command(dev, event);
 	mutex_unlock(&dev->lock_write);
 
-	scribe_put_event(event);
+	scribe_free_event(event);
 	if (ret)
 		return ret;
 	return to_copy;
@@ -687,7 +686,7 @@ static ssize_t dev_read(struct file *file,
 	if (copy_to_user(buf, get_event_payload(event), to_copy))
 		goto out;
 
-	scribe_put_event(dev->pending_notification_event);
+	scribe_free_event(dev->pending_notification_event);
 	dev->pending_notification_event = NULL;
 	ret = 0;
 
@@ -740,7 +739,7 @@ static int dev_release(struct inode *inode, struct file *file)
 	stop_event_pump(dev);
 	free_pages((unsigned long)dev->pump_buffer, PUMP_BUFFER_ORDER);
 	if (dev->pending_notification_event)
-		scribe_put_event(dev->pending_notification_event);
+		scribe_free_event(dev->pending_notification_event);
 	scribe_exit_context(dev->ctx);
 	mutex_destroy(&dev->lock_read);
 	mutex_destroy(&dev->lock_write);

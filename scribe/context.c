@@ -53,7 +53,6 @@ static void set_context_idle(struct scribe_context *ctx, int error)
 
 	ctx->idle_event->error = error;
 	scribe_queue_event(ctx->notification_queue, ctx->idle_event);
-	scribe_put_event(ctx->idle_event);
 	ctx->idle_event = NULL;
 }
 
@@ -116,7 +115,7 @@ void scribe_exit_context(struct scribe_context *ctx)
 
 	scribe_put_queue(ctx->notification_queue);
 	if (ctx->idle_event)
-		scribe_put_event(ctx->idle_event);
+		scribe_free_event(ctx->idle_event);
 
 	scribe_put_context(ctx);
 }
@@ -132,7 +131,7 @@ static int context_start(struct scribe_context *ctx, int action)
 	spin_lock(&ctx->tasks_lock);
 	if (ctx->flags != SCRIBE_IDLE) {
 		spin_unlock(&ctx->tasks_lock);
-		scribe_put_event(event);
+		scribe_free_event(event);
 		return -EPERM;
 	}
 
@@ -305,7 +304,7 @@ void scribe_detach(struct scribe_ps *scribe)
 
 	if (scribe->prepared_data_event) {
 		WARN(1, "prepared_data_event present");
-		scribe_put_event(scribe->prepared_data_event);
+		scribe_free_event(scribe->prepared_data_event);
 	}
 
 	spin_lock(&ctx->tasks_lock);
