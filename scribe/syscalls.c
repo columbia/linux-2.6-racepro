@@ -57,6 +57,7 @@ void scribe_exit_syscall(struct pt_regs *regs)
 		event->nr = syscall_get_nr(current, regs);
 		event->ret = syscall_get_return_value(current, regs);
 		scribe_queue_event_at(&scribe->syscall_ip, event);
+		scribe_put_event(event);
 		scribe_commit_insert_point(&scribe->syscall_ip);
 
 		if (scribe_queue_new_event(scribe->queue,

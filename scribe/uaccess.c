@@ -32,8 +32,8 @@ void __scribe_forbid_uaccess(struct scribe_ps *scribe)
 	WARN_ON(in_atomic());
 }
 
-static struct scribe_event_data *get_data_event(struct scribe_ps *scribe,
-						size_t size)
+static struct scribe_event_data *get_prepared_data_event(
+		struct scribe_ps *scribe, size_t size)
 {
 	struct scribe_event_data *event;
 
@@ -46,7 +46,7 @@ static struct scribe_event_data *get_data_event(struct scribe_ps *scribe,
 				return event;
 			}
 			WARN(1, "Event too small ?!");
-			scribe_free_event(event);
+			scribe_put_event(event);
 		}
 
 		event = scribe_alloc_event_data(size);
@@ -69,7 +69,7 @@ void scribe_prepare_data_event(size_t pre_alloc_size)
 	if (!is_scribed(scribe))
 		return;
 
-	event = get_data_event(scribe, pre_alloc_size);
+	event = get_prepared_data_event(scribe, pre_alloc_size);
 	if (IS_ERR(event))
 		return;
 	scribe->prepared_data_event = event;
@@ -116,7 +116,7 @@ void scribe_post_uaccess(const void *data, const void __user *user_ptr,
 	if (data_flags & SCRIBE_DATA_DONT_RECORD)
 		goto out_forbid;
 
-	event = get_data_event(scribe, size);
+	event = get_prepared_data_event(scribe, size);
 	if (IS_ERR(event))
 		return;
 
@@ -126,6 +126,7 @@ void scribe_post_uaccess(const void *data, const void __user *user_ptr,
 
 		memcpy(event->data, data, size);
 		scribe_queue_event(scribe->queue, event);
+		scribe_put_event(event);
 	} else { /* replay */
 		if (event->data_type != data_flags ||
 		    event->size != size ||

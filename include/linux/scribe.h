@@ -118,7 +118,7 @@ extern void scribe_put_queue(struct scribe_event_queue *queue);
 extern void scribe_put_queue_nolock(struct scribe_event_queue *queue);
 extern void scribe_make_persistent(struct scribe_event_queue *queue,
 				   int enable);
-extern void scribe_free_all_events(struct scribe_event_queue *queue);
+extern void scribe_put_all_events(struct scribe_event_queue *queue);
 
 extern void scribe_create_insert_point(struct scribe_event_queue *queue,
 				       struct scribe_insert_point *ip);
@@ -143,9 +143,14 @@ extern void scribe_queue_event(struct scribe_event_queue *queue, void *event);
 	if (!__new_event)						\
 		__ret = -ENOMEM;					\
 	else {								\
-		*__new_event = (struct_##_type)				\
-			{.h = {.type = _type},  __VA_ARGS__};		\
+		*__new_event = (struct_##_type) {			\
+			.h = {						\
+				.node = LIST_HEAD_INIT(__new_event->h.node), \
+				.ref_cnt = ATOMIC_INIT(1),		\
+				.type = _type				\
+			}, __VA_ARGS__};				\
 		scribe_queue_event(queue, __new_event);			\
+		scribe_put_event(__new_event);				\
 	}								\
 	__ret;								\
 })
@@ -165,7 +170,7 @@ extern struct scribe_event *scribe_peek_event(
 	if (IS_ERR(__event))						\
 		scribe_emergency_stop(queue->ctx, PTR_ERR(__event));	\
 	else if (__event->type != _type) {				\
-		scribe_free_event(__event);				\
+		scribe_put_event(__event);				\
 		scribe_emergency_stop(queue->ctx, -EDIVERGE);		\
 		__event = ERR_PTR(-EDIVERGE);				\
 	}								\
@@ -186,8 +191,11 @@ static __always_inline void *__scribe_alloc_event_const(__u8 type)
 	struct scribe_event *event;
 
 	event = kmalloc(sizeof_event_from_type(type), GFP_KERNEL);
-	if (event)
+	if (event) {
+		INIT_LIST_HEAD(&event->node);
+		atomic_set(&event->ref_cnt, 1);
 		event->type = type;
+	}
 
 	return event;
 }
@@ -202,9 +210,18 @@ static __always_inline void *scribe_alloc_event(__u8 type)
 	}
 	return __scribe_alloc_event(type);
 }
-static inline void scribe_free_event(void *event)
+static inline void scribe_get_event(void *_event)
 {
-	kfree(event);
+	struct scribe_event *event = (struct scribe_event *)_event;
+	atomic_inc(&event->ref_cnt);
+}
+static inline void scribe_put_event(void *_event)
+{
+	struct scribe_event *event = (struct scribe_event *)_event;
+	if (atomic_dec_and_test(&event->ref_cnt)) {
+		BUG_ON(!list_empty(&event->node));
+		kfree(event);
+	}
 }
 
 
@@ -309,6 +326,7 @@ extern void scribe_post_schedule(void);
 			(dst) = *((__typeof__(src) *)__event->data)	\
 			      = (src);					\
 			scribe_queue_event(__scribe->queue, __event);	\
+			scribe_put_event(__event);			\
 		}							\
 	} else if (is_replaying(__scribe)) {				\
 		__event = scribe_dequeue_event_specific(		\
@@ -321,13 +339,13 @@ extern void scribe_post_schedule(void);
 		}							\
 		else if (__event->data_type != SCRIBE_DATA_INTERNAL ||	\
 			 __event->size != sizeof(src)) {		\
-			scribe_free_event(__event);			\
+			scribe_put_event(__event);			\
 			scribe_emergency_stop(__scribe->ctx,		\
 					      -EDIVERGE);		\
 			__ret = -EDIVERGE;				\
 		} else {						\
 			(dst) = __event->ldata[0];			\
-			scribe_free_event(__event);			\
+			scribe_put_event(__event);			\
 		}							\
 	} else								\
 		(dst) = (src);						\

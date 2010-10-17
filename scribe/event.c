@@ -43,7 +43,7 @@ struct scribe_event_queue *scribe_alloc_event_queue(void)
 
 static void scribe_free_event_queue(struct scribe_event_queue *queue)
 {
-	scribe_free_all_events(queue);
+	scribe_put_all_events(queue);
 	kfree(queue);
 }
 
@@ -144,7 +144,7 @@ void scribe_make_persistent(struct scribe_event_queue *queue, int enable)
 	}
 }
 
-void scribe_free_all_events(struct scribe_event_queue *queue)
+void scribe_put_all_events(struct scribe_event_queue *queue)
 {
 	struct scribe_event *event, *tmp;
 
@@ -154,8 +154,8 @@ void scribe_free_all_events(struct scribe_event_queue *queue)
 	BUG_ON(!list_empty(&queue->master.node));
 
 	list_for_each_entry_safe(event, tmp, &queue->master.events, node) {
-		list_del(&event->node);
-		scribe_free_event(event);
+		list_del_init(&event->node);
+		scribe_put_event(event);
 	}
 
 	spin_unlock(&queue->lock);
@@ -209,6 +209,8 @@ static inline void __scribe_queue_event_at(struct scribe_event_queue *queue,
 	struct scribe_event *event = (struct scribe_event *)_event;
 	struct scribe_insert_point *next_ip = get_next_ip(where);
 
+	BUG_ON(!list_empty(&event->node));
+
 	spin_lock(&queue->lock);
 	/*
 	 * When queuing events, we want to put them in the next
@@ -220,6 +222,7 @@ static inline void __scribe_queue_event_at(struct scribe_event_queue *queue,
 	 */
 	list_add_tail(&event->node, &next_ip->events);
 	spin_unlock(&queue->lock);
+	scribe_get_event(event);
 
 	if (next_ip == &queue->master)
 		wake_up(queue->wait);
@@ -272,9 +275,12 @@ retry:
 			goto retry;
 		return ERR_PTR(-EAGAIN);
 	}
+
 	event = list_first_entry(events, typeof(*event), node);
 	if (likely(remove))
-		list_del(&event->node);
+		list_del_init(&event->node);
+	else
+		scribe_get_event(event);
 	spin_unlock(&queue->lock);
 
 	return event;
@@ -289,7 +295,6 @@ struct scribe_event *scribe_dequeue_event(struct scribe_event_queue *queue,
 /*
  * scribe_peek_event() returns the first event (like dequeue), but doesn't
  * remove it from the queue.
- * XXX BE CAREFUL: do not free the event, do not access the event list node.
  * If you want to consume the event, dequeue it.
  */
 struct scribe_event *scribe_peek_event(struct scribe_event_queue *queue,
@@ -329,6 +334,8 @@ struct scribe_event_data *scribe_alloc_event_data(size_t size)
 	event = kmalloc(event_size, GFP_KERNEL);
 
 	if (event) {
+		INIT_LIST_HEAD(&event->h.node);
+		atomic_set(&event->h.ref_cnt, 1);
 		event->h.type = SCRIBE_EVENT_DATA;
 		event->size = size;
 	}
