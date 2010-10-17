@@ -161,7 +161,9 @@ extern struct scribe_event *scribe_peek_event(
 	struct scribe_event *__event;					\
 									\
 	__event = scribe_dequeue_event(queue, wait);			\
-	if (__event->type != _type) {					\
+	if (IS_ERR(__event))						\
+		scribe_emergency_stop(queue->ctx, PTR_ERR(__event));	\
+	else if (__event->type != _type) {				\
 		scribe_free_event(__event);				\
 		scribe_emergency_stop(queue->ctx, -EDIVERGE);		\
 		__event = ERR_PTR(-EDIVERGE);				\

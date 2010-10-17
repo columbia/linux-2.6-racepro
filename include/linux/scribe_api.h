@@ -24,7 +24,8 @@
 #endif /* __KERNEL__ */
 
 
-#define EDIVERGE	139	/* Replay diverged */
+/* FIXME This has to go in <asm/errno.h> */
+#define EDIVERGE	200	/* Replay diverged */
 
 #define SCRIBE_IDLE		0x00000000
 #define SCRIBE_RECORD		0x00000001
