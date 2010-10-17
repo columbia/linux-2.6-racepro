@@ -74,10 +74,6 @@ void scribe_emergency_stop(struct scribe_context *ctx, int error)
 
 		list_for_each_entry(scribe, &ctx->tasks, node)
 			force_sig(SIGKILL, scribe->p);
-
-		spin_unlock(&ctx->tasks_lock);
-		wait_event(ctx->tasks_wait, list_empty(&ctx->tasks));
-		spin_lock(&ctx->tasks_lock);
 	}
 	spin_unlock(&ctx->tasks_lock);
 
@@ -96,6 +92,9 @@ void scribe_exit_context(struct scribe_context *ctx)
 	struct scribe_event_queue *queue, *tmp;
 
 	scribe_emergency_stop(ctx, 0);
+
+	/* No locks are needed: from now on, tasks cannot be added */
+	wait_event(ctx->tasks_wait, list_empty(&ctx->tasks));
 
 	spin_lock(&ctx->queues_lock);
 	list_for_each_entry_safe(queue, tmp, &ctx->queues, node)
