@@ -42,7 +42,7 @@ struct scribe_context {
 	wait_queue_head_t queues_wait;
 
 	struct scribe_event_queue *notification_queue;
-	int idle_error;
+	struct scribe_event_context_idle *idle_event;
 };
 
 static inline void scribe_get_context(struct scribe_context *ctx)
