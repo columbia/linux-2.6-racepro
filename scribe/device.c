@@ -363,8 +363,8 @@ static int alloc_next_event(const char *buf, size_t count,
 	return 0;
 }
 
-static ssize_t deserialize_events(struct scribe_context *ctx,
-				  const char *buf, size_t count,
+static ssize_t deserialize_events(struct scribe_context *ctx, const char *buf,
+				  size_t count, loff_t file_pos,
 				  struct scribe_event_queue **current_queue,
 				  struct scribe_event_queue **pre_alloc_queue,
 				  struct scribe_event **pending_event,
@@ -383,6 +383,7 @@ static ssize_t deserialize_events(struct scribe_context *ctx,
 			err = alloc_next_event(buf, count, &event);
 			if (err)
 				goto out;
+			event->log_offset = file_pos;
 		}
 
 		to_copy = sizeof_event_payload(event) - *pending_offset;
@@ -442,8 +443,8 @@ static void event_pump_replay(struct scribe_context *ctx, char *buf,
 	struct scribe_event_queue *pre_alloc_queue = NULL;
 	struct scribe_event *pending_event = NULL;
 	size_t pending_offset = 0;
-
 	size_t count = 0;
+	loff_t old_f_pos;
 	ssize_t ret = 0;
 
 	while (!kthread_should_stop()) {
@@ -468,10 +469,12 @@ static void event_pump_replay(struct scribe_context *ctx, char *buf,
 		if (ret < 0)
 			goto err;
 
+		old_f_pos = file->f_pos;
+
 		file->f_pos += ret;
 		count += ret;
 
-		ret = deserialize_events(ctx, buf, count,
+		ret = deserialize_events(ctx, buf, count, old_f_pos,
 					 &current_queue, &pre_alloc_queue,
 					 &pending_event, &pending_offset);
 		if (ret < 0)

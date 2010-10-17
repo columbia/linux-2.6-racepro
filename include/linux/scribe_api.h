@@ -55,6 +55,7 @@ enum scribe_event_type {
 struct scribe_event {
 #ifdef __KERNEL__
 	struct list_head node;
+	loff_t log_offset; /* Only used during replay for back traces */
 	__u8 __align__[3];
 	char payload_offset[0];
 	/*
