@@ -318,20 +318,3 @@ void *__scribe_alloc_event(__u8 type)
 {
 	return __scribe_alloc_event_const(type);
 }
-
-struct scribe_event_data *scribe_alloc_event_data(size_t size)
-{
-	struct scribe_event_data *event;
-	size_t event_size;
-
-	event_size = size + sizeof_event_from_type(SCRIBE_EVENT_DATA);
-
-	event = kmalloc(event_size, GFP_KERNEL);
-
-	if (event) {
-		event->h.type = SCRIBE_EVENT_DATA;
-		event->size = size;
-	}
-
-	return event;
-}

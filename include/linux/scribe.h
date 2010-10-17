@@ -175,8 +175,6 @@ extern struct scribe_event *scribe_peek_event(
 extern int scribe_is_queue_empty(struct scribe_event_queue *queue);
 extern void scribe_set_queue_wont_grow(struct scribe_event_queue *queue);
 
-extern struct scribe_event_data *scribe_alloc_event_data(size_t size);
-
 /*
  * We need the __always_inline (like kmalloc()) to make sure that the constant
  * propagation with its optimization will be made by the compiler.
@@ -201,6 +199,23 @@ static __always_inline void *scribe_alloc_event(__u8 type)
 		return __scribe_alloc_event_const(type);
 	}
 	return __scribe_alloc_event(type);
+}
+static __always_inline struct scribe_event_data *scribe_alloc_event_data(
+								size_t size)
+{
+	struct scribe_event_data *event;
+	size_t event_size;
+
+	event_size = size + sizeof_event_from_type(SCRIBE_EVENT_DATA);
+
+	event = kmalloc(event_size, GFP_KERNEL);
+
+	if (event) {
+		event->h.type = SCRIBE_EVENT_DATA;
+		event->size = size;
+	}
+
+	return event;
 }
 static inline void scribe_free_event(void *event)
 {

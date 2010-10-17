@@ -82,7 +82,7 @@ struct scribe_event_pid {
 #define struct_SCRIBE_EVENT_DATA struct scribe_event_data
 struct scribe_event_data {
 	struct scribe_event h;
-	__u32 size;
+	__u16 size;
 	__u32 user_ptr; /* FIXME 64 bit support ? */
 	__u8 data_type;
 	__u8 data[0];
