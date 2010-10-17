@@ -419,6 +419,7 @@ static ssize_t deserialize_events(struct scribe_context *ctx, const char *buf,
 		ret += to_copy;
 		buf += to_copy;
 		count -= to_copy;
+		file_pos += to_copy;
 	}
 
 out:
@@ -560,9 +561,13 @@ static void stop_event_pump(struct scribe_dev *dev)
 	dev->kthread_event_pump = NULL;
 }
 
-static int do_start(struct scribe_dev *dev, int state, int log_fd)
+static int do_start(struct scribe_dev *dev, int state, int log_fd,
+		    unsigned int backtrace_len)
 {
 	int ret;
+
+	if (backtrace_len < 0)
+		return -EINVAL;
 
 	stop_event_pump(dev);
 	dev->kthread_event_pump = kthread_create(kthread_event_pump, dev,
@@ -579,7 +584,10 @@ static int do_start(struct scribe_dev *dev, int state, int log_fd)
 	if (!dev->log_file)
 		goto err_kthread;
 
-	ret = scribe_set_state(dev->ctx, state);
+	if (state == SCRIBE_RECORD)
+		ret = scribe_start_record(dev->ctx);
+	else
+		ret = scribe_start_replay(dev->ctx, backtrace_len);
 	if (ret)
 		goto err_file;
 
@@ -596,18 +604,24 @@ err:
 
 static int handle_command(struct scribe_dev *dev, struct scribe_event *event)
 {
+	struct scribe_event_record *event_record;
+	struct scribe_event_replay *event_replay;
+
 	switch (event->type) {
 	case SCRIBE_EVENT_ATTACH_ON_EXECVE:
 		return scribe_set_attach_on_exec(dev->ctx,
 		      ((struct scribe_event_attach_on_execve *)event)->enable);
 	case SCRIBE_EVENT_RECORD:
+		event_record = ((struct scribe_event_record *)event);
 		return do_start(dev, SCRIBE_RECORD,
-				((struct scribe_event_record *)event)->log_fd);
+				event_record->log_fd, 0);
 	case SCRIBE_EVENT_REPLAY:
+		event_replay = ((struct scribe_event_replay *)event);
 		return do_start(dev, SCRIBE_REPLAY,
-				((struct scribe_event_replay *)event)->log_fd);
+				event_replay->log_fd,
+				event_replay->backtrace_len);
 	case SCRIBE_EVENT_STOP:
-		return scribe_set_state(dev->ctx, SCRIBE_STOP);
+		return scribe_stop(dev->ctx);
 	default:
 		return -EINVAL;
 	}

@@ -43,6 +43,8 @@ struct scribe_context {
 
 	struct scribe_event_queue *notification_queue;
 	struct scribe_event_context_idle *idle_event;
+
+	struct scribe_backtrace *backtrace;
 };
 
 static inline void scribe_get_context(struct scribe_context *ctx)
@@ -58,7 +60,10 @@ static inline void scribe_put_context(struct scribe_context *ctx)
 extern struct scribe_context *scribe_alloc_context(void);
 extern void scribe_emergency_stop(struct scribe_context *ctx, int reason);
 extern void scribe_exit_context(struct scribe_context *ctx);
-extern int scribe_set_state(struct scribe_context *ctx, int state);
+
+extern int scribe_start_record(struct scribe_context *ctx);
+extern int scribe_start_replay(struct scribe_context *ctx, int backtrace_len);
+extern int scribe_stop(struct scribe_context *ctx);
 
 
 /* Events */
@@ -349,6 +354,17 @@ extern void scribe_post_schedule(void);
 									\
 	__ret;								\
 })
+
+
+static inline struct scribe_backtrace *scribe_alloc_backtrace(int backtrace_len)
+{
+	return (void *)-1;
+}
+static inline void scribe_free_backtrace(struct scribe_backtrace *bt) {}
+static inline void scribe_backtrace_add(struct scribe_backtrace *bt,
+				 struct scribe_event *event) {}
+static inline void scribe_backtrace_dump(struct scribe_backtrace *bt,
+				  struct scribe_event_queue *queue) {}
 
 #else /* CONFIG_SCRIBE */
 

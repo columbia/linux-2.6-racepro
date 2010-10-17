@@ -283,7 +283,13 @@ retry:
 struct scribe_event *scribe_dequeue_event(struct scribe_event_queue *queue,
 					  int wait)
 {
-	return __scribe_peek_event(queue, wait, 1);
+	struct scribe_event *event;
+
+	event = __scribe_peek_event(queue, wait, 1);
+	if (!IS_ERR(event) && queue->ctx && queue->ctx->backtrace)
+		scribe_backtrace_add(queue->ctx->backtrace, event);
+
+	return event;
 }
 
 /*

@@ -35,6 +35,7 @@ struct scribe_context *scribe_alloc_context(void)
 	if (!ctx->notification_queue)
 		goto err_ctx;
 	ctx->idle_event = NULL;
+	ctx->backtrace = NULL;
 
 	return ctx;
 
@@ -44,17 +45,7 @@ err:
 	return NULL;
 }
 
-static void set_context_idle(struct scribe_context *ctx, int error)
-{
-	if (ctx->flags == SCRIBE_IDLE)
-		return;
-
-	ctx->flags = SCRIBE_IDLE;
-
-	ctx->idle_event->error = error;
-	scribe_queue_event(ctx->notification_queue, ctx->idle_event);
-	ctx->idle_event = NULL;
-}
+static void context_idle(struct scribe_context *ctx, int error);
 
 void scribe_emergency_stop(struct scribe_context *ctx, int error)
 {
@@ -72,7 +63,7 @@ void scribe_emergency_stop(struct scribe_context *ctx, int error)
 	 * scribe_attach() called from copy_process() or execve().
 	 * See in scribe_attach() for more details.
 	 */
-	set_context_idle(ctx, error);
+	context_idle(ctx, error);
 
 	/*
 	 * The tasks list is most likely to be empty by now.
@@ -120,8 +111,52 @@ void scribe_exit_context(struct scribe_context *ctx)
 	scribe_put_context(ctx);
 }
 
-static int context_start(struct scribe_context *ctx, int action)
+static int context_start(struct scribe_context *ctx, int state,
+			 struct scribe_event_context_idle *idle_event,
+			 struct scribe_backtrace *backtrace)
 {
+	assert_spin_locked(&ctx->tasks_lock);
+
+	if (ctx->flags != SCRIBE_IDLE)
+		return -EPERM;
+
+	BUG_ON(!list_empty(&ctx->tasks));
+
+	ctx->queues_wont_grow = 0;
+
+	BUG_ON(ctx->idle_event);
+	ctx->idle_event = idle_event;
+
+	BUG_ON(ctx->backtrace);
+	ctx->backtrace = backtrace;
+
+	ctx->flags = state;
+
+	return 0;
+}
+
+static void context_idle(struct scribe_context *ctx, int error)
+{
+	assert_spin_locked(&ctx->tasks_lock);
+
+	BUG_ON(ctx->flags == SCRIBE_IDLE);
+
+	ctx->flags = SCRIBE_IDLE;
+
+	if (ctx->backtrace) {
+		scribe_backtrace_dump(ctx->backtrace, ctx->notification_queue);
+		scribe_free_backtrace(ctx->backtrace);
+		ctx->backtrace = NULL;
+	}
+
+	ctx->idle_event->error = error;
+	scribe_queue_event(ctx->notification_queue, ctx->idle_event);
+	ctx->idle_event = NULL;
+}
+
+int scribe_start_record(struct scribe_context *ctx)
+{
+	int ret;
 	struct scribe_event_context_idle *event;
 
 	event = scribe_alloc_event(SCRIBE_EVENT_CONTEXT_IDLE);
@@ -129,38 +164,61 @@ static int context_start(struct scribe_context *ctx, int action)
 		return -ENOMEM;
 
 	spin_lock(&ctx->tasks_lock);
-	if (ctx->flags != SCRIBE_IDLE) {
-		spin_unlock(&ctx->tasks_lock);
-		scribe_free_event(event);
-		return -EPERM;
-	}
-
-	BUG_ON(!list_empty(&ctx->tasks));
-
-	ctx->queues_wont_grow = 0;
-
-	BUG_ON(ctx->idle_event);
-	ctx->idle_event = event;
-
-	ctx->flags = action;
+	ret = context_start(ctx, SCRIBE_RECORD, event, NULL);
 	spin_unlock(&ctx->tasks_lock);
 
-	return 0;
+	if (ret)
+		scribe_free_event(event);
+	return ret;
+}
+
+int scribe_start_replay(struct scribe_context *ctx, int backtrace_len)
+{
+	int ret = -ENOMEM;
+	struct scribe_event_context_idle *event;
+	struct scribe_backtrace *backtrace = NULL;
+
+	event = scribe_alloc_event(SCRIBE_EVENT_CONTEXT_IDLE);
+	if (!event)
+		goto err;
+
+	if (backtrace_len) {
+		backtrace = scribe_alloc_backtrace(backtrace_len);
+		if (!backtrace)
+			goto err_event;
+	}
+
+	spin_lock(&ctx->tasks_lock);
+	ret = context_start(ctx, SCRIBE_REPLAY, event, backtrace);
+	spin_unlock(&ctx->tasks_lock);
+	if (ret)
+		goto err_backtrace;
+	return ret;
+
+err_backtrace:
+	if (backtrace)
+		scribe_free_backtrace(backtrace);
+err_event:
+	scribe_free_event(event);
+err:
+	return ret;
 }
 
 /*
  * XXX This is not an emergency_stop. This is just a notification that will
  * initiate a graceful ending.
  */
-static int context_stop(struct scribe_context *ctx)
+int scribe_stop(struct scribe_context *ctx)
 {
 	int ret = 0;
 
 	spin_lock(&ctx->tasks_lock);
 	if (ctx->flags == SCRIBE_IDLE)
 		ret = -EPERM;
-	else if (list_empty(&ctx->tasks))
-		ctx->flags = SCRIBE_IDLE;
+	else if (list_empty(&ctx->tasks)) {
+		/* This would happen only when no task attached */
+		context_idle(ctx, 0);
+	}
 	else
 		ctx->flags &= SCRIBE_STOP;
 	spin_unlock(&ctx->tasks_lock);
@@ -168,18 +226,6 @@ static int context_stop(struct scribe_context *ctx)
 	/* FIXME send a signal wakeup to tasks */
 
 	return ret;
-}
-
-int scribe_set_state(struct scribe_context *ctx, int state)
-{
-	if ((state & SCRIBE_STOP) == state)
-		return context_stop(ctx);
-	if ((state & SCRIBE_RECORD) == state)
-		return context_start(ctx, state);
-	if ((state & SCRIBE_REPLAY) == state)
-		return context_start(ctx, state);
-
-	return -EINVAL;
 }
 
 int scribe_set_attach_on_exec(struct scribe_context *ctx, int enable)
@@ -311,8 +357,8 @@ void scribe_detach(struct scribe_ps *scribe)
 	list_del(&scribe->node);
 
 	/* We were the last task in the context, it's time to set it idle */
-	if (list_empty(&ctx->tasks))
-		set_context_idle(ctx, 0);
+	if (list_empty(&ctx->tasks) && ctx->flags != SCRIBE_IDLE)
+		context_idle(ctx, 0);
 	spin_unlock(&ctx->tasks_lock);
 	wake_up(&ctx->tasks_wait);
 

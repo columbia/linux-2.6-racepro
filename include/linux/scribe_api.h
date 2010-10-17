@@ -125,6 +125,7 @@ struct scribe_event_record {
 struct scribe_event_replay {
 	struct scribe_event h;
 	__u32 log_fd;
+	__s32 backtrace_len;
 } __attribute__((packed));
 
 #define struct_SCRIBE_EVENT_STOP struct scribe_event_stop
