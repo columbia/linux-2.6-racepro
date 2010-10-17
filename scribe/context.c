@@ -69,8 +69,7 @@ void scribe_emergency_stop(struct scribe_context *ctx, int error)
 	 * guarantee that they can continue properly.
 	 */
 	if (unlikely(!list_empty(&ctx->tasks))) {
-		printk(KERN_WARNING "scribe: emergency stop (context=%d)\n",
-		       ctx->id);
+		WARN(1, "scribe: emergency stop (error=%d)\n", error);
 
 		list_for_each_entry(scribe, &ctx->tasks, node)
 			force_sig(SIGKILL, scribe->p);
@@ -81,6 +80,7 @@ void scribe_emergency_stop(struct scribe_context *ctx, int error)
 	 * If the current process called emergency_stop(), we must detach
 	 * ourselves, and die in peace. We cannot call do_exit() here because
 	 * we don't know the context, we may be holding locks for example.
+	 * We have a SIGKILL waiting for us anyways.
 	 */
 	scribe = current->scribe;
 	if (is_scribed(scribe) && scribe->ctx == ctx)
@@ -122,6 +122,10 @@ static int context_start(struct scribe_context *ctx, int action)
 	return 0;
 }
 
+/*
+ * XXX This is not an emergency_stop. This is just a notification that will
+ * initiate a graceful ending.
+ */
 static int context_stop(struct scribe_context *ctx)
 {
 	int ret = 0;
@@ -215,7 +219,7 @@ void scribe_attach(struct scribe_ps *scribe)
 		 * Note: the execve will still succeed.
 		 *
 		 * 2) copy_process() was about to attach a child, when
-		 * suddenly scribe_exit_context() got called and distributed
+		 * suddenly scribe_emergency_stop() got called and distributed
 		 * some SIGKILLs, but only to the parent, which is why we
 		 * need to do our own cleanup.
 		 */
@@ -223,6 +227,8 @@ void scribe_attach(struct scribe_ps *scribe)
 		scribe_make_persistent(scribe->queue, 0);
 		spin_unlock(&ctx->queues_lock);
 		exit_scribe(scribe->p);
+
+		/* FIXME send ourselves a SIGKILL if our parent got one */
 		return;
 	}
 
