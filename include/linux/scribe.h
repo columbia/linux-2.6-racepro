@@ -36,6 +36,7 @@ struct scribe_context {
 	struct list_head tasks;
 	wait_queue_head_t tasks_wait;
 
+	int queues_wont_grow;
 	spinlock_t queues_lock;
 	struct list_head queues;
 	wait_queue_head_t queues_wait;

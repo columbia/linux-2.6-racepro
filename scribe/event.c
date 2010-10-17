@@ -84,6 +84,9 @@ struct scribe_event_queue *scribe_get_queue_by_pid(
 	queue->ctx = ctx;
 	queue->pid = pid;
 
+	if (ctx->queues_wont_grow)
+		queue->flags |= SCRIBE_WONT_GROW;
+
 	/*
 	 * Making the new queue persistent: the queue reader hasn't
 	 * taken a reference on the queue yet. This is his reference.

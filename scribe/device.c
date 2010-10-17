@@ -488,6 +488,21 @@ static void event_pump_replay(struct scribe_context *ctx, char *buf,
 		}
 	}
 
+	/*
+	 * If some queue were left open, that means that we didn't have the
+	 * entire event stream. Bailing out.
+	 */
+	ret = -EPIPE;
+	spin_lock(&ctx->queues_lock);
+	ctx->queues_wont_grow = 1;
+	list_for_each_entry(queue, &ctx->queues, node) {
+		if (!(queue->flags & SCRIBE_WONT_GROW)) {
+			spin_unlock(&ctx->queues_lock);
+			goto err;
+		}
+	}
+	spin_unlock(&ctx->queues_lock);
+
 free:
 	if (current_queue)
 		scribe_put_queue(current_queue);
