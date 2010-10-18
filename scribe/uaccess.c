@@ -55,6 +55,11 @@ static struct scribe_event_data *get_data_event(struct scribe_ps *scribe,
 			event = ERR_PTR(-ENOMEM);
 		}
 	} else {
+		event = scribe->prepared_data_event;
+		if (event) {
+			scribe->prepared_data_event = NULL;
+			return event;
+		}
 		event = scribe_dequeue_event_specific(
 				SCRIBE_EVENT_DATA, scribe->queue, SCRIBE_WAIT);
 	}
@@ -67,6 +72,9 @@ void scribe_prepare_data_event(size_t pre_alloc_size)
 	struct scribe_event_data *event;
 	struct scribe_ps *scribe = current->scribe;
 	if (!is_scribed(scribe))
+		return;
+
+	if (scribe->data_flags & SCRIBE_DATA_DONT_RECORD)
 		return;
 
 	event = get_data_event(scribe, pre_alloc_size);
