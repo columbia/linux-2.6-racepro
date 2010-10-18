@@ -253,6 +253,7 @@ struct scribe_ps {
 
 	struct scribe_insert_point syscall_ip;
 	int in_syscall;
+	long orig_ret;
 
 	struct scribe_event_data *prepared_data_event;
 	int data_flags;

@@ -14,6 +14,7 @@
 
 void scribe_enter_syscall(struct pt_regs *regs)
 {
+	struct scribe_event_syscall *event;
 	struct scribe_ps *scribe = current->scribe;
 
 	if (!is_scribed(scribe))
@@ -28,6 +29,19 @@ void scribe_enter_syscall(struct pt_regs *regs)
 
 	if (is_recording(scribe))
 		scribe_create_insert_point(scribe->queue, &scribe->syscall_ip);
+	else {
+		event = scribe_dequeue_event_specific(SCRIBE_EVENT_SYSCALL,
+						      scribe->queue,
+						      SCRIBE_WAIT);
+		if (IS_ERR(event))
+			return;
+
+		if (event->nr != syscall_get_nr(current, regs))
+			scribe_emergency_stop(scribe->ctx, -EDIVERGE);
+
+		scribe->orig_ret = event->ret;
+		scribe_free_event(event);
+	}
 	scribe->in_syscall = 1;
 	scribe_set_data_flags(scribe, 0);
 }
@@ -62,6 +76,11 @@ void scribe_exit_syscall(struct pt_regs *regs)
 		if (scribe_queue_new_event(scribe->queue,
 					   SCRIBE_EVENT_SYSCALL_END))
 			goto bad;
+	} else {
+		scribe_dequeue_event_specific(SCRIBE_EVENT_SYSCALL_END,
+					      scribe->queue, SCRIBE_WAIT);
+		if (scribe->orig_ret != syscall_get_return_value(current, regs))
+			scribe_emergency_stop(scribe->ctx, -EDIVERGE);
 	}
 
 	scribe->in_syscall = 0;
