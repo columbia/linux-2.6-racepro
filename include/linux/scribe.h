@@ -44,6 +44,7 @@ struct scribe_context {
 	struct scribe_event_queue *notification_queue;
 	struct scribe_event_context_idle *idle_event;
 
+	spinlock_t backtrace_lock;
 	struct scribe_backtrace *backtrace;
 };
 
@@ -67,7 +68,6 @@ extern int scribe_stop(struct scribe_context *ctx);
 
 
 /* Events */
-
 struct scribe_insert_point {
 	struct list_head node;
 	struct scribe_event_queue *queue;
@@ -132,6 +132,8 @@ extern void scribe_commit_insert_point(struct scribe_insert_point *ip);
 extern void scribe_queue_event_at(struct scribe_insert_point *where,
 				  void *event);
 extern void scribe_queue_event(struct scribe_event_queue *queue, void *event);
+extern void scribe_queue_events(struct scribe_event_queue *queue,
+			 struct list_head *events);
 
 /*
  * This macro allows us to write such code:
@@ -355,16 +357,12 @@ extern void scribe_post_schedule(void);
 	__ret;								\
 })
 
-
-static inline struct scribe_backtrace *scribe_alloc_backtrace(int backtrace_len)
-{
-	return (void *)-1;
-}
-static inline void scribe_free_backtrace(struct scribe_backtrace *bt) {}
-static inline void scribe_backtrace_add(struct scribe_backtrace *bt,
-				 struct scribe_event *event) {}
-static inline void scribe_backtrace_dump(struct scribe_backtrace *bt,
-				  struct scribe_event_queue *queue) {}
+extern struct scribe_backtrace *scribe_alloc_backtrace(int backtrace_len);
+extern void scribe_free_backtrace(struct scribe_backtrace *bt);
+extern void scribe_backtrace_add(struct scribe_backtrace *bt,
+				 struct scribe_event *event);
+extern void scribe_backtrace_dump(struct scribe_backtrace *bt,
+				  struct scribe_event_queue *queue);
 
 #else /* CONFIG_SCRIBE */
 

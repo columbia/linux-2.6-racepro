@@ -35,6 +35,8 @@ struct scribe_context *scribe_alloc_context(void)
 	if (!ctx->notification_queue)
 		goto err_ctx;
 	ctx->idle_event = NULL;
+
+	spin_lock_init(&ctx->backtrace_lock);
 	ctx->backtrace = NULL;
 
 	return ctx;
@@ -105,8 +107,9 @@ void scribe_exit_context(struct scribe_context *ctx)
 	spin_unlock(&ctx->queues_lock);
 
 	scribe_put_queue(ctx->notification_queue);
-	if (ctx->idle_event)
-		scribe_free_event(ctx->idle_event);
+
+	BUG_ON(ctx->idle_event);
+	BUG_ON(ctx->backtrace);
 
 	scribe_put_context(ctx);
 }
@@ -137,16 +140,22 @@ static int context_start(struct scribe_context *ctx, int state,
 
 static void context_idle(struct scribe_context *ctx, int error)
 {
+	struct scribe_backtrace *backtrace;
 	assert_spin_locked(&ctx->tasks_lock);
 
 	BUG_ON(ctx->flags == SCRIBE_IDLE);
 
 	ctx->flags = SCRIBE_IDLE;
 
-	if (ctx->backtrace) {
-		scribe_backtrace_dump(ctx->backtrace, ctx->notification_queue);
-		scribe_free_backtrace(ctx->backtrace);
+	spin_lock(&ctx->backtrace_lock);
+	backtrace = ctx->backtrace;
+	if (backtrace)
 		ctx->backtrace = NULL;
+	spin_unlock(&ctx->backtrace_lock);
+
+	if (backtrace) {
+		scribe_backtrace_dump(backtrace, ctx->notification_queue);
+		scribe_free_backtrace(backtrace);
 	}
 
 	ctx->idle_event->error = error;

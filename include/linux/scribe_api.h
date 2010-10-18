@@ -49,6 +49,7 @@ enum scribe_event_type {
 	SCRIBE_EVENT_STOP,
 
 	/* kernel -> userspace notifications */
+	SCRIBE_EVENT_BACKTRACE,
 	SCRIBE_EVENT_CONTEXT_IDLE
 };
 
@@ -136,6 +137,12 @@ struct scribe_event_stop {
 
 /* Notifications */
 
+#define struct_SCRIBE_EVENT_BACKTRACE struct scribe_event_backtrace
+struct scribe_event_backtrace {
+	struct scribe_event h;
+	__u64 event_offset;
+} __attribute__((packed));
+
 #define struct_SCRIBE_EVENT_CONTEXT_IDLE struct scribe_event_context_idle
 struct scribe_event_context_idle {
 	struct scribe_event h;
@@ -162,6 +169,7 @@ static __always_inline size_t sizeof_event_from_type(__u8 type)
 	__TYPE(SCRIBE_EVENT_REPLAY);
 	__TYPE(SCRIBE_EVENT_STOP);
 
+	__TYPE(SCRIBE_EVENT_BACKTRACE);
 	__TYPE(SCRIBE_EVENT_CONTEXT_IDLE);
 
 #undef  __TYPE

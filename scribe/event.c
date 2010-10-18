@@ -235,6 +235,26 @@ void scribe_queue_event(struct scribe_event_queue *queue, void *event)
 	__scribe_queue_event_at(queue, &queue->master, event);
 }
 
+static inline void __scribe_queue_events_at(struct scribe_event_queue *queue,
+					    struct scribe_insert_point *where,
+					    struct list_head *events)
+{
+	struct scribe_insert_point *next_ip = get_next_ip(where);
+
+	spin_lock(&queue->lock);
+	list_splice_tail_init(events, &next_ip->events);
+	spin_unlock(&queue->lock);
+
+	if (next_ip == &queue->master)
+		wake_up(queue->wait);
+}
+
+void scribe_queue_events(struct scribe_event_queue *queue,
+			 struct list_head *events)
+{
+	__scribe_queue_events_at(queue, &queue->master, events);
+}
+
 static struct scribe_event *__scribe_peek_event(
 		struct scribe_event_queue *queue, int wait, int remove)
 {
@@ -284,10 +304,15 @@ struct scribe_event *scribe_dequeue_event(struct scribe_event_queue *queue,
 					  int wait)
 {
 	struct scribe_event *event;
+	struct scribe_context *ctx = queue->ctx;
 
 	event = __scribe_peek_event(queue, wait, 1);
-	if (!IS_ERR(event) && queue->ctx && queue->ctx->backtrace)
-		scribe_backtrace_add(queue->ctx->backtrace, event);
+	if (!IS_ERR(event) && ctx && ctx->backtrace) {
+		spin_lock(&ctx->backtrace_lock);
+		if (ctx->backtrace)
+			scribe_backtrace_add(queue->ctx->backtrace, event);
+		spin_unlock(&ctx->backtrace_lock);
+	}
 
 	return event;
 }
