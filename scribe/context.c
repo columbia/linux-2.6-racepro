@@ -229,7 +229,7 @@ int scribe_stop(struct scribe_context *ctx)
 		context_idle(ctx, 0);
 	}
 	else
-		ctx->flags &= SCRIBE_STOP;
+		ctx->flags |= SCRIBE_STOP;
 	spin_unlock(&ctx->tasks_lock);
 
 	/* FIXME send a signal wakeup to tasks */
