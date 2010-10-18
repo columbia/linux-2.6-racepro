@@ -649,7 +649,7 @@ static ssize_t dev_write(struct file *file,
 		return -ENOMEM;
 
 	to_copy = sizeof_event_payload(event);
-	if (count < to_copy) {
+	if (count != to_copy) {
 		scribe_free_event(event);
 		return -EINVAL;
 	}
@@ -676,41 +676,38 @@ static ssize_t dev_read(struct file *file,
 	struct scribe_dev *dev = file->private_data;
 	struct scribe_context *ctx = dev->ctx;
 	struct scribe_event *event;
-	ssize_t ret;
+	ssize_t err;
 	size_t to_copy = 0;
 
 	mutex_lock(&dev->lock_read);
-
-	if (dev->pending_notification_event) {
-		event = dev->pending_notification_event;
-		dev->pending_notification_event = NULL;
-	} else {
+	event = dev->pending_notification_event;
+	if (!event) {
 		event = scribe_dequeue_event(ctx->notification_queue,
 					     SCRIBE_WAIT_INTERRUPTIBLE);
 		if (IS_ERR(event)) {
-			ret = PTR_ERR(event);
+			err = PTR_ERR(event);
+			event = NULL;
 			goto out;
 		}
 	}
 
-	dev->pending_notification_event = event;
-
-	to_copy = sizeof_event(event);
-	ret = -EINVAL;
+	to_copy = sizeof_event_payload(event);
+	err = -EINVAL;
 	if (count < to_copy)
 		goto out;
-	ret = -EFAULT;
+	err = -EFAULT;
 	if (copy_to_user(buf, get_event_payload(event), to_copy))
 		goto out;
 
-	scribe_free_event(dev->pending_notification_event);
-	dev->pending_notification_event = NULL;
-	ret = 0;
+	scribe_free_event(event);
+	event = NULL;
+	err = 0;
 
 out:
+	dev->pending_notification_event = event;
 	mutex_unlock(&dev->lock_read);
-	if (ret)
-		return ret;
+	if (err)
+		return err;
 	return to_copy;
 }
 
