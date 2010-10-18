@@ -486,7 +486,7 @@ EXPORT_SYMBOL(copy_strings_kernel);
 
 #ifdef CONFIG_SCRIBE
 
-static void scribe_prepare_attach_on_exec(void)
+static void scribe_prepare_attach_on_exec(int *old_flags, int *old_personality)
 {
 	struct scribe_ps *scribe = current->scribe;
 
@@ -496,24 +496,45 @@ static void scribe_prepare_attach_on_exec(void)
 	 * random values).
 	 */
 	if (scribe && (scribe->flags & SCRIBE_PS_ATTACH_ON_EXEC)) {
+		*old_flags = current->flags;
+		*old_personality = current->personality;
+
 		current->flags &= ~PF_RANDOMIZE;
-		current->personality &= ~ADDR_NO_RANDOMIZE;
+		current->personality |= ADDR_NO_RANDOMIZE;
 	}
 }
 
-static void scribe_attach_on_exec(void)
+static void scribe_cleanup_attach_on_exec(int old_flags, int old_personality)
 {
 	struct scribe_ps *scribe = current->scribe;
 
 	if (scribe && (scribe->flags & SCRIBE_PS_ATTACH_ON_EXEC)) {
+		current->flags = old_flags;
+		current->personality = old_personality;
+	}
+}
+
+static void scribe_attach_on_exec(int old_flags, int old_personality)
+{
+	struct scribe_ps *scribe = current->scribe;
+
+	if (scribe && (scribe->flags & SCRIBE_PS_ATTACH_ON_EXEC)) {
+		current->flags = old_flags;
+		current->personality = old_personality;
+		if (!(old_personality & ADDR_NO_RANDOMIZE))
+			current->flags |= PF_RANDOMIZE;
+
 		scribe->flags &= ~SCRIBE_PS_ATTACH_ON_EXEC;
 		scribe_attach(scribe);
 	}
 }
 
 #else
-static inline void scribe_prepare_attach_on_exec(void) {}
-static inline void scribe_attach_on_exec(void) {}
+static inline void scribe_prepare_attach_on_exec(int *old_flags,
+						 int *old_personality) {}
+static inline void scribe_cleanup_attach_on_exec(int old_flags,
+						 int old_personality) {}
+static inline void scribe_attach_on_exec(int old_flags, int old_personality) {}
 #endif /* CONFIG_SCRIBE */
 
 
@@ -1360,6 +1381,7 @@ int do_execve(char * filename,
 	struct file *file;
 	struct files_struct *displaced;
 	bool clear_in_exec;
+	int old_flags = 0, old_personality = 0;
 	int retval;
 
 	retval = unshare_files(&displaced);
@@ -1398,39 +1420,39 @@ int do_execve(char * filename,
 
 	bprm->argc = count(argv, MAX_ARG_STRINGS);
 	if ((retval = bprm->argc) < 0)
-		goto out;
+		goto out_mm;
 
 	bprm->envc = count(envp, MAX_ARG_STRINGS);
 	if ((retval = bprm->envc) < 0)
-		goto out;
+		goto out_mm;
 
 	retval = prepare_binprm(bprm);
 	if (retval < 0)
-		goto out;
+		goto out_mm;
 
 	retval = copy_strings_kernel(1, &bprm->filename, bprm);
 	if (retval < 0)
-		goto out;
+		goto out_mm;
 
 	bprm->exec = bprm->p;
 	retval = copy_strings(bprm->envc, envp, bprm);
 	if (retval < 0)
-		goto out;
+		goto out_mm;
 
 	retval = copy_strings(bprm->argc, argv, bprm);
 	if (retval < 0)
-		goto out;
+		goto out_mm;
 
-	scribe_prepare_attach_on_exec();
+	scribe_prepare_attach_on_exec(&old_flags, &old_personality);
 
 	current->flags &= ~PF_KTHREAD;
 	retval = search_binary_handler(bprm,regs);
 	if (retval < 0)
 		goto out;
 
-	scribe_attach_on_exec();
-
 	/* execve succeeded */
+	scribe_attach_on_exec(old_flags, old_personality);
+
 	current->fs->in_exec = 0;
 	current->in_execve = 0;
 	acct_update_integrals(current);
@@ -1440,6 +1462,9 @@ int do_execve(char * filename,
 	return retval;
 
 out:
+	scribe_cleanup_attach_on_exec(old_flags, old_personality);
+
+out_mm:
 	if (bprm->mm)
 		mmput (bprm->mm);
 

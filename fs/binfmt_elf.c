@@ -977,9 +977,16 @@ static int load_elf_binary(struct linux_binprm *bprm, struct pt_regs *regs)
 	current->mm->start_stack = bprm->p;
 
 #ifdef arch_randomize_brk
-	if ((current->flags & PF_RANDOMIZE) && (randomize_va_space > 1))
-		current->mm->brk = current->mm->start_brk =
-			arch_randomize_brk(current->mm);
+	if ((current->flags & PF_RANDOMIZE) && (randomize_va_space > 1)) {
+		retval = scribe_interpose_value(current->mm->brk,
+					arch_randomize_brk(current->mm));
+		if (retval) {
+			send_sig(SIGKILL, current, 0);
+			goto out;
+		}
+
+		current->mm->start_brk = current->mm->brk;
+	}
 #endif
 
 	if (current->personality & MMAP_PAGE_ZERO) {
