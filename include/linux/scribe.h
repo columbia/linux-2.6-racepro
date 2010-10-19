@@ -59,13 +59,13 @@ static inline void scribe_put_context(struct scribe_context *ctx)
 }
 
 extern struct scribe_context *scribe_alloc_context(void);
-extern void scribe_emergency_stop(struct scribe_context *ctx, int reason);
+extern void scribe_emergency_stop(struct scribe_context *ctx,
+				  struct scribe_event *reason);
 extern void scribe_exit_context(struct scribe_context *ctx);
 
 extern int scribe_start_record(struct scribe_context *ctx);
 extern int scribe_start_replay(struct scribe_context *ctx, int backtrace_len);
 extern int scribe_stop(struct scribe_context *ctx);
-
 
 /* Events */
 struct scribe_insert_point {
@@ -170,11 +170,11 @@ extern struct scribe_event *scribe_peek_event(
 									\
 	__event = scribe_dequeue_event(queue, wait);			\
 	if (IS_ERR(__event))						\
-		scribe_emergency_stop(queue->ctx, PTR_ERR(__event));	\
+		scribe_emergency_stop(queue->ctx, __event);		\
 	else if (__event->type != _type) {				\
 		scribe_free_event(__event);				\
-		scribe_emergency_stop(queue->ctx, -EDIVERGE);		\
 		__event = ERR_PTR(-EDIVERGE);				\
+		scribe_emergency_stop(queue->ctx, __event);		\
 	}								\
 	(struct_##_type *)__event;					\
 })
@@ -346,7 +346,7 @@ extern void scribe_post_schedule(void);
 			 __event->size != sizeof(src)) {		\
 			scribe_free_event(__event);			\
 			scribe_emergency_stop(__scribe->ctx,		\
-					      -EDIVERGE);		\
+					      ERR_PTR(-EDIVERGE));	\
 			__ret = -EDIVERGE;				\
 		} else {						\
 			(dst) = __event->ldata[0];			\

@@ -37,7 +37,7 @@ void scribe_enter_syscall(struct pt_regs *regs)
 			return;
 
 		if (event->nr != syscall_get_nr(current, regs))
-			scribe_emergency_stop(scribe->ctx, -EDIVERGE);
+			scribe_emergency_stop(scribe->ctx, ERR_PTR(-EDIVERGE));
 
 		scribe->orig_ret = event->ret;
 		scribe_free_event(event);
@@ -80,12 +80,12 @@ void scribe_exit_syscall(struct pt_regs *regs)
 		scribe_dequeue_event_specific(SCRIBE_EVENT_SYSCALL_END,
 					      scribe->queue, SCRIBE_WAIT);
 		if (scribe->orig_ret != syscall_get_return_value(current, regs))
-			scribe_emergency_stop(scribe->ctx, -EDIVERGE);
+			scribe_emergency_stop(scribe->ctx, ERR_PTR(-EDIVERGE));
 	}
 
 	scribe->in_syscall = 0;
 	return;
 
 bad:
-	scribe_emergency_stop(scribe->ctx, -ENOMEM);
+	scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
 }

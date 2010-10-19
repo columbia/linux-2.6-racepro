@@ -299,7 +299,7 @@ free:
 		scribe_free_event(pending_event);
 	return;
 err:
-	scribe_emergency_stop(ctx, ret);
+	scribe_emergency_stop(ctx, ERR_PTR(ret));
 	goto free;
 }
 
@@ -516,7 +516,7 @@ free:
 		scribe_free_event(pending_event);
 	return;
 err:
-	scribe_emergency_stop(ctx, ret);
+	scribe_emergency_stop(ctx, ERR_PTR(ret));
 
 	spin_lock(&ctx->queues_lock);
 	list_for_each_entry(queue, &ctx->queues, node)
@@ -554,7 +554,7 @@ static void stop_event_pump(struct scribe_dev *dev)
 	if (!dev->kthread_event_pump)
 		return;
 
-	scribe_emergency_stop(dev->ctx, -EINTR);
+	scribe_emergency_stop(dev->ctx, ERR_PTR(-EINTR));
 
 	kthread_stop(dev->kthread_event_pump);
 	put_task_struct(dev->kthread_event_pump);

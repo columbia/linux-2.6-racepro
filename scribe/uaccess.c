@@ -51,7 +51,7 @@ static struct scribe_event_data *get_data_event(struct scribe_ps *scribe,
 
 		event = scribe_alloc_event_data(size);
 		if (!event) {
-			scribe_emergency_stop(scribe->ctx, -ENOMEM);
+			scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
 			event = ERR_PTR(-ENOMEM);
 		}
 	} else {
@@ -138,7 +138,7 @@ void scribe_post_uaccess(const void *data, const void __user *user_ptr,
 		if (event->data_type != data_flags ||
 		    event->size != size ||
 		    (void *)event->user_ptr != user_ptr)
-			scribe_emergency_stop(scribe->ctx, -EDIVERGE);
+			scribe_emergency_stop(scribe->ctx, ERR_PTR(-EDIVERGE));
 
 		else if (data_flags == SCRIBE_DATA_NON_DETERMINISTIC) {
 			/*
@@ -156,14 +156,16 @@ void scribe_post_uaccess(const void *data, const void __user *user_ptr,
 				 * copy may or may not have happended. We need
 				 * to make sure that the copy happens anyway.
 				 */
-				scribe_emergency_stop(scribe->ctx, -EDIVERGE);
+				scribe_emergency_stop(scribe->ctx,
+						      ERR_PTR(-EDIVERGE));
 			}
 
 			scribe_set_data_flags(scribe, data_flags);
 
 		} else {
 			if (memcmp(event->data, data, size))
-				scribe_emergency_stop(scribe->ctx, -EDIVERGE);
+				scribe_emergency_stop(scribe->ctx,
+						      ERR_PTR(-EDIVERGE));
 		}
 
 	}

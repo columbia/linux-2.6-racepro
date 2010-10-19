@@ -47,56 +47,11 @@ err:
 	return NULL;
 }
 
-static void context_idle(struct scribe_context *ctx, int error);
-
-void scribe_emergency_stop(struct scribe_context *ctx, int error)
-{
-	struct scribe_ps *scribe;
-
-	spin_lock(&ctx->tasks_lock);
-
-	if (ctx->flags == SCRIBE_IDLE) {
-		spin_unlock(&ctx->tasks_lock);
-		return;
-	}
-
-	/*
-	 * The SCRIBE_IDLE flag has to be set here to guard against race with
-	 * scribe_attach() called from copy_process() or execve().
-	 * See in scribe_attach() for more details.
-	 */
-	context_idle(ctx, error);
-
-	/*
-	 * The tasks list is most likely to be empty by now.
-	 * If it's not empty, it means that the userspace monitor process has
-	 * gone missing. We'll kill all the scribed tasks because we cannot
-	 * guarantee that they can continue properly.
-	 */
-	if (unlikely(!list_empty(&ctx->tasks))) {
-		WARN(1, "scribe: emergency stop (error=%d)\n", error);
-
-		list_for_each_entry(scribe, &ctx->tasks, node)
-			force_sig(SIGKILL, scribe->p);
-	}
-	spin_unlock(&ctx->tasks_lock);
-
-	/*
-	 * If the current process called emergency_stop(), we must detach
-	 * ourselves, and die in peace. We cannot call do_exit() here because
-	 * we don't know the context, we may be holding locks for example.
-	 * We have a SIGKILL waiting for us anyways.
-	 */
-	scribe = current->scribe;
-	if (is_scribed(scribe) && scribe->ctx == ctx)
-		scribe_detach(scribe);
-}
-
 void scribe_exit_context(struct scribe_context *ctx)
 {
 	struct scribe_event_queue *queue, *tmp;
 
-	scribe_emergency_stop(ctx, 0);
+	scribe_emergency_stop(ctx, NULL);
 
 	/* No locks are needed: from now on, tasks cannot be added */
 	wait_event(ctx->tasks_wait, list_empty(&ctx->tasks));
@@ -138,7 +93,8 @@ static int context_start(struct scribe_context *ctx, int state,
 	return 0;
 }
 
-static void context_idle(struct scribe_context *ctx, int error)
+static void context_idle(struct scribe_context *ctx,
+			 struct scribe_event *reason)
 {
 	struct scribe_backtrace *backtrace;
 	assert_spin_locked(&ctx->tasks_lock);
@@ -148,17 +104,26 @@ static void context_idle(struct scribe_context *ctx, int error)
 	ctx->flags = SCRIBE_IDLE;
 
 	spin_lock(&ctx->backtrace_lock);
-	backtrace = ctx->backtrace;
-	if (backtrace)
-		ctx->backtrace = NULL;
+	backtrace = xchg(&ctx->backtrace, NULL);
 	spin_unlock(&ctx->backtrace_lock);
 
 	if (backtrace) {
-		scribe_backtrace_dump(backtrace, ctx->notification_queue);
+		if (reason) {
+			scribe_backtrace_dump(backtrace,
+					      ctx->notification_queue);
+		}
 		scribe_free_backtrace(backtrace);
 	}
 
-	ctx->idle_event->error = error;
+	if (IS_ERR(reason) || !reason) {
+		ctx->idle_event->error = PTR_ERR(reason);
+		WARN(reason, "scribe: error=%ld\n", PTR_ERR(reason));
+
+	} else {
+		ctx->idle_event->error = reason->type;
+		scribe_queue_event(ctx->notification_queue, reason);
+	}
+
 	scribe_queue_event(ctx->notification_queue, ctx->idle_event);
 	ctx->idle_event = NULL;
 }
@@ -213,6 +178,46 @@ err:
 	return ret;
 }
 
+void scribe_emergency_stop(struct scribe_context *ctx,
+			   struct scribe_event *reason)
+{
+	struct scribe_ps *scribe;
+
+	spin_lock(&ctx->tasks_lock);
+
+	if (ctx->flags == SCRIBE_IDLE) {
+		spin_unlock(&ctx->tasks_lock);
+		return;
+	}
+
+	/*
+	 * The SCRIBE_IDLE flag has to be set here to guard against race with
+	 * scribe_attach() called from copy_process() or execve().
+	 * See in scribe_attach() for more details.
+	 */
+	context_idle(ctx, reason);
+
+	/*
+	 * The tasks list is most likely to be empty by now.
+	 * If it's not empty, it means that the userspace monitor process has
+	 * gone missing. We'll kill all the scribed tasks because we cannot
+	 * guarantee that they can continue properly.
+	 */
+	list_for_each_entry(scribe, &ctx->tasks, node)
+		force_sig(SIGKILL, scribe->p);
+	spin_unlock(&ctx->tasks_lock);
+
+	/*
+	 * If the current process called emergency_stop(), we must detach
+	 * ourselves, and die in peace. We cannot call do_exit() here because
+	 * we don't know the context, we may be holding locks for example.
+	 * We have a SIGKILL waiting for us anyways.
+	 */
+	scribe = current->scribe;
+	if (is_scribed(scribe) && scribe->ctx == ctx)
+		scribe_detach(scribe);
+}
+
 /*
  * XXX This is not an emergency_stop. This is just a notification that will
  * initiate a graceful ending.
@@ -226,9 +231,8 @@ int scribe_stop(struct scribe_context *ctx)
 		ret = -EPERM;
 	else if (list_empty(&ctx->tasks)) {
 		/* This would happen only when no task attached */
-		context_idle(ctx, 0);
-	}
-	else
+		context_idle(ctx, NULL);
+	} else
 		ctx->flags |= SCRIBE_STOP;
 	spin_unlock(&ctx->tasks_lock);
 
@@ -358,7 +362,7 @@ void scribe_detach(struct scribe_ps *scribe)
 	BUG_ON(!is_scribed(scribe));
 
 	if (scribe->prepared_data_event) {
-		WARN(1, "prepared_data_event present");
+		WARN(1, "prepared_data_event present\n");
 		scribe_free_event(scribe->prepared_data_event);
 	}
 
@@ -367,7 +371,7 @@ void scribe_detach(struct scribe_ps *scribe)
 
 	/* We were the last task in the context, it's time to set it idle */
 	if (list_empty(&ctx->tasks) && ctx->flags != SCRIBE_IDLE)
-		context_idle(ctx, 0);
+		context_idle(ctx, NULL);
 	spin_unlock(&ctx->tasks_lock);
 	wake_up(&ctx->tasks_wait);
 
