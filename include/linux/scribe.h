@@ -42,7 +42,10 @@ struct scribe_context {
 	wait_queue_head_t queues_wait;
 
 	struct scribe_event_queue *notification_queue;
+
+	/* Those are pre-allocated events to be used in atomic contexts */
 	struct scribe_event_context_idle *idle_event;
+	struct scribe_event_diverge *diverge_event;
 
 	spinlock_t backtrace_lock;
 	struct scribe_backtrace *backtrace;
@@ -66,6 +69,33 @@ extern void scribe_exit_context(struct scribe_context *ctx);
 extern int scribe_start_record(struct scribe_context *ctx);
 extern int scribe_start_replay(struct scribe_context *ctx, int backtrace_len);
 extern int scribe_stop(struct scribe_context *ctx);
+
+#define scribe_get_diverge_event(sp, _type)				\
+({									\
+	struct scribe_event_diverge *__event;				\
+	__event = xchg(&(sp)->ctx->diverge_event, NULL);		\
+	if (__event) {							\
+		__event->h.type = _type;				\
+		__event->pid = (sp)->queue->pid;			\
+		WARN(1, "Replay diverged\n");				\
+	}								\
+	(struct_##_type *)__event;					\
+})
+
+#define scribe_diverge(sp, _type, ...)					\
+({									\
+	struct_##_type *__event = scribe_get_diverge_event(sp, _type);	\
+	if (__event) {							\
+		*__event = (struct_##_type) {				\
+			.h.h.type = _type,				\
+			.h.pid = sp->queue->pid,			\
+			__VA_ARGS__ 					\
+		};							\
+	} else								\
+		__event = ERR_PTR(-EDIVERGE);				\
+									\
+	scribe_emergency_stop((sp)->ctx, (struct scribe_event *)__event); \
+})
 
 /* Events */
 struct scribe_insert_point {
@@ -164,31 +194,33 @@ extern struct scribe_event *scribe_dequeue_event(
 				struct scribe_event_queue *queue, int wait);
 extern struct scribe_event *scribe_peek_event(
 				struct scribe_event_queue *queue, int wait);
-#define scribe_dequeue_event_specific(_type, queue, wait)		\
+#define scribe_dequeue_event_specific(sp, _type)			\
 ({									\
 	struct scribe_event *__event;					\
 									\
-	__event = scribe_dequeue_event(queue, wait);			\
+	__event = scribe_dequeue_event((sp)->queue, SCRIBE_WAIT);	\
 	if (IS_ERR(__event))						\
-		scribe_emergency_stop(queue->ctx, __event);		\
+		scribe_emergency_stop((sp)->ctx, __event);		\
 	else if (__event->type != _type) {				\
 		scribe_free_event(__event);				\
+		scribe_diverge(sp, SCRIBE_EVENT_DIVERGE_EVENT_TYPE,	\
+			       .type = _type);				\
 		__event = ERR_PTR(-EDIVERGE);				\
-		scribe_emergency_stop(queue->ctx, __event);		\
 	}								\
 	(struct_##_type *)__event;					\
 })
 
-#define scribe_dequeue_event_sized(_type, _size, queue, wait)		\
+#define scribe_dequeue_event_sized(sp, _type, _size)			\
 ({									\
 	struct scribe_event_sized *__event_sized;			\
 									\
 	__event_sized = (struct scribe_event_sized *)			\
-		scribe_dequeue_event_specific(_type, queue, wait);	\
+		scribe_dequeue_event_specific(sp, _type);		\
 	if (!IS_ERR(__event_sized) && __event_sized->size != (_size)) {	\
 		scribe_free_event(__event_sized);			\
+		scribe_diverge(sp, SCRIBE_EVENT_DIVERGE_EVENT_SIZE,	\
+			       .size = _size);				\
 		__event_sized = ERR_PTR(-EDIVERGE);			\
-		scribe_emergency_stop(queue->ctx, ERR_PTR(-EDIVERGE));	\
 	}								\
 	(struct_##_type *)__event_sized;				\
 })
@@ -351,10 +383,8 @@ extern void scribe_post_schedule(void);
 			scribe_queue_event(__scribe->queue, __event);	\
 		}							\
 	} else if (is_replaying(__scribe)) {				\
-		__event = scribe_dequeue_event_sized(			\
-				SCRIBE_EVENT_DATA,			\
-				sizeof(src),				\
-				__scribe->queue, SCRIBE_WAIT);		\
+		__event = scribe_dequeue_event_sized(__scribe,		\
+				SCRIBE_EVENT_DATA, sizeof(src));	\
 		if (IS_ERR(__event)) {					\
 			__ret = PTR_ERR(__event);			\
 			/* the next line fixes a compiler warning */	\
@@ -362,8 +392,9 @@ extern void scribe_post_schedule(void);
 		}							\
 		else if (__event->data_type != SCRIBE_DATA_INTERNAL) {	\
 			scribe_free_event(__event);			\
-			scribe_emergency_stop(__scribe->ctx,		\
-					      ERR_PTR(-EDIVERGE));	\
+			scribe_diverge(__scribe,			\
+				       SCRIBE_EVENT_DIVERGE_DATA_TYPE,	\
+				       .type = SCRIBE_DATA_INTERNAL);	\
 			__ret = -EDIVERGE;				\
 		} else {						\
 			(dst) = __event->ldata[0];			\

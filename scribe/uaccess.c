@@ -63,8 +63,8 @@ static struct scribe_event_data *get_data_event(struct scribe_ps *scribe,
 		 * scribe_prepare_data_event() and @size would only be the
 		 * maximum size).
 		 */
-		event = scribe_dequeue_event_specific(
-				SCRIBE_EVENT_DATA, scribe->queue, SCRIBE_WAIT);
+		event = scribe_dequeue_event_specific(scribe,
+						      SCRIBE_EVENT_DATA);
 	}
 
 	return event;
@@ -100,6 +100,45 @@ void scribe_pre_uaccess(const void *data, const void __user *user_ptr,
 		return;
 
 	__scribe_allow_uaccess(scribe);
+}
+
+/*
+ * This version of memcmp() returns the offset of the mismatch,
+ * or -1 when the buffers are matching
+ */
+static int __memcmp(const void *cs, const void *ct, size_t count)
+{
+	const unsigned char *su1, *su2;
+	size_t orig_count = count;
+
+
+	for (su1 = cs, su2 = ct; count > 0; ++su1, ++su2, count--)
+		if (*su1 != *su2)
+			return orig_count - count;;
+	return -1;
+}
+
+static void ensure_data_correctness(struct scribe_ps *scribe,
+				   const void *recorded_data,
+				   const void *data,
+				   size_t count)
+{
+	struct scribe_event_diverge_data_content *de;
+	int offset;
+
+	offset = __memcmp(recorded_data, data, count);
+
+	if (offset == -1)
+		return;
+
+	de = scribe_get_diverge_event(scribe,
+				      SCRIBE_EVENT_DIVERGE_DATA_CONTENT);
+	de->offset = offset;
+	de->size = min(count - offset, sizeof(de->data));
+	memcpy(de->data, data + offset, de->size);
+	memset(de->data + de->size, 0, sizeof(de->data) - de->size);
+
+	scribe_emergency_stop(scribe->ctx, (struct scribe_event *)de);
 }
 
 void scribe_post_uaccess(const void *data, const void __user *user_ptr,
@@ -138,12 +177,16 @@ void scribe_post_uaccess(const void *data, const void __user *user_ptr,
 		memcpy(event->data, data, size);
 		scribe_queue_event(scribe->queue, event);
 	} else { /* replay */
-		if (event->data_type != data_flags ||
-		    event->h.size != size ||
-		    (void *)event->user_ptr != user_ptr)
-			scribe_emergency_stop(scribe->ctx, ERR_PTR(-EDIVERGE));
-
-		else if (data_flags == SCRIBE_DATA_NON_DETERMINISTIC) {
+		if (event->data_type != data_flags)
+			scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_DATA_TYPE,
+				       .type = data_flags);
+		else if (event->h.size != size)
+			scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_EVENT_SIZE,
+				       .size = size);
+		else if ((void *)event->user_ptr != user_ptr)
+			scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_DATA_PTR,
+				       .user_ptr = (u32)user_ptr);
+		else if (data_flags & SCRIBE_DATA_NON_DETERMINISTIC) {
 			/*
 			 * FIXME Do the copying in pre_uaccess and skip the
 			 * extra copy_to_user that happened before.
@@ -159,18 +202,17 @@ void scribe_post_uaccess(const void *data, const void __user *user_ptr,
 				 * copy may or may not have happended. We need
 				 * to make sure that the copy happens anyway.
 				 */
+				WARN(1, "Need to implement proper atomic copies"
+				     "in replay");
 				scribe_emergency_stop(scribe->ctx,
 						      ERR_PTR(-EDIVERGE));
 			}
 
 			scribe_set_data_flags(scribe, data_flags);
 
-		} else {
-			if (memcmp(event->data, data, size))
-				scribe_emergency_stop(scribe->ctx,
-						      ERR_PTR(-EDIVERGE));
-		}
-
+		} else
+			ensure_data_correctness(scribe, event->data,
+						data, size);
 	}
 
 out_forbid:

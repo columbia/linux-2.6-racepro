@@ -30,9 +30,8 @@ void scribe_enter_syscall(struct pt_regs *regs)
 	if (is_recording(scribe))
 		scribe_create_insert_point(scribe->queue, &scribe->syscall_ip);
 	else {
-		event = scribe_dequeue_event_specific(SCRIBE_EVENT_SYSCALL,
-						      scribe->queue,
-						      SCRIBE_WAIT);
+		event = scribe_dequeue_event_specific(scribe,
+						      SCRIBE_EVENT_SYSCALL);
 		if (IS_ERR(event))
 			return;
 
@@ -77,8 +76,7 @@ void scribe_exit_syscall(struct pt_regs *regs)
 					   SCRIBE_EVENT_SYSCALL_END))
 			goto bad;
 	} else {
-		scribe_dequeue_event_specific(SCRIBE_EVENT_SYSCALL_END,
-					      scribe->queue, SCRIBE_WAIT);
+		scribe_dequeue_event_specific(scribe, SCRIBE_EVENT_SYSCALL_END);
 		if (scribe->orig_ret != syscall_get_return_value(current, regs))
 			scribe_emergency_stop(scribe->ctx, ERR_PTR(-EDIVERGE));
 	}

@@ -34,7 +34,9 @@ struct scribe_context *scribe_alloc_context(void)
 	ctx->notification_queue = scribe_alloc_event_queue();
 	if (!ctx->notification_queue)
 		goto err_ctx;
+
 	ctx->idle_event = NULL;
+	ctx->diverge_event = NULL;
 
 	spin_lock_init(&ctx->backtrace_lock);
 	ctx->backtrace = NULL;
@@ -71,6 +73,7 @@ void scribe_exit_context(struct scribe_context *ctx)
 
 static int context_start(struct scribe_context *ctx, int state,
 			 struct scribe_event_context_idle *idle_event,
+			 struct scribe_event_diverge *diverge_event,
 			 struct scribe_backtrace *backtrace)
 {
 	assert_spin_locked(&ctx->tasks_lock);
@@ -84,6 +87,9 @@ static int context_start(struct scribe_context *ctx, int state,
 
 	BUG_ON(ctx->idle_event);
 	ctx->idle_event = idle_event;
+
+	BUG_ON(ctx->diverge_event);
+	ctx->diverge_event = diverge_event;
 
 	BUG_ON(ctx->backtrace);
 	ctx->backtrace = backtrace;
@@ -126,44 +132,53 @@ static void context_idle(struct scribe_context *ctx,
 
 	scribe_queue_event(ctx->notification_queue, ctx->idle_event);
 	ctx->idle_event = NULL;
+
+	if (ctx->diverge_event) {
+		ctx->diverge_event = NULL;
+		scribe_free_event(ctx->diverge_event);
+	}
 }
 
-int scribe_start_record(struct scribe_context *ctx)
+static int event_diverge_max_size_type(void)
 {
-	int ret;
-	struct scribe_event_context_idle *event;
+	int i;
+	size_t max_size = 0;
+	int max_size_type = 0;
+	for (i = 0; i < (__u8)-1; i++) {
+		if (!is_diverge_type(i))
+			continue;
+		if (sizeof_event_from_type(i) > max_size) {
+			max_size = sizeof_event_from_type(i);
+			max_size_type = i;
+		}
+	}
 
-	event = scribe_alloc_event(SCRIBE_EVENT_CONTEXT_IDLE);
-	if (!event)
-		return -ENOMEM;
-
-	spin_lock(&ctx->tasks_lock);
-	ret = context_start(ctx, SCRIBE_RECORD, event, NULL);
-	spin_unlock(&ctx->tasks_lock);
-
-	if (ret)
-		scribe_free_event(event);
-	return ret;
+	return max_size_type;
 }
 
-int scribe_start_replay(struct scribe_context *ctx, int backtrace_len)
+static int do_start(struct scribe_context *ctx, int state, int backtrace_len)
 {
 	int ret = -ENOMEM;
-	struct scribe_event_context_idle *event;
+	struct scribe_event_context_idle *idle_event;
+	struct scribe_event_diverge *diverge_event;
 	struct scribe_backtrace *backtrace = NULL;
 
-	event = scribe_alloc_event(SCRIBE_EVENT_CONTEXT_IDLE);
-	if (!event)
+	idle_event = scribe_alloc_event(SCRIBE_EVENT_CONTEXT_IDLE);
+	if (!idle_event)
 		goto err;
+
+	diverge_event = scribe_alloc_event(event_diverge_max_size_type());
+	if (!diverge_event)
+		goto err_idle_event;
 
 	if (backtrace_len) {
 		backtrace = scribe_alloc_backtrace(backtrace_len);
 		if (!backtrace)
-			goto err_event;
+			goto err_diverge_event;
 	}
 
 	spin_lock(&ctx->tasks_lock);
-	ret = context_start(ctx, SCRIBE_REPLAY, event, backtrace);
+	ret = context_start(ctx, state, idle_event, diverge_event, backtrace);
 	spin_unlock(&ctx->tasks_lock);
 	if (ret)
 		goto err_backtrace;
@@ -172,10 +187,22 @@ int scribe_start_replay(struct scribe_context *ctx, int backtrace_len)
 err_backtrace:
 	if (backtrace)
 		scribe_free_backtrace(backtrace);
-err_event:
-	scribe_free_event(event);
+err_diverge_event:
+	scribe_free_event(diverge_event);
+err_idle_event:
+	scribe_free_event(idle_event);
 err:
 	return ret;
+}
+
+int scribe_start_record(struct scribe_context *ctx)
+{
+	return do_start(ctx, SCRIBE_RECORD, 0);
+}
+
+int scribe_start_replay(struct scribe_context *ctx, int backtrace_len)
+{
+	return do_start(ctx, SCRIBE_REPLAY, backtrace_len);
 }
 
 void scribe_emergency_stop(struct scribe_context *ctx,
