@@ -322,37 +322,35 @@ static int handle_event_pid(struct scribe_context *ctx,
 	return 0;
 }
 
-static int get_data_size(const char *buf, size_t count)
+static ssize_t get_sized_event_size(const char *buf, size_t count)
 {
-	struct scribe_event_data *event_data;
-	typeof(event_data->size) data_size = 0;
-	int data_size_offset;
+	struct scribe_event_sized *event;
+	typeof(event->size) size = 0;
+	int size_offset;
 
-	data_size_offset = offsetof(struct scribe_event_data, size)
-			 - offsetof(struct scribe_event, payload_offset);
+	size_offset = offsetof(struct scribe_event_sized, size)
+		    - offsetof(struct scribe_event_sized, h.payload_offset);
 
-	if (count < data_size_offset + sizeof(data_size))
+	if (count < size_offset + sizeof(size))
 		return -EINVAL;
-	return *(typeof(data_size) *)(buf + data_size_offset);
+	return *(typeof(size) *)(buf + size_offset);
 }
 
 static int alloc_next_event(const char *buf, size_t count,
 			    struct scribe_event **event)
 {
 	typeof((*event)->type) type;
-	int data_size;
+	ssize_t size;
 
-	if (count < sizeof(type))
+	if (sizeof(type) > count)
 		return -EAGAIN;
 	type = *(typeof(type) *)buf;
 
-	if (type == SCRIBE_EVENT_DATA) {
-		data_size = get_data_size(buf, count);
-		if (data_size < 0)
-			return -EAGAIN;
-
-		*event = (struct scribe_event *)
-			scribe_alloc_event_data(data_size);
+	if (is_sized_type(type)) {
+		size = get_sized_event_size(buf, count);
+		if (size < 0)
+			return size;
+		*event = scribe_alloc_event_sized(type, size);
 	} else {
 		*event = scribe_alloc_event(type);
 	}
@@ -430,10 +428,7 @@ out:
 
 /*
  * event_pump_replay() reads from @file to @buf, and call deserialize_events()
- * to instantiate each event. Sometimes deserialize_events() cannot process
- * the whole buffer entirely, so it will wait for more data to arrive.
- * This assume that all the events (besides the data event) can fit in the
- * buffer.
+ * to instantiate each event.
  */
 static void event_pump_replay(struct scribe_context *ctx, char *buf,
 			      struct file *file)
@@ -641,7 +636,7 @@ static ssize_t dev_write(struct file *file,
 	if (get_user(type, buf))
 		return -EFAULT;
 
-	if (type == SCRIBE_EVENT_DATA)
+	if (is_sized_type(type))
 		return -EINVAL;
 
 	event = scribe_alloc_event(type);

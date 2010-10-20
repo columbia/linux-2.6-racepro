@@ -179,6 +179,20 @@ extern struct scribe_event *scribe_peek_event(
 	(struct_##_type *)__event;					\
 })
 
+#define scribe_dequeue_event_sized(_type, _size, queue, wait)		\
+({									\
+	struct scribe_event_sized *__event_sized;			\
+									\
+	__event_sized = (struct scribe_event_sized *)			\
+		scribe_dequeue_event_specific(_type, queue, wait);	\
+	if (!IS_ERR(__event_sized) && __event_sized->size != (_size)) {	\
+		scribe_free_event(__event_sized);			\
+		__event_sized = ERR_PTR(-EDIVERGE);			\
+		scribe_emergency_stop(queue->ctx, ERR_PTR(-EDIVERGE));	\
+	}								\
+	(struct_##_type *)__event_sized;				\
+})
+
 extern int scribe_is_queue_empty(struct scribe_event_queue *queue);
 extern void scribe_set_queue_wont_grow(struct scribe_event_queue *queue);
 
@@ -186,7 +200,7 @@ extern void scribe_set_queue_wont_grow(struct scribe_event_queue *queue);
  * We need the __always_inline (like kmalloc()) to make sure that the constant
  * propagation with its optimization will be made by the compiler.
  */
-static __always_inline void *__scribe_alloc_event_const(__u8 type)
+static __always_inline void *__scribe_alloc_event_const(int type)
 {
 	struct scribe_event *event;
 
@@ -196,29 +210,31 @@ static __always_inline void *__scribe_alloc_event_const(__u8 type)
 
 	return event;
 }
-extern void *__scribe_alloc_event(__u8 type);
-void __please_use_scribe_alloc_event_data(void);
-static __always_inline void *scribe_alloc_event(__u8 type)
+extern void *__scribe_alloc_event(int type);
+void __please_use_scribe_alloc_event_sized(void);
+static __always_inline void *scribe_alloc_event(int type)
 {
 	if (__builtin_constant_p(type)) {
-		if (type == SCRIBE_EVENT_DATA)
-			__please_use_scribe_alloc_event_data();
+		if (is_sized_type(type))
+			__please_use_scribe_alloc_event_sized();
 		return __scribe_alloc_event_const(type);
 	}
 	return __scribe_alloc_event(type);
 }
-static __always_inline struct scribe_event_data *scribe_alloc_event_data(
-								size_t size)
+static __always_inline void *scribe_alloc_event_sized(int type, size_t size)
 {
-	struct scribe_event_data *event;
+	struct scribe_event_sized *event;
 	size_t event_size;
 
-	event_size = size + sizeof_event_from_type(SCRIBE_EVENT_DATA);
+	event_size = size + sizeof_event_from_type(type);
+
+	WARN(event_size > PAGE_SIZE*4,
+	     "This event (%d) is quite big (%d)...\n", type, size);
 
 	event = kmalloc(event_size, GFP_KERNEL);
 
 	if (event) {
-		event->h.type = SCRIBE_EVENT_DATA;
+		event->h.type = type;
 		event->size = size;
 	}
 
@@ -323,7 +339,8 @@ extern void scribe_post_schedule(void);
 	struct scribe_event_data *__event;				\
 									\
 	if (is_recording(__scribe)) {					\
-		__event = scribe_alloc_event_data(sizeof(src));		\
+		__event = scribe_alloc_event_sized(SCRIBE_EVENT_DATA,	\
+						   sizeof(src));	\
 		if (!__event)						\
 			__ret = -ENOMEM;				\
 		else {							\
@@ -334,16 +351,16 @@ extern void scribe_post_schedule(void);
 			scribe_queue_event(__scribe->queue, __event);	\
 		}							\
 	} else if (is_replaying(__scribe)) {				\
-		__event = scribe_dequeue_event_specific(		\
+		__event = scribe_dequeue_event_sized(			\
 				SCRIBE_EVENT_DATA,			\
+				sizeof(src),				\
 				__scribe->queue, SCRIBE_WAIT);		\
 		if (IS_ERR(__event)) {					\
 			__ret = PTR_ERR(__event);			\
 			/* the next line fixes a compiler warning */	\
 			__ret = __ret ? : -EDIVERGE;			\
 		}							\
-		else if (__event->data_type != SCRIBE_DATA_INTERNAL ||	\
-			 __event->size != sizeof(src)) {		\
+		else if (__event->data_type != SCRIBE_DATA_INTERNAL) {	\
 			scribe_free_event(__event);			\
 			scribe_emergency_stop(__scribe->ctx,		\
 					      ERR_PTR(-EDIVERGE));	\

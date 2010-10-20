@@ -41,15 +41,12 @@ static struct scribe_event_data *get_data_event(struct scribe_ps *scribe,
 		event = scribe->prepared_data_event;
 		if (event) {
 			scribe->prepared_data_event = NULL;
-			if (event->size >= size) {
-				event->size = size;
-				return event;
-			}
-			WARN(1, "Event too small ?!");
-			scribe_free_event(event);
+			BUG_ON(event->h.size < size);
+			event->h.size = size;
+			return event;
 		}
 
-		event = scribe_alloc_event_data(size);
+		event = scribe_alloc_event_sized(SCRIBE_EVENT_DATA, size);
 		if (!event) {
 			scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
 			event = ERR_PTR(-ENOMEM);
@@ -60,6 +57,12 @@ static struct scribe_event_data *get_data_event(struct scribe_ps *scribe,
 			scribe->prepared_data_event = NULL;
 			return event;
 		}
+		/*
+		 * Not using scribe_dequeue_event_sized() because we don't
+		 * really know the size (maybe we are in
+		 * scribe_prepare_data_event() and @size would only be the
+		 * maximum size).
+		 */
 		event = scribe_dequeue_event_specific(
 				SCRIBE_EVENT_DATA, scribe->queue, SCRIBE_WAIT);
 	}
@@ -136,7 +139,7 @@ void scribe_post_uaccess(const void *data, const void __user *user_ptr,
 		scribe_queue_event(scribe->queue, event);
 	} else { /* replay */
 		if (event->data_type != data_flags ||
-		    event->size != size ||
+		    event->h.size != size ||
 		    (void *)event->user_ptr != user_ptr)
 			scribe_emergency_stop(scribe->ctx, ERR_PTR(-EDIVERGE));
 

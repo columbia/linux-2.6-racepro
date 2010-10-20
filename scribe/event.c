@@ -345,7 +345,7 @@ void scribe_set_queue_wont_grow(struct scribe_event_queue *queue)
 	wake_up(queue->wait);
 }
 
-void *__scribe_alloc_event(__u8 type)
+void *__scribe_alloc_event(int type)
 {
 	return __scribe_alloc_event_const(type);
 }
