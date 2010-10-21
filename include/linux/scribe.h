@@ -353,14 +353,24 @@ extern void scribe_prepare_data_event(size_t pre_alloc_size);
 #define SCRIBE_DATA_INTERNAL		0x08
 #define SCRIBE_DATA_DONT_RECORD		0x10
 #define SCRIBE_DATA_IGNORE		0x20
-static inline void scribe_set_data_flags(struct scribe_ps *scribe, int flags)
+static inline int scribe_set_data_flags(struct scribe_ps *scribe, int flags)
 {
+	int res = scribe->data_flags;
 	scribe->data_flags = flags;
+	return res;
 }
 static inline int scribe_get_data_flags(struct scribe_ps *scribe)
 {
 	return scribe->data_flags;
 }
+#define scribe_set_current_data_flags(flags)			\
+({								\
+	struct scribe_ps *scribe = current->scribe;		\
+	int res = 0;						\
+	if (scribe)						\
+		res = scribe_set_data_flags(scribe, flags);	\
+	res;							\
+})
 extern void scribe_pre_schedule(void);
 extern void scribe_post_schedule(void);
 
@@ -429,6 +439,7 @@ static inline void scribe_prepare_data_event(size_t pre_alloc_size) {}
 static inline void scribe_pre_schedule(void) {}
 static inline void scribe_post_schedule(void) {}
 
+#define scribe_set_current_data_flags(flags) ({ 0; })
 #define scribe_interpose_value(dst, src) ({ (dst) = (src); 0; })
 
 #endif /* CONFIG_SCRIBE */

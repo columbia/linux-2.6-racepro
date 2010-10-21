@@ -46,6 +46,7 @@
 #include <linux/wait.h>
 #include <linux/workqueue.h>
 #include <linux/module.h>
+#include <linux/scribe.h>
 
 /*
  * Management arrays for POSIX timers.	 Timers are kept in slab memory
@@ -714,6 +715,7 @@ SYSCALL_DEFINE2(timer_gettime, timer_t, timer_id,
 
 	unlock_timer(timr, flags);
 
+	scribe_set_current_data_flags(SCRIBE_DATA_NON_DETERMINISTIC);
 	if (copy_to_user(setting, &cur_setting, sizeof (cur_setting)))
 		return -EFAULT;
 
@@ -741,6 +743,8 @@ SYSCALL_DEFINE1(timer_getoverrun, timer_t, timer_id)
 
 	overrun = timr->it_overrun_last;
 	unlock_timer(timr, flags);
+
+	scribe_interpose_value(overrun, overrun);
 
 	return overrun;
 }
@@ -961,6 +965,8 @@ SYSCALL_DEFINE2(clock_gettime, const clockid_t, which_clock,
 		return -EINVAL;
 	error = CLOCK_DISPATCH(which_clock, clock_get,
 			       (which_clock, &kernel_tp));
+
+	scribe_set_current_data_flags(SCRIBE_DATA_NON_DETERMINISTIC);
 	if (!error && copy_to_user(tp, &kernel_tp, sizeof (kernel_tp)))
 		error = -EFAULT;
 
@@ -980,6 +986,7 @@ SYSCALL_DEFINE2(clock_getres, const clockid_t, which_clock,
 	error = CLOCK_DISPATCH(which_clock, clock_getres,
 			       (which_clock, &rtn_tp));
 
+	scribe_set_current_data_flags(SCRIBE_DATA_NON_DETERMINISTIC);
 	if (!error && tp && copy_to_user(tp, &rtn_tp, sizeof (rtn_tp))) {
 		error = -EFAULT;
 	}
