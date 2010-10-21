@@ -29,6 +29,7 @@
 #include <linux/random.h>
 #include <linux/limits.h>
 #include <linux/sched.h>
+#include <linux/scribe.h>
 #include <asm/elf.h>
 
 static unsigned int stack_maxrandom_size(void)
@@ -91,7 +92,9 @@ static unsigned long mmap_rnd(void)
 		else
 			rnd = (long)(get_random_int() % (1<<28));
 	}
-	return rnd << PAGE_SHIFT;
+	scribe_interpose_value(rnd, rnd << PAGE_SHIFT);
+
+	return rnd;
 }
 
 static unsigned long mmap_base(void)

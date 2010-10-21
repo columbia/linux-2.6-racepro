@@ -159,7 +159,6 @@ create_elf_tables(struct linux_binprm *bprm, struct elfhdr *exec,
 	int ret;
 #ifdef CONFIG_SCRIBE
 	struct scribe_ps *scribe = current->scribe;
-	int data_flags;
 #endif
 
 	/*
@@ -206,9 +205,7 @@ create_elf_tables(struct linux_binprm *bprm, struct elfhdr *exec,
 	u_rand_bytes = (elf_addr_t __user *)
 		       STACK_ALLOC(p, sizeof(k_rand_bytes));
 #ifdef CONFIG_SCRIBE
-	data_flags = 0;
 	if (scribe) {
-		data_flags = scribe_get_data_flags(scribe);
 		scribe_set_data_flags(scribe, SCRIBE_DATA_NON_DETERMINISTIC);
 
 		/*
@@ -219,12 +216,13 @@ create_elf_tables(struct linux_binprm *bprm, struct elfhdr *exec,
 			memset(k_rand_bytes, 0, sizeof(k_rand_bytes));
 	}
 #endif
-	if (__copy_to_user(u_rand_bytes, k_rand_bytes, sizeof(k_rand_bytes)))
-		return -EFAULT;
+	ret = __copy_to_user(u_rand_bytes, k_rand_bytes, sizeof(k_rand_bytes));
 #ifdef CONFIG_SCRIBE
 	if (scribe)
-		scribe_set_data_flags(scribe, data_flags);
+		scribe_set_data_flags(scribe, 0);
 #endif
+	if (ret)
+		return -EFAULT;
 
 	/* Create the ELF interpreter info */
 	elf_info = (elf_addr_t *)current->mm->saved_auxv;
