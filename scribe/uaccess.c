@@ -70,6 +70,11 @@ static struct scribe_event_data *get_data_event(struct scribe_ps *scribe,
 	return event;
 }
 
+static int mm_segment_cmp(mm_segment_t m1, mm_segment_t m2)
+{
+	return memcmp(&m1, &m2, sizeof(m1));
+}
+
 void scribe_prepare_data_event(size_t pre_alloc_size)
 {
 	struct scribe_event_data *event;
@@ -77,7 +82,8 @@ void scribe_prepare_data_event(size_t pre_alloc_size)
 	if (!is_scribed(scribe))
 		return;
 
-	if (scribe->data_flags & SCRIBE_DATA_DONT_RECORD)
+	if (scribe->data_flags & SCRIBE_DATA_IGNORE ||
+	    !mm_segment_cmp(get_fs(), get_ds()))
 		return;
 
 	event = get_data_event(scribe, pre_alloc_size);
@@ -96,7 +102,8 @@ void scribe_pre_uaccess(const void *data, const void __user *user_ptr,
 
 	data_flags = scribe->data_flags | flags;
 
-	if (data_flags & SCRIBE_DATA_IGNORE)
+	if (data_flags & SCRIBE_DATA_IGNORE ||
+	    !mm_segment_cmp(get_fs(), get_ds()))
 		return;
 
 	__scribe_allow_uaccess(scribe);
@@ -160,8 +167,11 @@ void scribe_post_uaccess(const void *data, const void __user *user_ptr,
 
 	data_flags = scribe->data_flags | flags;
 
-	if (data_flags & SCRIBE_DATA_IGNORE)
+	if (data_flags & SCRIBE_DATA_IGNORE ||
+	    !mm_segment_cmp(get_fs(), get_ds()))
 		return;
+
+	WARN_ON((long)user_ptr > TASK_SIZE);
 
 	if (data_flags & SCRIBE_DATA_DONT_RECORD)
 		goto out_forbid;
