@@ -423,6 +423,9 @@ extern void scribe_backtrace_add(struct scribe_backtrace *bt,
 extern void scribe_backtrace_dump(struct scribe_backtrace *bt,
 				  struct scribe_event_queue *queue);
 
+extern void scribe_enter_syscall(struct pt_regs *regs);
+extern void scribe_exit_syscall(struct pt_regs *regs);
+
 #else /* CONFIG_SCRIBE */
 
 #define is_ps_scribed(t)  0

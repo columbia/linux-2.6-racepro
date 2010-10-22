@@ -56,6 +56,7 @@
 #include <asm/unistd.h>
 #include <asm/pgtable.h>
 #include <asm/mmu_context.h>
+#include <asm/syscall.h>
 
 static void exit_mm(struct task_struct * tsk);
 
@@ -888,6 +889,29 @@ static inline void check_stack_usage(void) {}
 #endif
 
 #ifdef CONFIG_SCRIBE
+static void do_scribe_exit(struct task_struct *p, long code)
+{
+	struct pt_regs *regs;
+	struct scribe_ps *scribe = p->scribe;
+
+	if (!is_scribed(scribe))
+		return;
+
+	scribe_allow_uaccess();
+	scribe_set_data_flags(scribe, SCRIBE_DATA_DONT_RECORD);
+	mm_clear_child_tid(p, p->mm, 1);
+
+	if (scribe->in_syscall) {
+		/*
+		 * If we are in a syscall, we need to record the end of the
+		 * syscall properly.
+		 */
+		regs = task_pt_regs(p);
+		syscall_set_return_value(p, regs, 0, code);
+		scribe_exit_syscall(regs);
+	}
+}
+
 void exit_scribe(struct task_struct *p)
 {
 	struct scribe_ps *scribe = p->scribe;
@@ -905,6 +929,8 @@ void exit_scribe(struct task_struct *p)
 	kfree(scribe);
 	p->scribe = NULL;
 }
+#else
+static void do_scribe_exit(struct task_struct *p, long code) {}
 #endif
 
 NORET_TYPE void do_exit(long code)
@@ -980,6 +1006,8 @@ NORET_TYPE void do_exit(long code)
 
 	tsk->exit_code = code;
 	taskstats_exit(tsk, group_dead);
+
+	do_scribe_exit(tsk, code);
 
 	exit_mm(tsk);
 

@@ -581,6 +581,31 @@ struct mm_struct *get_task_mm(struct task_struct *task)
 }
 EXPORT_SYMBOL_GPL(get_task_mm);
 
+void mm_clear_child_tid(struct task_struct *tsk, struct mm_struct *mm,
+			int force)
+{
+	/*
+	 * If we're exiting normally, clear a user-space tid field if
+	 * requested.  We leave this alone when dying by signal, to leave
+	 * the value intact in a core dump, and to save the unnecessary
+	 * trouble otherwise.  Userland only wants this done for a sys_exit.
+	 */
+	if (tsk->clear_child_tid) {
+		if ((!(tsk->flags & PF_SIGNALED) &&
+		    atomic_read(&mm->mm_users) > 1) || force) {
+			/*
+			 * We don't check the error code - if userspace has
+			 * not set up a proper pointer then tough luck.
+			 */
+			put_user(0, tsk->clear_child_tid);
+			sys_futex(tsk->clear_child_tid, FUTEX_WAKE,
+					1, NULL, NULL, 0);
+		}
+		tsk->clear_child_tid = NULL;
+	}
+}
+
+
 /* Please note the differences between mmput and mm_release.
  * mmput is called whenever we stop holding onto a mm_struct,
  * error success whatever.
@@ -623,25 +648,7 @@ void mm_release(struct task_struct *tsk, struct mm_struct *mm)
 		complete(vfork_done);
 	}
 
-	/*
-	 * If we're exiting normally, clear a user-space tid field if
-	 * requested.  We leave this alone when dying by signal, to leave
-	 * the value intact in a core dump, and to save the unnecessary
-	 * trouble otherwise.  Userland only wants this done for a sys_exit.
-	 */
-	if (tsk->clear_child_tid) {
-		if (!(tsk->flags & PF_SIGNALED) &&
-		    atomic_read(&mm->mm_users) > 1) {
-			/*
-			 * We don't check the error code - if userspace has
-			 * not set up a proper pointer then tough luck.
-			 */
-			put_user(0, tsk->clear_child_tid);
-			sys_futex(tsk->clear_child_tid, FUTEX_WAKE,
-					1, NULL, NULL, 0);
-		}
-		tsk->clear_child_tid = NULL;
-	}
+	mm_clear_child_tid(tsk, mm, 0);
 }
 
 /*
