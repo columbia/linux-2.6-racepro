@@ -36,7 +36,8 @@
 
 enum scribe_event_type {
 	/* log file events */
-	SCRIBE_EVENT_PID = 1,
+	SCRIBE_EVENT_INIT = 1,
+	SCRIBE_EVENT_PID,
 	SCRIBE_EVENT_DATA,
 	SCRIBE_EVENT_SYSCALL,
 	SCRIBE_EVENT_SYSCALL_END,
@@ -83,6 +84,13 @@ struct scribe_event_diverge {
 } __attribute__((packed));
 
 /* Log file */
+#define struct_SCRIBE_EVENT_INIT struct scribe_event_init
+struct scribe_event_init {
+	struct scribe_event_sized h;
+	__u16 argc;
+	__u16 envc;
+	__u8 data[0];
+} __attribute__((packed));
 
 #define struct_SCRIBE_EVENT_PID struct scribe_event_pid
 struct scribe_event_pid {
@@ -205,7 +213,8 @@ struct scribe_event_diverge_data_content {
 
 static __always_inline int is_sized_type(int type)
 {
-	return type == SCRIBE_EVENT_DATA;
+	return  type == SCRIBE_EVENT_INIT ||
+		type == SCRIBE_EVENT_DATA;
 }
 
 static __always_inline int is_diverge_type(int type)
@@ -223,7 +232,8 @@ void __you_are_using_an_unknown_scribe_type(void);
  */
 static __always_inline size_t sizeof_event_from_type(__u8 type)
 {
-#define __TYPE(t) if (type == t) return sizeof(struct_##t)
+#define __TYPE(t) if (type == t) return sizeof(struct_##t);
+	__TYPE(SCRIBE_EVENT_INIT);
 	__TYPE(SCRIBE_EVENT_PID);
 	__TYPE(SCRIBE_EVENT_DATA);
 	__TYPE(SCRIBE_EVENT_SYSCALL);
