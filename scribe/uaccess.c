@@ -70,9 +70,9 @@ static struct scribe_event_data *get_data_event(struct scribe_ps *scribe,
 	return event;
 }
 
-static int mm_segment_cmp(mm_segment_t m1, mm_segment_t m2)
+int is_kernel_copy(void)
 {
-	return memcmp(&m1, &m2, sizeof(m1));
+	return !memcmp(&get_fs(), &get_ds(), sizeof(mm_segment_t));
 }
 
 void scribe_prepare_data_event(size_t pre_alloc_size)
@@ -82,8 +82,7 @@ void scribe_prepare_data_event(size_t pre_alloc_size)
 	if (!is_scribed(scribe))
 		return;
 
-	if (scribe->data_flags & SCRIBE_DATA_IGNORE ||
-	    !mm_segment_cmp(get_fs(), get_ds()))
+	if (scribe->data_flags & SCRIBE_DATA_IGNORE || is_kernel_copy())
 		return;
 
 	event = get_data_event(scribe, pre_alloc_size);
@@ -102,8 +101,7 @@ void scribe_pre_uaccess(const void *data, const void __user *user_ptr,
 
 	data_flags = scribe->data_flags | flags;
 
-	if (data_flags & SCRIBE_DATA_IGNORE ||
-	    !mm_segment_cmp(get_fs(), get_ds()))
+	if (data_flags & SCRIBE_DATA_IGNORE || is_kernel_copy())
 		return;
 
 	__scribe_allow_uaccess(scribe);
@@ -167,8 +165,7 @@ void scribe_post_uaccess(const void *data, const void __user *user_ptr,
 
 	data_flags = scribe->data_flags | flags;
 
-	if (data_flags & SCRIBE_DATA_IGNORE ||
-	    !mm_segment_cmp(get_fs(), get_ds()))
+	if (data_flags & SCRIBE_DATA_IGNORE || is_kernel_copy())
 		return;
 
 	WARN_ON((long)user_ptr > TASK_SIZE);
@@ -205,6 +202,12 @@ void scribe_post_uaccess(const void *data, const void __user *user_ptr,
 			data_flags = scribe_get_data_flags(scribe);
 			scribe_set_data_flags(scribe, SCRIBE_DATA_IGNORE);
 
+			/*
+			 * We're using the inatomic version so that we don't
+			 * get the might_sleep(), but if we're not in an
+			 * atomic context, it's equivalent to
+			 * __copy_to_user().
+			 */
 			if (__copy_to_user_inatomic((void __user *)user_ptr,
 						    event->data, size)) {
 				/*
@@ -212,17 +215,17 @@ void scribe_post_uaccess(const void *data, const void __user *user_ptr,
 				 * copy may or may not have happended. We need
 				 * to make sure that the copy happens anyway.
 				 */
-				WARN(1, "Need to implement proper atomic copies"
-				     "in replay");
+				WARN(in_atomic(), "Need to implement proper "
+				     "atomic copies in replay\n");
 				scribe_emergency_stop(scribe->ctx,
 						      ERR_PTR(-EDIVERGE));
 			}
 
 			scribe_set_data_flags(scribe, data_flags);
-
-		} else
+		} else {
 			ensure_data_correctness(scribe, event->data,
 						data, size);
+		}
 	}
 
 out_forbid:
