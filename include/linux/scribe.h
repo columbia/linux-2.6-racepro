@@ -78,22 +78,21 @@ extern int scribe_stop(struct scribe_context *ctx);
 		__event->h.type = _type;				\
 		__event->pid = (sp)->queue->pid;			\
 		WARN(1, "Replay diverged\n");				\
-	}								\
+	} else								\
+		__event = ERR_PTR(-EDIVERGE);				\
 	(struct_##_type *)__event;					\
 })
 
 #define scribe_diverge(sp, _type, ...)					\
 ({									\
 	struct_##_type *__event = scribe_get_diverge_event(sp, _type);	\
-	if (__event) {							\
+	if (!IS_ERR(__event)) {						\
 		*__event = (struct_##_type) {				\
 			.h.h.type = _type,				\
 			.h.pid = sp->queue->pid,			\
 			__VA_ARGS__ 					\
 		};							\
-	} else								\
-		__event = ERR_PTR(-EDIVERGE);				\
-									\
+	}								\
 	scribe_emergency_stop((sp)->ctx, (struct scribe_event *)__event); \
 })
 

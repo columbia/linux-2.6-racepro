@@ -138,11 +138,12 @@ static void ensure_data_correctness(struct scribe_ps *scribe,
 
 	de = scribe_get_diverge_event(scribe,
 				      SCRIBE_EVENT_DIVERGE_DATA_CONTENT);
-	de->offset = offset;
-	de->size = min(count - offset, sizeof(de->data));
-	memcpy(de->data, data + offset, de->size);
-	memset(de->data + de->size, 0, sizeof(de->data) - de->size);
-
+	if (!IS_ERR(de)) {
+		de->offset = offset;
+		de->size = min(count - offset, sizeof(de->data));
+		memcpy(de->data, data + offset, de->size);
+		memset(de->data + de->size, 0, sizeof(de->data) - de->size);
+	}
 	scribe_emergency_stop(scribe->ctx, (struct scribe_event *)de);
 }
 
