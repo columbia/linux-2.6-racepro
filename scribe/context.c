@@ -81,7 +81,12 @@ static int context_start(struct scribe_context *ctx, int state,
 	if (ctx->flags != SCRIBE_IDLE)
 		return -EPERM;
 
-	BUG_ON(!list_empty(&ctx->tasks));
+	/*
+	 * The task list might not be empty (just got an emergency_stop),
+	 * we're getting there.
+	 */
+	if (!list_empty(&ctx->tasks))
+		return -EPERM;
 
 	ctx->queues_wont_grow = 0;
 
@@ -103,9 +108,8 @@ static void context_idle(struct scribe_context *ctx,
 			 struct scribe_event *reason)
 {
 	struct scribe_backtrace *backtrace;
-	assert_spin_locked(&ctx->tasks_lock);
 
-	BUG_ON(ctx->flags == SCRIBE_IDLE);
+	assert_spin_locked(&ctx->tasks_lock);
 
 	ctx->flags = SCRIBE_IDLE;
 
@@ -123,10 +127,10 @@ static void context_idle(struct scribe_context *ctx,
 
 	if (IS_ERR(reason) || !reason) {
 		ctx->idle_event->error = PTR_ERR(reason);
-		WARN(reason, "scribe: error=%ld\n", PTR_ERR(reason));
-
+		WARN(reason, "scribe: Context going idle with error=%ld\n",
+		     PTR_ERR(reason));
 	} else {
-		ctx->idle_event->error = reason->type;
+		ctx->idle_event->error = -EDIVERGE;
 		scribe_queue_event(ctx->notification_queue, reason);
 	}
 
@@ -212,10 +216,8 @@ void scribe_emergency_stop(struct scribe_context *ctx,
 
 	spin_lock(&ctx->tasks_lock);
 
-	if (ctx->flags == SCRIBE_IDLE) {
-		spin_unlock(&ctx->tasks_lock);
-		return;
-	}
+	if (ctx->flags == SCRIBE_IDLE)
+		goto out;
 
 	/*
 	 * The SCRIBE_IDLE flag has to be set here to guard against race with
@@ -232,6 +234,8 @@ void scribe_emergency_stop(struct scribe_context *ctx,
 	 */
 	list_for_each_entry(scribe, &ctx->tasks, node)
 		force_sig(SIGKILL, scribe->p);
+
+out:
 	spin_unlock(&ctx->tasks_lock);
 
 	/*
@@ -294,9 +298,9 @@ int scribe_set_attach_on_exec(struct scribe_context *ctx, int enable)
 }
 
 /*
- * scribe_attach() and scribe_detach() must be called only by
- * the current process or if scribe->p is sleeping (and thus not accessing
- * scribe->flags)
+ * scribe_attach() and scribe_detach() must only be called only by when
+ * current == scribe->p, OR scribe->p is sleeping (and thus not accessing
+ * scribe->flags).
  */
 void scribe_attach(struct scribe_ps *scribe)
 {
@@ -305,9 +309,10 @@ void scribe_attach(struct scribe_ps *scribe)
 	/*
 	 * First get the queue, and only then, add to the task list:
 	 * It guarantee that if a task is in the task list, its
-	 * queue is in the queue list
+	 * queue is in the queue list.
 	 */
-	BUG_ON(!scribe->queue);
+	BUG_ON(scribe->queue);
+	BUG_ON(!scribe->pre_alloc_queue);
 	scribe->queue = scribe_get_queue_by_pid(ctx, &scribe->pre_alloc_queue,
 						task_pid_vnr(scribe->p));
 	if (scribe->pre_alloc_queue) {
@@ -316,7 +321,6 @@ void scribe_attach(struct scribe_ps *scribe)
 	}
 
 	spin_lock(&ctx->tasks_lock);
-	BUG_ON(!(ctx->flags & (SCRIBE_RECORD | SCRIBE_REPLAY)));
 	BUG_ON(is_scribed(scribe));
 
 	if (unlikely(ctx->flags == SCRIBE_IDLE)) {
@@ -326,21 +330,23 @@ void scribe_attach(struct scribe_ps *scribe)
 		 * Two reasons we are here:
 		 * 1) We got caught in the attach_on_exec race:
 		 *    - the process calls scribe_set_attach_on_exec(ctx)
-		 *    - the device gets closed and the context dies
+		 *    - the context goes idle (event pump, or device closed)
 		 *    - the process calls execve(), and lands here
-		 * Note: the execve will still succeed.
 		 *
 		 * 2) copy_process() was about to attach a child, when
 		 * suddenly scribe_emergency_stop() got called and distributed
-		 * some SIGKILLs, but only to the parent, which is why we
-		 * need to do our own cleanup.
+		 * some SIGKILLs, but only to the parent.
+		 *
+		 * We can SIGKILL ourselves because if we attached right
+		 * before the context went IDLE, would have got the SIGKILL
+		 * from emergency_stop() anyways. It's a race condition.
 		 */
 		spin_lock(&ctx->queues_lock);
 		scribe_make_persistent(scribe->queue, 0);
 		spin_unlock(&ctx->queues_lock);
-		exit_scribe(scribe->p);
 
-		/* FIXME send ourselves a SIGKILL if our parent got one */
+		force_sig(SIGKILL, scribe->p);
+		exit_scribe(scribe->p);
 		return;
 	}
 
