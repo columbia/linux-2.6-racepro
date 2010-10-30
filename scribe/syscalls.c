@@ -38,6 +38,9 @@ void scribe_enter_syscall(struct pt_regs *regs)
 		return;
 	}
 
+	if (!should_scribe_syscalls(scribe))
+		return;
+
 	if (is_recording(scribe))
 		scribe_create_insert_point(&scribe->queue->bare,
 					   &scribe->syscall_ip);
@@ -61,16 +64,22 @@ void scribe_exit_syscall(struct pt_regs *regs)
 {
 	struct scribe_ps *scribe = current->scribe;
 	struct scribe_event_syscall *event;
+	int nr_syscall = syscall_get_nr(current, regs);
 
 	if (!is_scribed(scribe))
+		return;
+
+	if (is_scribe_syscall(nr_syscall))
 		return;
 
 	__scribe_allow_uaccess(scribe);
 
 	if (!scribe->in_syscall) {
 		/*
-		 * The current process was freshly attached. This syscall
+		 * Two cases:
+		 * - The current process was freshly attached. This syscall
 		 * doesn't count, we don't want a half recorded syscall.
+		 * - should_scribe_syscalls() == 0
 		 */
 		return;
 	}
