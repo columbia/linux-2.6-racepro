@@ -295,11 +295,15 @@ static inline void scribe_free_event(void *event)
 }
 
 
-/* Per-process state */
+/* Per-process scribe flags */
 
-#define SCRIBE_PS_RECORD	0x00000001
-#define SCRIBE_PS_REPLAY	0x00000002
-#define SCRIBE_PS_ATTACH_ON_EXEC 0x00000004
+#define SCRIBE_PS_RECORD		0x00000001
+#define SCRIBE_PS_REPLAY		0x00000002
+#define SCRIBE_PS_ATTACH_ON_EXEC	0x00000004
+
+#define SCRIBE_PS_ENABLE_SYSCALL	0x00000100
+#define SCRIBE_PS_ENABLE_DATA		0x00000200
+#define SCRIBE_PS_ENABLE_ALL		0x0000ff00
 
 struct scribe_ps {
 	struct list_head node;

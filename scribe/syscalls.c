@@ -10,14 +10,25 @@
 #include <linux/sched.h>
 #include <linux/seq_file.h>
 #include <linux/scribe.h>
+#include <linux/syscalls.h>
 #include <asm/syscall.h>
+
+static int is_scribe_syscall(int nr)
+{
+	return nr == __NR_get_scribe_flags ||
+	       nr == __NR_set_scribe_flags;
+}
 
 void scribe_enter_syscall(struct pt_regs *regs)
 {
 	struct scribe_event_syscall *event;
 	struct scribe_ps *scribe = current->scribe;
+	int nr_syscall = syscall_get_nr(current, regs);
 
 	if (!is_scribed(scribe))
+		return;
+
+	if (is_scribe_syscall(nr_syscall))
 		return;
 
 	__scribe_forbid_uaccess(scribe);
@@ -36,7 +47,7 @@ void scribe_enter_syscall(struct pt_regs *regs)
 		if (IS_ERR(event))
 			return;
 
-		if (event->nr != syscall_get_nr(current, regs))
+		if (event->nr != nr_syscall)
 			scribe_emergency_stop(scribe->ctx, ERR_PTR(-EDIVERGE));
 
 		scribe->orig_ret = event->ret;
@@ -68,7 +79,7 @@ void scribe_exit_syscall(struct pt_regs *regs)
 		event = scribe_alloc_event(SCRIBE_EVENT_SYSCALL);
 		if (!event)
 			goto bad;
-		event->nr = syscall_get_nr(current, regs);
+		event->nr = nr_syscall;
 		event->ret = syscall_get_return_value(current, regs);
 		scribe_queue_event_at(&scribe->syscall_ip, event);
 		scribe_commit_insert_point(&scribe->syscall_ip);
@@ -87,4 +98,31 @@ void scribe_exit_syscall(struct pt_regs *regs)
 
 bad:
 	scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
+}
+
+
+asmlinkage long sys_get_scribe_flags(void)
+{
+	struct scribe_ps *scribe = current->scribe;
+	if (!is_scribed(scribe))
+		return -EPERM;
+
+	return scribe->flags;
+}
+
+asmlinkage long sys_set_scribe_flags(int flags)
+{
+	struct scribe_ps *scribe = current->scribe;
+	int old_flags;
+
+	if (!is_scribed(scribe))
+		return -EPERM;
+
+	old_flags = scribe->flags;
+
+	/* We allow only enable flags to be set */
+	scribe->flags &= ~SCRIBE_PS_ENABLE_ALL;
+	scribe->flags |= flags & SCRIBE_PS_ENABLE_ALL;
+
+	return old_flags;
 }

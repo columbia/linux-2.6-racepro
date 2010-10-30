@@ -338,3 +338,10 @@ ENTRY(sys_call_table)
 	.long sys_perf_event_open
 	.long sys_recvmmsg
 	.long ptregs_eclone
+#ifdef CONFIG_SCRIBE
+	.long sys_get_scribe_flags
+	.long sys_set_scribe_flags	/* 340 */
+#else
+	.long sys_ni_syscall
+	.long sys_ni_syscall
+#endif

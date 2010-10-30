@@ -356,6 +356,7 @@ void scribe_attach(struct scribe_ps *scribe)
 
 	scribe->flags |= (ctx->flags & SCRIBE_RECORD) ? SCRIBE_PS_RECORD : 0;
 	scribe->flags |= (ctx->flags & SCRIBE_REPLAY) ? SCRIBE_PS_REPLAY : 0;
+	scribe->flags |= SCRIBE_PS_ENABLE_ALL;
 
 	if (is_recording(scribe)) {
 		/*
