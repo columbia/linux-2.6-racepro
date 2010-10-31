@@ -54,7 +54,7 @@ static inline int is_interrupted(int ret)
 
 /* Record */
 
-static inline int is_queue_active(struct scribe_event_queue *queue)
+static inline int is_queue_active(struct scribe_queue *queue)
 {
 	return !scribe_is_queue_empty(queue) || queue->flags & SCRIBE_WONT_GROW;
 }
@@ -65,9 +65,9 @@ static inline int is_queue_active(struct scribe_event_queue *queue)
  * empty, -EAGAIN if at least one queue is present and all queues are empty.
  */
 static int __get_active_queue(struct scribe_context *ctx,
-			      struct scribe_event_queue **ptr_queue)
+			      struct scribe_queue **ptr_queue)
 {
-	struct scribe_event_queue *queue;
+	struct scribe_queue *queue;
 	int ret;
 
 	spin_lock(&ctx->queues_lock);
@@ -100,10 +100,10 @@ static int __get_active_queue(struct scribe_context *ctx,
 }
 
 static int get_active_queue(struct scribe_context *ctx,
-			    struct scribe_event_queue **current_queue,
+			    struct scribe_queue **current_queue,
 			    int wait)
 {
-	struct scribe_event_queue *queue;
+	struct scribe_queue *queue;
 	int ret;
 
 	queue = *current_queue;
@@ -135,9 +135,9 @@ static int get_active_queue(struct scribe_context *ctx,
  * Note: This is where queues get to be freed when dead
  */
 static int get_next_event(pid_t *last_pid, struct scribe_event **event,
-			  struct scribe_event_queue **current_queue)
+			  struct scribe_queue **current_queue)
 {
-	struct scribe_event_queue *queue;
+	struct scribe_queue *queue;
 	struct scribe_event_pid *event_pid;
 	struct scribe_event_queue_eof *event_eof;
 
@@ -184,7 +184,7 @@ static int get_next_event(pid_t *last_pid, struct scribe_event **event,
 static ssize_t serialize_events(struct scribe_context *ctx,
 				char *buf, size_t count,
 				pid_t *last_pid,
-				struct scribe_event_queue **current_queue,
+				struct scribe_queue **current_queue,
 				struct scribe_event **pending_event,
 				size_t *pending_offset)
 {
@@ -258,7 +258,7 @@ out:
 static void event_pump_record(struct scribe_context *ctx,
 			      char *buf, struct file *file)
 {
-	struct scribe_event_queue *current_queue = NULL;
+	struct scribe_queue *current_queue = NULL;
 	struct scribe_event *pending_event = NULL;
 	size_t pending_offset = 0;
 	pid_t last_pid = 0;
@@ -307,8 +307,8 @@ err:
 
 static int handle_event_pid(struct scribe_context *ctx,
 			    struct scribe_event *event,
-			    struct scribe_event_queue **current_queue,
-			    struct scribe_event_queue **pre_alloc_queue)
+			    struct scribe_queue **current_queue,
+			    struct scribe_queue **pre_alloc_queue)
 {
 	pid_t pid = ((struct scribe_event_pid *)event)->pid;
 
@@ -363,8 +363,8 @@ static int alloc_next_event(const char *buf, size_t count,
 
 static ssize_t deserialize_events(struct scribe_context *ctx, const char *buf,
 				  size_t count, loff_t file_pos,
-				  struct scribe_event_queue **current_queue,
-				  struct scribe_event_queue **pre_alloc_queue,
+				  struct scribe_queue **current_queue,
+				  struct scribe_queue **pre_alloc_queue,
 				  struct scribe_event **pending_event,
 				  size_t *pending_offset)
 {
@@ -434,9 +434,9 @@ static void event_pump_replay(struct scribe_context *ctx, char *buf,
 			      struct file *file)
 
 {
-	struct scribe_event_queue *queue;
-	struct scribe_event_queue *current_queue = NULL;
-	struct scribe_event_queue *pre_alloc_queue = NULL;
+	struct scribe_queue *queue;
+	struct scribe_queue *current_queue = NULL;
+	struct scribe_queue *pre_alloc_queue = NULL;
 	struct scribe_event *pending_event = NULL;
 	size_t pending_offset = 0;
 	size_t count = 0;

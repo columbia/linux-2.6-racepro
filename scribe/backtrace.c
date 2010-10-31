@@ -65,7 +65,7 @@ void scribe_backtrace_add(struct scribe_backtrace *bt,
 }
 
 void scribe_backtrace_dump(struct scribe_backtrace *bt,
-			   struct scribe_event_queue *queue)
+			   struct scribe_queue *queue)
 {
 	struct list_head invalid_entries;
 	struct scribe_event_backtrace *last = bt->last;

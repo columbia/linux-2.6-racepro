@@ -51,7 +51,7 @@ err:
 
 void scribe_exit_context(struct scribe_context *ctx)
 {
-	struct scribe_event_queue *queue, *tmp;
+	struct scribe_queue *queue, *tmp;
 
 	scribe_emergency_stop(ctx, NULL);
 
