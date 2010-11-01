@@ -114,7 +114,8 @@ static void context_idle(struct scribe_context *ctx,
 	ctx->flags = SCRIBE_IDLE;
 
 	spin_lock(&ctx->backtrace_lock);
-	backtrace = xchg(&ctx->backtrace, NULL);
+	backtrace = ctx->backtrace;
+	ctx->backtrace = NULL;
 	spin_unlock(&ctx->backtrace_lock);
 
 	if (backtrace) {
