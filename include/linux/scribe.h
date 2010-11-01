@@ -41,7 +41,7 @@ struct scribe_context {
 	struct list_head queues;
 	wait_queue_head_t queues_wait;
 
-	struct scribe_queue *notification_queue;
+	struct scribe_queue_bare *notification_queue;
 
 	/* Those are pre-allocated events to be used in atomic contexts */
 	struct scribe_event_context_idle *idle_event;
@@ -90,7 +90,7 @@ extern int scribe_stop(struct scribe_context *ctx);
 		*__event = (struct_##_type) {				\
 			.h.h.type = _type,				\
 			.h.pid = sp->queue->pid,			\
-			__VA_ARGS__ 					\
+			__VA_ARGS__					\
 		};							\
 	}								\
 	scribe_emergency_stop((sp)->ctx, (struct scribe_event *)__event); \
@@ -99,70 +99,86 @@ extern int scribe_stop(struct scribe_context *ctx);
 /* Events */
 struct scribe_insert_point {
 	struct list_head node;
-	struct scribe_queue *queue;
+	struct scribe_queue_bare *bare;
 	struct list_head events;
 };
 
-#define SCRIBE_WONT_GROW 1
-#define SCRIBE_PERSISTENT 2
-
-struct scribe_queue {
-	atomic_t ref_cnt;
-
-	/*
-	 * ctx, node and pid are only relevent when the queue has been
-	 * attached to the context list of queues, with
-	 * scribe_get_queue_by_pid()
-	 */
-	struct scribe_context *ctx;
-	struct list_head node;
-	pid_t pid;
-
-	/*
-	 * When wont_grow == 1 and list_empty(events), the queue can be
-	 * considered as dead
-	 */
-	int flags;
-
-	/*
-	 * Insert points allows to insert event at an arbitrary location
-	 * which is quite handy when we need to put events "in the past",
-	 * like saving the return value of a syscall.
-	 */
+struct scribe_queue_bare {
 	spinlock_t lock;
-	/* For simplicity, there is not list head of the insert point list */
+	/*
+	 * For simplicity, there is not list head of the insert point list:
+	 * It's a circular list, and there is no need to interate through
+	 * the list.
+	 */
 	struct scribe_insert_point master;
 
 	/*
+	 * When wont_grow == 1 and list_empty(events), the queue can be
+	 * considered as dead.
+	 */
+	int wont_grow;
+
+	/*
 	 * 'wait' points to:
-	 * - context->wait_event in record mode
-	 * - default_wait in replay mode
+	 * - &ctx->wait_event in record mode (many producers, one consumer)
+	 * - &default_wait in replay mode (one producer, many consumer)
 	 */
 	wait_queue_head_t default_wait;
 	wait_queue_head_t *wait;
 };
 
-extern struct scribe_queue *scribe_alloc_event_queue(void);
+/*
+ * scribe_queue are used for the per process queue whereas the
+ * scribe_queue_bare are used freely, unrelated to a specific process (e.g.
+ * the notification queue).
+ */
+struct scribe_queue {
+	struct scribe_queue_bare bare;
+
+	atomic_t ref_cnt;
+
+	/* when persistent == 1, it means that we take an additional internal
+	 * reference (This is useful to pass the queue around without having
+	 * it to die in the middle).
+	 */
+	int persistent;
+
+	struct scribe_context *ctx;
+	struct list_head node;
+	pid_t pid;
+};
+
+extern struct scribe_queue_bare *scribe_alloc_queue_bare(void);
+extern struct scribe_queue *scribe_alloc_queue(void);
+extern void scribe_free_queue_bare(struct scribe_queue_bare *bare);
+
 extern struct scribe_queue *scribe_get_queue_by_pid(
 				struct scribe_context *ctx,
 				struct scribe_queue **pre_alloc_queue,
 				pid_t pid);
 extern void scribe_get_queue(struct scribe_queue *queue);
 extern void scribe_put_queue(struct scribe_queue *queue);
-extern void scribe_put_queue_nolock(struct scribe_queue *queue);
-extern void scribe_make_persistent(struct scribe_queue *queue,
-				   int enable);
-extern void scribe_free_all_events(struct scribe_queue *queue);
+extern void scribe_put_queue_locked(struct scribe_queue *queue);
+extern void scribe_set_persistent(struct scribe_queue *queue);
+extern void scribe_unset_persistent(struct scribe_queue *queue);
+extern void scribe_free_all_events(struct scribe_queue_bare *bare);
 
-extern void scribe_create_insert_point(struct scribe_queue *queue,
+/*
+ * Insert points allows to insert event at an arbitrary location which is
+ * quite handy when we need to put events "in the past", like saving the
+ * return value of a syscall.
+ */
+extern void scribe_create_insert_point(struct scribe_queue_bare *bare,
 				       struct scribe_insert_point *ip);
 extern void scribe_commit_insert_point(struct scribe_insert_point *ip);
 
 extern void scribe_queue_event_at(struct scribe_insert_point *where,
 				  void *event);
 extern void scribe_queue_event(struct scribe_queue *queue, void *event);
-extern void scribe_queue_events(struct scribe_queue *queue,
-			 struct list_head *events);
+extern void scribe_queue_event_bare(struct scribe_queue_bare *bare,
+				    void *event);
+extern void scribe_queue_events_bare(struct scribe_queue_bare *bare,
+				     struct list_head *events);
 
 /*
  * This macro allows us to write such code:
@@ -189,6 +205,8 @@ extern void scribe_queue_events(struct scribe_queue *queue,
 #define SCRIBE_NO_WAIT 0
 #define SCRIBE_WAIT 1
 #define SCRIBE_WAIT_INTERRUPTIBLE 2
+extern struct scribe_event *scribe_dequeue_event_bare(
+				struct scribe_queue_bare *bare, int wait);
 extern struct scribe_event *scribe_dequeue_event(
 				struct scribe_queue *queue, int wait);
 extern struct scribe_event *scribe_peek_event(
@@ -224,8 +242,8 @@ extern struct scribe_event *scribe_peek_event(
 	(struct_##_type *)__event_sized;				\
 })
 
-extern int scribe_is_queue_empty(struct scribe_queue *queue);
-extern void scribe_set_queue_wont_grow(struct scribe_queue *queue);
+extern int scribe_is_queue_empty(struct scribe_queue_bare *bare);
+extern void scribe_set_queue_wont_grow(struct scribe_queue_bare *bare);
 
 /*
  * We need the __always_inline (like kmalloc()) to make sure that the constant
@@ -283,7 +301,6 @@ static inline void scribe_free_event(void *event)
 #define SCRIBE_PS_REPLAY	0x00000002
 #define SCRIBE_PS_ATTACH_ON_EXEC 0x00000004
 
-struct scribe_queue;
 struct scribe_ps {
 	struct list_head node;
 
@@ -420,7 +437,7 @@ extern void scribe_free_backtrace(struct scribe_backtrace *bt);
 extern void scribe_backtrace_add(struct scribe_backtrace *bt,
 				 struct scribe_event *event);
 extern void scribe_backtrace_dump(struct scribe_backtrace *bt,
-				  struct scribe_queue *queue);
+				  struct scribe_queue_bare *bare);
 
 extern void scribe_enter_syscall(struct pt_regs *regs);
 extern void scribe_exit_syscall(struct pt_regs *regs);

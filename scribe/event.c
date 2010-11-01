@@ -10,45 +10,67 @@
 #include <linux/scribe.h>
 #include <linux/sched.h>
 
-static void init_insert_point(struct scribe_queue *queue,
+static void init_insert_point(struct scribe_queue_bare *bare,
 			      struct scribe_insert_point *ip)
 {
-	ip->queue = queue;
+	ip->bare = bare;
 	INIT_LIST_HEAD(&ip->events);
 }
 
-struct scribe_queue *scribe_alloc_event_queue(void)
+static void init_queue_bare(struct scribe_queue_bare *bare)
+{
+	spin_lock_init(&bare->lock);
+	init_insert_point(bare, &bare->master);
+	INIT_LIST_HEAD(&bare->master.node);
+	bare->wont_grow = 0;
+	init_waitqueue_head(&bare->default_wait);
+	bare->wait = &bare->default_wait;
+}
+
+static void init_queue(struct scribe_queue *queue,
+		       struct scribe_context *ctx, pid_t pid)
+{
+	/*
+	 * XXX the context reference is not taken: the caller should maintain
+	 * that reference until that queue dies.
+	 */
+	init_queue_bare(&queue->bare);
+	atomic_set(&queue->ref_cnt, 1);
+	queue->persistent = 0;
+	queue->ctx = ctx;
+	INIT_LIST_HEAD(&queue->node);
+	queue->pid = pid;
+}
+
+struct scribe_queue_bare *scribe_alloc_queue_bare(void)
+{
+	struct scribe_queue_bare *bare;
+
+	bare = kmalloc(sizeof(*bare), GFP_KERNEL);
+	if (!bare)
+		return NULL;
+	init_queue_bare(bare);
+	return bare;
+}
+
+/*
+ * The queue initialization is done in scribe_get_queue_by_pid().
+ */
+struct scribe_queue *scribe_alloc_queue(void)
 {
 	struct scribe_queue *queue;
 
 	queue = kmalloc(sizeof(*queue), GFP_KERNEL);
-	if (!queue)
-		return NULL;
-
-	atomic_set(&queue->ref_cnt, 1);
-	queue->ctx = NULL;
-	INIT_LIST_HEAD(&queue->node);
-	queue->pid = 0;
-	queue->flags = 0;
-
-	spin_lock_init(&queue->lock);
-	init_insert_point(queue, &queue->master);
-	INIT_LIST_HEAD(&queue->master.node);
-
-	init_waitqueue_head(&queue->default_wait);
-	queue->wait = &queue->default_wait;
-
 	return queue;
 }
 
-static void scribe_free_event_queue(struct scribe_queue *queue)
+void scribe_free_queue_bare(struct scribe_queue_bare *bare)
 {
-	scribe_free_all_events(queue);
-	kfree(queue);
+	scribe_free_all_events(bare);
+	kfree(bare);
 }
 
-static struct scribe_queue *find_queue(struct scribe_context *ctx,
-					     pid_t pid)
+static struct scribe_queue *find_queue(struct scribe_context *ctx, pid_t pid)
 {
 	struct scribe_queue *queue;
 
@@ -81,17 +103,16 @@ struct scribe_queue *scribe_get_queue_by_pid(
 	queue = *pre_alloc_queue;
 	*pre_alloc_queue = NULL;
 
-	queue->ctx = ctx;
-	queue->pid = pid;
-
+	init_queue(queue, ctx, pid);
 	if (ctx->queues_wont_grow)
-		queue->flags |= SCRIBE_WONT_GROW;
+		queue->bare.wont_grow = 1;
 
 	/*
-	 * Making the new queue persistent: the queue reader hasn't
-	 * taken a reference on the queue yet. This is his reference.
+	 * Making the new queue persistent: We are keeping an internal
+	 * reference to prevent the queue from being freed when the producer
+	 * is done with the queue and the consumer is not available yet.
 	 */
-	scribe_make_persistent(queue, 1);
+	scribe_set_persistent(queue);
 
 	list_add(&queue->node, &ctx->queues);
 
@@ -109,107 +130,110 @@ void scribe_put_queue(struct scribe_queue *queue)
 {
 	struct scribe_context *ctx = queue->ctx;
 
-	if (unlikely(!ctx)) {
-		/* The queue is not attached in the context queues list */
-		scribe_put_queue_nolock(queue);
-		return;
-	}
-
 	if (atomic_dec_and_lock(&queue->ref_cnt, &ctx->queues_lock)) {
 		list_del(&queue->node);
 		spin_unlock(&ctx->queues_lock);
-		scribe_free_event_queue(queue);
+		scribe_free_all_events(&queue->bare);
+		kfree(queue);
 	}
 }
 
-void scribe_put_queue_nolock(struct scribe_queue *queue)
+void scribe_put_queue_locked(struct scribe_queue *queue)
 {
 	if (atomic_dec_and_test(&queue->ref_cnt)) {
 		list_del(&queue->node);
-		scribe_free_event_queue(queue);
+		scribe_free_all_events(&queue->bare);
+		kfree(queue);
 	}
 }
 
-void scribe_make_persistent(struct scribe_queue *queue, int enable)
+void scribe_set_persistent(struct scribe_queue *queue)
 {
 	assert_spin_locked(&queue->ctx->queues_lock);
 
-	if (enable && !(queue->flags & SCRIBE_PERSISTENT)) {
-		queue->flags |= SCRIBE_PERSISTENT;
-		scribe_get_queue(queue);
-	}
-	if (!enable && (queue->flags & SCRIBE_PERSISTENT)) {
-		queue->flags &= ~SCRIBE_PERSISTENT;
-		scribe_put_queue_nolock(queue);
-	}
+	if (queue->persistent)
+		return;
+
+	queue->persistent = 1;
+	scribe_get_queue(queue);
+}
+void scribe_unset_persistent(struct scribe_queue *queue)
+{
+	assert_spin_locked(&queue->ctx->queues_lock);
+
+	if (!queue->persistent)
+		return;
+
+	queue->persistent = 0;
+	scribe_put_queue_locked(queue);
 }
 
-void scribe_free_all_events(struct scribe_queue *queue)
+void scribe_free_all_events(struct scribe_queue_bare *bare)
 {
 	struct scribe_event *event, *tmp;
 
-	spin_lock(&queue->lock);
+	spin_lock(&bare->lock);
 
 	/* Some insert points are in progress... */
-	BUG_ON(!list_empty(&queue->master.node));
+	BUG_ON(!list_empty(&bare->master.node));
 
-	list_for_each_entry_safe(event, tmp, &queue->master.events, node) {
+	list_for_each_entry_safe(event, tmp, &bare->master.events, node) {
 		list_del(&event->node);
 		scribe_free_event(event);
 	}
 
-	spin_unlock(&queue->lock);
+	spin_unlock(&bare->lock);
 }
 
-static inline
-struct scribe_insert_point *get_next_ip(struct scribe_insert_point *ip)
+static inline struct scribe_insert_point *get_next_ip(
+						struct scribe_insert_point *ip)
 {
 	return list_entry(ip->node.next, typeof(*ip), node);
 }
 
-void scribe_create_insert_point(struct scribe_queue *queue,
+void scribe_create_insert_point(struct scribe_queue_bare *bare,
 				struct scribe_insert_point *ip)
 
 {
-	struct scribe_insert_point *where = &queue->master;
+	struct scribe_insert_point *where = &bare->master;
 
-	init_insert_point(queue, ip);
+	init_insert_point(bare, ip);
 
-	spin_lock(&queue->lock);
+	spin_lock(&bare->lock);
 	list_add(&ip->node, &where->node);
-	spin_unlock(&queue->lock);
+	spin_unlock(&bare->lock);
 }
 
 void scribe_commit_insert_point(struct scribe_insert_point *ip)
 {
-	struct scribe_queue *queue = ip->queue;
+	struct scribe_queue_bare *bare = ip->bare;
 	struct scribe_insert_point *next_ip = get_next_ip(ip);
 
-	spin_lock(&queue->lock);
+	spin_lock(&bare->lock);
 	list_splice_tail(&ip->events, &next_ip->events);
 	list_del_init(&ip->node);
-	spin_unlock(&queue->lock);
+	spin_unlock(&bare->lock);
 
-	if (next_ip == &queue->master)
-		wake_up(queue->wait);
+	if (next_ip == &bare->master)
+		wake_up(bare->wait);
 }
 
-static void commit_pending_insert_points(struct scribe_queue *queue)
+static void commit_pending_insert_points(struct scribe_queue_bare *bare)
 {
 	struct scribe_insert_point *ip, *tmp;
 
-	list_for_each_entry_safe(ip, tmp, &queue->master.node, node)
+	list_for_each_entry_safe(ip, tmp, &bare->master.node, node)
 		scribe_commit_insert_point(ip);
 }
 
-static inline void __scribe_queue_event_at(struct scribe_queue *queue,
+static inline void __scribe_queue_event_at(struct scribe_queue_bare *bare,
 					   struct scribe_insert_point *where,
 					   void *_event)
 {
 	struct scribe_event *event = (struct scribe_event *)_event;
 	struct scribe_insert_point *next_ip = get_next_ip(where);
 
-	spin_lock(&queue->lock);
+	spin_lock(&bare->lock);
 	/*
 	 * When queuing events, we want to put them in the next
 	 * insert point event list because the current insert point is
@@ -219,44 +243,49 @@ static inline void __scribe_queue_event_at(struct scribe_queue *queue,
 	 * scribe_commit_insert_point().
 	 */
 	list_add_tail(&event->node, &next_ip->events);
-	spin_unlock(&queue->lock);
+	spin_unlock(&bare->lock);
 
-	if (next_ip == &queue->master)
-		wake_up(queue->wait);
+	if (next_ip == &bare->master)
+		wake_up(bare->wait);
 }
 
 void scribe_queue_event_at(struct scribe_insert_point *where, void *event)
 {
-	__scribe_queue_event_at(where->queue, where, event);
+	__scribe_queue_event_at(where->bare, where, event);
 }
 
 void scribe_queue_event(struct scribe_queue *queue, void *event)
 {
-	__scribe_queue_event_at(queue, &queue->master, event);
+	__scribe_queue_event_at(&queue->bare, &queue->bare.master, event);
 }
 
-static inline void __scribe_queue_events_at(struct scribe_queue *queue,
+void scribe_queue_event_bare(struct scribe_queue_bare *bare, void *event)
+{
+	__scribe_queue_event_at(bare, &bare->master, event);
+}
+
+static inline void __scribe_queue_events_at(struct scribe_queue_bare *bare,
 					    struct scribe_insert_point *where,
 					    struct list_head *events)
 {
 	struct scribe_insert_point *next_ip = get_next_ip(where);
 
-	spin_lock(&queue->lock);
+	spin_lock(&bare->lock);
 	list_splice_tail_init(events, &next_ip->events);
-	spin_unlock(&queue->lock);
+	spin_unlock(&bare->lock);
 
-	if (next_ip == &queue->master)
-		wake_up(queue->wait);
+	if (next_ip == &bare->master)
+		wake_up(bare->wait);
 }
 
-void scribe_queue_events(struct scribe_queue *queue,
-			 struct list_head *events)
+void scribe_queue_events_bare(struct scribe_queue_bare *bare,
+			      struct list_head *events)
 {
-	__scribe_queue_events_at(queue, &queue->master, events);
+	__scribe_queue_events_at(bare, &bare->master, events);
 }
 
 static struct scribe_event *__scribe_peek_event(
-		struct scribe_queue *queue, int wait, int remove)
+		struct scribe_queue_bare *bare, int wait, int remove)
 {
 	struct scribe_event *event;
 	struct list_head *events;
@@ -265,28 +294,28 @@ static struct scribe_event *__scribe_peek_event(
 	 * When deqeuing events, we grab them from the current insert point,
 	 * not the next one.
 	 */
-	events = &queue->master.events;
+	events = &bare->master.events;
 
 retry:
 	if (wait == SCRIBE_WAIT_INTERRUPTIBLE &&
-	    wait_event_interruptible(*queue->wait,
-				     !scribe_is_queue_empty(queue) ||
-				     (queue->flags & SCRIBE_WONT_GROW)))
+	    wait_event_interruptible(*bare->wait,
+				     !scribe_is_queue_empty(bare) ||
+				     bare->wont_grow))
 		return ERR_PTR(-ERESTARTSYS);
 
 	if (wait == SCRIBE_WAIT)
-		wait_event(*queue->wait,
-		       !scribe_is_queue_empty(queue) ||
-		       (queue->flags & SCRIBE_WONT_GROW));
+		wait_event(*bare->wait,
+		       !scribe_is_queue_empty(bare) ||
+		       bare->wont_grow);
 
-	spin_lock(&queue->lock);
+	spin_lock(&bare->lock);
 	if (list_empty(events)) {
-		spin_unlock(&queue->lock);
+		spin_unlock(&bare->lock);
 		/*
 		 * If the queue will never grow, the queue is officially dead.
 		 * There is no point waiting.
 		 */
-		if (queue->flags & SCRIBE_WONT_GROW)
+		if (bare->wont_grow)
 			return ERR_PTR(-ENODATA);
 		if (wait)
 			goto retry;
@@ -295,7 +324,7 @@ retry:
 	event = list_first_entry(events, typeof(*event), node);
 	if (likely(remove))
 		list_del(&event->node);
-	spin_unlock(&queue->lock);
+	spin_unlock(&bare->lock);
 
 	return event;
 }
@@ -306,15 +335,24 @@ struct scribe_event *scribe_dequeue_event(struct scribe_queue *queue,
 	struct scribe_event *event;
 	struct scribe_context *ctx = queue->ctx;
 
-	event = __scribe_peek_event(queue, wait, 1);
-	if (!IS_ERR(event) && ctx && ctx->backtrace) {
+	event = __scribe_peek_event(&queue->bare, wait, 1);
+	if (IS_ERR(event))
+		return event;
+
+	if (ctx->backtrace) {
 		spin_lock(&ctx->backtrace_lock);
 		if (ctx->backtrace)
-			scribe_backtrace_add(queue->ctx->backtrace, event);
+			scribe_backtrace_add(ctx->backtrace, event);
 		spin_unlock(&ctx->backtrace_lock);
 	}
 
 	return event;
+}
+
+struct scribe_event *scribe_dequeue_event_bare(struct scribe_queue_bare *bare,
+					       int wait)
+{
+	return __scribe_peek_event(bare, wait, 1);
 }
 
 /*
@@ -323,26 +361,26 @@ struct scribe_event *scribe_dequeue_event(struct scribe_queue *queue,
  * XXX BE CAREFUL: do not free the event, do not access the event list node.
  * If you want to consume the event, dequeue it.
  */
-struct scribe_event *scribe_peek_event(struct scribe_queue *queue,
-				       int wait)
+struct scribe_event *scribe_peek_event(struct scribe_queue *queue, int wait)
 {
-	return __scribe_peek_event(queue, wait, 0);
+	return __scribe_peek_event(&queue->bare, wait, 0);
 }
 
-int scribe_is_queue_empty(struct scribe_queue *queue)
+int scribe_is_queue_empty(struct scribe_queue_bare *bare)
 {
 	int ret;
-	spin_lock(&queue->lock);
-	ret = list_empty(&queue->master.events);
-	spin_unlock(&queue->lock);
+	/* FIXME is the spinlock really necessary ? */
+	spin_lock(&bare->lock);
+	ret = list_empty(&bare->master.events);
+	spin_unlock(&bare->lock);
 	return ret;
 }
 
-void scribe_set_queue_wont_grow(struct scribe_queue *queue)
+void scribe_set_queue_wont_grow(struct scribe_queue_bare *bare)
 {
-	commit_pending_insert_points(queue);
-	queue->flags |= SCRIBE_WONT_GROW;
-	wake_up(queue->wait);
+	commit_pending_insert_points(bare);
+	bare->wont_grow = 1;
+	wake_up(bare->wait);
 }
 
 void *__scribe_alloc_event(int type)

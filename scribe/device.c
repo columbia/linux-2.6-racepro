@@ -56,7 +56,7 @@ static inline int is_interrupted(int ret)
 
 static inline int is_queue_active(struct scribe_queue *queue)
 {
-	return !scribe_is_queue_empty(queue) || queue->flags & SCRIBE_WONT_GROW;
+	return !scribe_is_queue_empty(&queue->bare) || queue->bare.wont_grow;
 }
 
 /*
@@ -153,10 +153,10 @@ static int get_next_event(pid_t *last_pid, struct scribe_event **event,
 		*last_pid = queue->pid;
 
 		*event = (struct scribe_event *)event_pid;
-	} else if (likely(!scribe_is_queue_empty(queue))) {
+	} else if (likely(!scribe_is_queue_empty(&queue->bare))) {
 		*event = scribe_dequeue_event(queue, SCRIBE_NO_WAIT);
 	} else {
-		BUG_ON(!(queue->flags & SCRIBE_WONT_GROW));
+		BUG_ON(!&queue->bare.wont_grow);
 
 		event_eof = scribe_alloc_event(SCRIBE_EVENT_QUEUE_EOF);
 		if (!event_eof)
@@ -171,7 +171,7 @@ static int get_next_event(pid_t *last_pid, struct scribe_event **event,
 		 * detaches.
 		 */
 		spin_lock(&queue->ctx->queues_lock);
-		scribe_make_persistent(queue, 0);
+		scribe_unset_persistent(queue);
 		spin_unlock(&queue->ctx->queues_lock);
 
 		scribe_put_queue(queue);
@@ -313,7 +313,7 @@ static int handle_event_pid(struct scribe_context *ctx,
 	pid_t pid = ((struct scribe_event_pid *)event)->pid;
 
 	if (!*pre_alloc_queue) {
-		*pre_alloc_queue = scribe_alloc_event_queue();
+		*pre_alloc_queue = scribe_alloc_queue();
 		if (!*pre_alloc_queue)
 			return -ENOMEM;
 	}
@@ -407,7 +407,7 @@ static ssize_t deserialize_events(struct scribe_context *ctx, const char *buf,
 			if (err)
 				goto out;
 		} else if (event->type == SCRIBE_EVENT_QUEUE_EOF) {
-			scribe_set_queue_wont_grow(*current_queue);
+			scribe_set_queue_wont_grow(&(*current_queue)->bare);
 			scribe_free_event(event);
 		} else { /* generic event handling */
 			scribe_queue_event(*current_queue, event);
@@ -495,7 +495,7 @@ static void event_pump_replay(struct scribe_context *ctx, char *buf,
 	spin_lock(&ctx->queues_lock);
 	ctx->queues_wont_grow = 1;
 	list_for_each_entry(queue, &ctx->queues, node) {
-		if (!(queue->flags & SCRIBE_WONT_GROW)) {
+		if (!&queue->bare.wont_grow) {
 			spin_unlock(&ctx->queues_lock);
 			goto err;
 		}
@@ -515,7 +515,7 @@ err:
 
 	spin_lock(&ctx->queues_lock);
 	list_for_each_entry(queue, &ctx->queues, node)
-		scribe_set_queue_wont_grow(queue);
+		scribe_set_queue_wont_grow(&queue->bare);
 	spin_unlock(&ctx->queues_lock);
 
 	goto free;
@@ -677,8 +677,8 @@ static ssize_t dev_read(struct file *file,
 	mutex_lock(&dev->lock_read);
 	event = dev->pending_notification_event;
 	if (!event) {
-		event = scribe_dequeue_event(ctx->notification_queue,
-					     SCRIBE_WAIT_INTERRUPTIBLE);
+		event = scribe_dequeue_event_bare(ctx->notification_queue,
+						  SCRIBE_WAIT_INTERRUPTIBLE);
 		if (IS_ERR(event)) {
 			err = PTR_ERR(event);
 			event = NULL;

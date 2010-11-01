@@ -977,7 +977,7 @@ int init_scribe(struct task_struct *p, struct scribe_context *ctx)
 		goto err;
 
 	scribe->queue = NULL;
-	scribe->pre_alloc_queue = scribe_alloc_event_queue();
+	scribe->pre_alloc_queue = scribe_alloc_queue();
 	if (!scribe->pre_alloc_queue)
 		goto err_scribe;
 

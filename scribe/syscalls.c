@@ -28,7 +28,8 @@ void scribe_enter_syscall(struct pt_regs *regs)
 	}
 
 	if (is_recording(scribe))
-		scribe_create_insert_point(scribe->queue, &scribe->syscall_ip);
+		scribe_create_insert_point(&scribe->queue->bare,
+					   &scribe->syscall_ip);
 	else {
 		event = scribe_dequeue_event_specific(scribe,
 						      SCRIBE_EVENT_SYSCALL);

@@ -31,7 +31,7 @@ struct scribe_context *scribe_alloc_context(void)
 	INIT_LIST_HEAD(&ctx->queues);
 	init_waitqueue_head(&ctx->queues_wait);
 
-	ctx->notification_queue = scribe_alloc_event_queue();
+	ctx->notification_queue = scribe_alloc_queue_bare();
 	if (!ctx->notification_queue)
 		goto err_ctx;
 
@@ -60,10 +60,10 @@ void scribe_exit_context(struct scribe_context *ctx)
 
 	spin_lock(&ctx->queues_lock);
 	list_for_each_entry_safe(queue, tmp, &ctx->queues, node)
-		scribe_make_persistent(queue, 0);
+		scribe_unset_persistent(queue);
 	spin_unlock(&ctx->queues_lock);
 
-	scribe_put_queue(ctx->notification_queue);
+	scribe_free_queue_bare(ctx->notification_queue);
 
 	BUG_ON(ctx->idle_event);
 	BUG_ON(ctx->backtrace);
@@ -131,10 +131,10 @@ static void context_idle(struct scribe_context *ctx,
 		     PTR_ERR(reason));
 	} else {
 		ctx->idle_event->error = -EDIVERGE;
-		scribe_queue_event(ctx->notification_queue, reason);
+		scribe_queue_event_bare(ctx->notification_queue, reason);
 	}
 
-	scribe_queue_event(ctx->notification_queue, ctx->idle_event);
+	scribe_queue_event_bare(ctx->notification_queue, ctx->idle_event);
 	ctx->idle_event = NULL;
 
 	if (ctx->diverge_event) {
@@ -342,7 +342,7 @@ void scribe_attach(struct scribe_ps *scribe)
 		 * from emergency_stop() anyways. It's a race condition.
 		 */
 		spin_lock(&ctx->queues_lock);
-		scribe_make_persistent(scribe->queue, 0);
+		scribe_unset_persistent(scribe->queue);
 		spin_unlock(&ctx->queues_lock);
 
 		force_sig(SIGKILL, scribe->p);
@@ -361,7 +361,7 @@ void scribe_attach(struct scribe_ps *scribe)
 		 * The monitor will be waiting on ctx->queue_wait, and all
 		 * processes sends their event queue notifications to it.
 		 */
-		scribe->queue->wait = &ctx->queues_wait;
+		scribe->queue->bare.wait = &ctx->queues_wait;
 	} else { /* is_replaying(scribe) == 1 */
 
 		/*
@@ -375,10 +375,11 @@ void scribe_attach(struct scribe_ps *scribe)
 		 * die, the queue will get freed in scribe_exit_context().
 		 */
 		spin_lock(&ctx->queues_lock);
-		scribe_make_persistent(scribe->queue, 0);
+		scribe_unset_persistent(scribe->queue);
 		spin_unlock(&ctx->queues_lock);
 
-		scribe->queue->wait = &scribe->queue->default_wait;
+		BUG_ON(scribe->queue->bare.wait !=
+		       &scribe->queue->bare.default_wait);
 	}
 
 	wake_up(&ctx->tasks_wait);
@@ -409,7 +410,7 @@ void scribe_detach(struct scribe_ps *scribe)
 	wake_up(&ctx->tasks_wait);
 
 	if (is_recording(scribe))
-		scribe_set_queue_wont_grow(scribe->queue);
+		scribe_set_queue_wont_grow(&scribe->queue->bare);
 
 	scribe_put_queue(scribe->queue);
 	scribe->queue = NULL;
