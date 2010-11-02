@@ -336,7 +336,7 @@ static int scribe_do_read(struct file *file, char __user *buf, ssize_t *read)
 	if (is_kernel_copy())
 		return 0;
 
-	if (is_deterministic(file))
+	if (is_deterministic(file) || !should_scribe_data(scribe))
 		return 0;
 
 	if (is_recording(scribe)) {

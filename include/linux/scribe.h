@@ -408,7 +408,7 @@ extern void scribe_post_schedule(void);
 	struct scribe_ps *__scribe = current->scribe;			\
 	struct scribe_event_data *__event;				\
 									\
-	if (is_recording(__scribe)) {					\
+	if (is_recording(__scribe) && should_scribe_data(__scribe)) {	\
 		__event = scribe_alloc_event_sized(SCRIBE_EVENT_DATA,	\
 						   sizeof(src));	\
 		if (!__event)						\
@@ -420,7 +420,7 @@ extern void scribe_post_schedule(void);
 			      = (src);					\
 			scribe_queue_event(__scribe->queue, __event);	\
 		}							\
-	} else if (is_replaying(__scribe)) {				\
+	} else if (is_replaying(__scribe) && should_scribe_data(__scribe)) { \
 		__event = scribe_dequeue_event_sized(__scribe,		\
 				SCRIBE_EVENT_DATA, sizeof(src));	\
 		if (IS_ERR(__event)) {					\

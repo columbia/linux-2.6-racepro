@@ -75,6 +75,13 @@ int is_kernel_copy(void)
 	return !memcmp(&get_fs(), &get_ds(), sizeof(mm_segment_t));
 }
 
+static int should_handle_data(struct scribe_ps *scribe)
+{
+	return !(scribe->data_flags & SCRIBE_DATA_IGNORE) &&
+	       !is_kernel_copy() &&
+	       should_scribe_data(scribe);
+}
+
 void scribe_prepare_data_event(size_t pre_alloc_size)
 {
 	struct scribe_event_data *event;
@@ -82,26 +89,22 @@ void scribe_prepare_data_event(size_t pre_alloc_size)
 	if (!is_scribed(scribe))
 		return;
 
-	if (scribe->data_flags & SCRIBE_DATA_IGNORE || is_kernel_copy())
+	if (!should_handle_data(scribe))
 		return;
 
 	event = get_data_event(scribe, pre_alloc_size);
-	if (IS_ERR(event))
-		return;
-	scribe->prepared_data_event = event;
+	if (!IS_ERR(event))
+		scribe->prepared_data_event = event;
 }
 
 void scribe_pre_uaccess(const void *data, const void __user *user_ptr,
 			size_t size, int flags)
 {
 	struct scribe_ps *scribe = current->scribe;
-	int data_flags;
 	if (!is_scribed(scribe))
 		return;
 
-	data_flags = scribe->data_flags | flags;
-
-	if (data_flags & SCRIBE_DATA_IGNORE || is_kernel_copy())
+	if (!should_handle_data(scribe))
 		return;
 
 	__scribe_allow_uaccess(scribe);
@@ -115,7 +118,6 @@ static int __memcmp(const void *cs, const void *ct, size_t count)
 {
 	const unsigned char *su1, *su2;
 	size_t orig_count = count;
-
 
 	for (su1 = cs, su2 = ct; count > 0; ++su1, ++su2, count--)
 		if (*su1 != *su2)
@@ -150,11 +152,13 @@ static void ensure_data_correctness(struct scribe_ps *scribe,
 void scribe_post_uaccess(const void *data, const void __user *user_ptr,
 			 size_t size, int flags)
 {
+	int data_flags;
 	struct scribe_event_data *event;
 	struct scribe_ps *scribe = current->scribe;
-	int data_flags;
-
 	if (!is_scribed(scribe))
+		return;
+
+	if (!should_handle_data(scribe))
 		return;
 
 	/*
@@ -165,9 +169,6 @@ void scribe_post_uaccess(const void *data, const void __user *user_ptr,
 	 */
 
 	data_flags = scribe->data_flags | flags;
-
-	if (data_flags & SCRIBE_DATA_IGNORE || is_kernel_copy())
-		return;
 
 	WARN_ON((long)user_ptr > TASK_SIZE);
 
