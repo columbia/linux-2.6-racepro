@@ -294,9 +294,7 @@ static inline void scribe_free_event(void *event)
 	kfree(event);
 }
 
-
-/* Per-process scribe flags */
-
+/* Per process flags. Some of them are also defined in scribe_api.h */
 #define SCRIBE_PS_RECORD		0x00000001
 #define SCRIBE_PS_REPLAY		0x00000002
 #define SCRIBE_PS_ATTACH_ON_EXEC	0x00000004
@@ -375,6 +373,7 @@ extern void scribe_allow_uaccess(void);
 extern void scribe_forbid_uaccess(void);
 extern void scribe_prepare_data_event(size_t pre_alloc_size);
 
+/* Data flags, some of them are also defined in scribe_api.h */
 #define SCRIBE_DATA_INPUT		0x01
 #define SCRIBE_DATA_STRING		0x02
 #define SCRIBE_DATA_NON_DETERMINISTIC	0x04
