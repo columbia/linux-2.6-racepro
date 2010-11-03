@@ -42,6 +42,7 @@
 #include <linux/syscalls.h>
 #include <linux/kprobes.h>
 #include <linux/user_namespace.h>
+#include <linux/scribe.h>
 
 #include <asm/uaccess.h>
 #include <asm/io.h>
@@ -1098,6 +1099,8 @@ SYSCALL_DEFINE1(newuname, struct new_utsname __user *, name)
 {
 	int errno = 0;
 
+	scribe_set_current_data_flags(SCRIBE_DATA_NON_DETERMINISTIC);
+
 	down_read(&uts_sem);
 	if (copy_to_user(name, utsname(), sizeof *name))
 		errno = -EFAULT;
@@ -1119,6 +1122,8 @@ SYSCALL_DEFINE1(uname, struct old_utsname __user *, name)
 	if (!name)
 		return -EFAULT;
 
+	scribe_set_current_data_flags(SCRIBE_DATA_NON_DETERMINISTIC);
+
 	down_read(&uts_sem);
 	if (copy_to_user(name, utsname(), sizeof(*name)))
 		error = -EFAULT;
@@ -1137,6 +1142,8 @@ SYSCALL_DEFINE1(olduname, struct oldold_utsname __user *, name)
 		return -EFAULT;
 	if (!access_ok(VERIFY_WRITE, name, sizeof(struct oldold_utsname)))
 		return -EFAULT;
+
+	scribe_set_current_data_flags(SCRIBE_DATA_NON_DETERMINISTIC);
 
 	down_read(&uts_sem);
 	error = __copy_to_user(&name->sysname, &utsname()->sysname,
