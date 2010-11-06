@@ -680,7 +680,7 @@ static ssize_t dev_read(struct file *file,
 	mutex_lock(&dev->lock_read);
 	event = dev->pending_notification_event;
 	if (!event) {
-		event = scribe_dequeue_event_bare(ctx->notification_queue,
+		event = scribe_dequeue_event_bare(&ctx->notification_queue,
 						  SCRIBE_WAIT_INTERRUPTIBLE);
 		if (IS_ERR(event)) {
 			err = PTR_ERR(event);

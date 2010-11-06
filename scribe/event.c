@@ -17,7 +17,7 @@ static void init_insert_point(struct scribe_queue_bare *bare,
 	INIT_LIST_HEAD(&ip->events);
 }
 
-static void init_queue_bare(struct scribe_queue_bare *bare)
+void scribe_init_queue_bare(struct scribe_queue_bare *bare)
 {
 	spin_lock_init(&bare->lock);
 	init_insert_point(bare, &bare->master);
@@ -34,29 +34,12 @@ static void init_queue(struct scribe_queue *queue,
 	 * XXX the context reference is not taken: the caller should maintain
 	 * that reference until that queue dies.
 	 */
-	init_queue_bare(&queue->bare);
+	scribe_init_queue_bare(&queue->bare);
 	atomic_set(&queue->ref_cnt, 1);
 	queue->persistent = 0;
 	queue->ctx = ctx;
 	INIT_LIST_HEAD(&queue->node);
 	queue->pid = pid;
-}
-
-struct scribe_queue_bare *scribe_alloc_queue_bare(void)
-{
-	struct scribe_queue_bare *bare;
-
-	bare = kmalloc(sizeof(*bare), GFP_KERNEL);
-	if (!bare)
-		return NULL;
-	init_queue_bare(bare);
-	return bare;
-}
-
-void scribe_free_queue_bare(struct scribe_queue_bare *bare)
-{
-	scribe_free_all_events(bare);
-	kfree(bare);
 }
 
 static struct scribe_queue *find_queue(struct scribe_context *ctx, pid_t pid)

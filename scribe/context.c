@@ -17,7 +17,7 @@ struct scribe_context *scribe_alloc_context(void)
 
 	ctx = kmalloc(sizeof(*ctx), GFP_KERNEL);
 	if (!ctx)
-		goto err;
+		return NULL;
 
 	atomic_set(&ctx->ref_cnt, 1);
 	ctx->id = current->pid;
@@ -31,9 +31,7 @@ struct scribe_context *scribe_alloc_context(void)
 	INIT_LIST_HEAD(&ctx->queues);
 	init_waitqueue_head(&ctx->queues_wait);
 
-	ctx->notification_queue = scribe_alloc_queue_bare();
-	if (!ctx->notification_queue)
-		goto err_ctx;
+	scribe_init_queue_bare(&ctx->notification_queue);
 
 	ctx->idle_event = NULL;
 	ctx->diverge_event = NULL;
@@ -42,11 +40,6 @@ struct scribe_context *scribe_alloc_context(void)
 	ctx->backtrace = NULL;
 
 	return ctx;
-
-err_ctx:
-	kfree(ctx);
-err:
-	return NULL;
 }
 
 void scribe_exit_context(struct scribe_context *ctx)
@@ -63,7 +56,9 @@ void scribe_exit_context(struct scribe_context *ctx)
 		scribe_unset_persistent(queue);
 	spin_unlock(&ctx->queues_lock);
 
-	scribe_free_queue_bare(ctx->notification_queue);
+	BUG_ON(!list_empty(&ctx->queues));
+
+	scribe_free_all_events(&ctx->notification_queue);
 
 	BUG_ON(ctx->idle_event);
 	BUG_ON(ctx->backtrace);
@@ -121,7 +116,7 @@ static void context_idle(struct scribe_context *ctx,
 	if (backtrace) {
 		if (reason) {
 			scribe_backtrace_dump(backtrace,
-					      ctx->notification_queue);
+					      &ctx->notification_queue);
 		}
 		scribe_free_backtrace(backtrace);
 	}
@@ -132,10 +127,10 @@ static void context_idle(struct scribe_context *ctx,
 		     PTR_ERR(reason));
 	} else {
 		ctx->idle_event->error = -EDIVERGE;
-		scribe_queue_event_bare(ctx->notification_queue, reason);
+		scribe_queue_event_bare(&ctx->notification_queue, reason);
 	}
 
-	scribe_queue_event_bare(ctx->notification_queue, ctx->idle_event);
+	scribe_queue_event_bare(&ctx->notification_queue, ctx->idle_event);
 	ctx->idle_event = NULL;
 
 	if (ctx->diverge_event) {

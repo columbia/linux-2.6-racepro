@@ -25,78 +25,8 @@
 struct proc_dir_entry;
 struct task_struct;
 
-/* Context stuff */
-
-struct scribe_context {
-	atomic_t ref_cnt;
-	int id;
-	int flags;
-
-	spinlock_t tasks_lock;
-	struct list_head tasks;
-	wait_queue_head_t tasks_wait;
-
-	int queues_wont_grow;
-	spinlock_t queues_lock;
-	struct list_head queues;
-	wait_queue_head_t queues_wait;
-
-	struct scribe_queue_bare *notification_queue;
-
-	/* Those are pre-allocated events to be used in atomic contexts */
-	struct scribe_event_context_idle *idle_event;
-	struct scribe_event_diverge *diverge_event;
-
-	spinlock_t backtrace_lock;
-	struct scribe_backtrace *backtrace;
-};
-
-static inline void scribe_get_context(struct scribe_context *ctx)
-{
-	atomic_inc(&ctx->ref_cnt);
-}
-static inline void scribe_put_context(struct scribe_context *ctx)
-{
-	if (atomic_dec_and_test(&ctx->ref_cnt))
-		kfree(ctx);
-}
-
-extern struct scribe_context *scribe_alloc_context(void);
-extern void scribe_emergency_stop(struct scribe_context *ctx,
-				  struct scribe_event *reason);
-extern void scribe_exit_context(struct scribe_context *ctx);
-
-extern int scribe_start_record(struct scribe_context *ctx);
-extern int scribe_start_replay(struct scribe_context *ctx, int backtrace_len);
-extern int scribe_stop(struct scribe_context *ctx);
-
-#define scribe_get_diverge_event(sp, _type)				\
-({									\
-	struct scribe_event_diverge *__event;				\
-	__event = xchg(&(sp)->ctx->diverge_event, NULL);		\
-	if (__event) {							\
-		__event->h.type = _type;				\
-		__event->pid = (sp)->queue->pid;			\
-		WARN(1, "Replay diverged\n");				\
-	} else								\
-		__event = ERR_PTR(-EDIVERGE);				\
-	(struct_##_type *)__event;					\
-})
-
-#define scribe_diverge(sp, _type, ...)					\
-({									\
-	struct_##_type *__event = scribe_get_diverge_event(sp, _type);	\
-	if (!IS_ERR(__event)) {						\
-		*__event = (struct_##_type) {				\
-			.h.h.type = _type,				\
-			.h.pid = sp->queue->pid,			\
-			__VA_ARGS__					\
-		};							\
-	}								\
-	scribe_emergency_stop((sp)->ctx, (struct scribe_event *)__event); \
-})
-
 /* Events */
+
 struct scribe_insert_point {
 	struct list_head node;
 	struct scribe_queue_bare *bare;
@@ -148,8 +78,7 @@ struct scribe_queue {
 	pid_t pid;
 };
 
-extern struct scribe_queue_bare *scribe_alloc_queue_bare(void);
-extern void scribe_free_queue_bare(struct scribe_queue_bare *bare);
+extern void scribe_init_queue_bare(struct scribe_queue_bare *bare);
 
 extern struct scribe_queue *scribe_get_queue_by_pid(
 				struct scribe_context *ctx,
@@ -292,6 +221,81 @@ static inline void scribe_free_event(void *event)
 {
 	kfree(event);
 }
+
+/* Context */
+
+struct scribe_context {
+	atomic_t ref_cnt;
+	int id;
+	int flags;
+
+	spinlock_t tasks_lock;
+	struct list_head tasks;
+	wait_queue_head_t tasks_wait;
+
+	int queues_wont_grow;
+	spinlock_t queues_lock;
+	struct list_head queues;
+	wait_queue_head_t queues_wait;
+
+	struct scribe_queue_bare notification_queue;
+
+	/* Those are pre-allocated events to be used in atomic contexts */
+	struct scribe_event_context_idle *idle_event;
+	struct scribe_event_diverge *diverge_event;
+
+	spinlock_t backtrace_lock;
+	struct scribe_backtrace *backtrace;
+
+	struct scribe_resource_context *res_ctx;
+};
+
+static inline void scribe_get_context(struct scribe_context *ctx)
+{
+	atomic_inc(&ctx->ref_cnt);
+}
+static inline void scribe_put_context(struct scribe_context *ctx)
+{
+	if (atomic_dec_and_test(&ctx->ref_cnt))
+		kfree(ctx);
+}
+
+extern struct scribe_context *scribe_alloc_context(void);
+extern void scribe_emergency_stop(struct scribe_context *ctx,
+				  struct scribe_event *reason);
+extern void scribe_exit_context(struct scribe_context *ctx);
+
+extern int scribe_start_record(struct scribe_context *ctx);
+extern int scribe_start_replay(struct scribe_context *ctx, int backtrace_len);
+extern int scribe_stop(struct scribe_context *ctx);
+
+#define scribe_get_diverge_event(sp, _type)				\
+({									\
+	struct scribe_event_diverge *__event;				\
+	__event = xchg(&(sp)->ctx->diverge_event, NULL);		\
+	if (__event) {							\
+		__event->h.type = _type;				\
+		__event->pid = (sp)->queue->pid;			\
+		WARN(1, "Replay diverged\n");				\
+	} else								\
+		__event = ERR_PTR(-EDIVERGE);				\
+	(struct_##_type *)__event;					\
+})
+
+#define scribe_diverge(sp, _type, ...)					\
+({									\
+	struct_##_type *__event = scribe_get_diverge_event(sp, _type);	\
+	if (!IS_ERR(__event)) {						\
+		*__event = (struct_##_type) {				\
+			.h.h.type = _type,				\
+			.h.pid = sp->queue->pid,			\
+			__VA_ARGS__					\
+		};							\
+	}								\
+	scribe_emergency_stop((sp)->ctx, (struct scribe_event *)__event); \
+})
+
+/* Process */
 
 /* Per process flags. Some of them are also defined in scribe_api.h */
 #define SCRIBE_PS_RECORD		0x00000001
