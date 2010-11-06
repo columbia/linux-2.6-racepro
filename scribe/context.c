@@ -139,8 +139,8 @@ static void context_idle(struct scribe_context *ctx,
 	ctx->idle_event = NULL;
 
 	if (ctx->diverge_event) {
-		ctx->diverge_event = NULL;
 		scribe_free_event(ctx->diverge_event);
+		ctx->diverge_event = NULL;
 	}
 }
 
@@ -317,7 +317,7 @@ void scribe_attach(struct scribe_ps *scribe)
 	scribe->queue = scribe_get_queue_by_pid(ctx, &scribe->pre_alloc_queue,
 						task_pid_vnr(scribe->p));
 	if (scribe->pre_alloc_queue) {
-		scribe_put_queue(scribe->pre_alloc_queue);
+		kfree(scribe->pre_alloc_queue);
 		scribe->pre_alloc_queue = NULL;
 	}
 

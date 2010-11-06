@@ -313,11 +313,14 @@ static int handle_event_pid(struct scribe_context *ctx,
 	pid_t pid = ((struct scribe_event_pid *)event)->pid;
 
 	if (!*pre_alloc_queue) {
-		*pre_alloc_queue = scribe_alloc_queue();
+		*pre_alloc_queue = kmalloc(sizeof(**pre_alloc_queue),
+					   GFP_KERNEL);
 		if (!*pre_alloc_queue)
 			return -ENOMEM;
 	}
 
+	if (*current_queue)
+		scribe_put_queue(*current_queue);
 	*current_queue = scribe_get_queue_by_pid(ctx, pre_alloc_queue, pid);
 	return 0;
 }
@@ -506,7 +509,7 @@ free:
 	if (current_queue)
 		scribe_put_queue(current_queue);
 	if (pre_alloc_queue)
-		scribe_put_queue(pre_alloc_queue);
+		kfree(pre_alloc_queue);
 	if (pending_event)
 		scribe_free_event(pending_event);
 	return;

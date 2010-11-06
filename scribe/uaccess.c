@@ -228,6 +228,7 @@ void scribe_post_uaccess(const void *data, const void __user *user_ptr,
 			ensure_data_correctness(scribe, event->data,
 						data, size);
 		}
+		scribe_free_event(event);
 	}
 
 out_forbid:

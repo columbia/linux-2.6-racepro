@@ -922,7 +922,7 @@ void exit_scribe(struct task_struct *p)
 		scribe_detach(scribe);
 
 	if (scribe->pre_alloc_queue)
-		scribe_put_queue(scribe->pre_alloc_queue);
+		kfree(scribe->pre_alloc_queue);
 
 	scribe_put_context(scribe->ctx);
 

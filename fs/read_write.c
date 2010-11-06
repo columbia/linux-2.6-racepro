@@ -366,17 +366,20 @@ static int scribe_do_read(struct file *file, char __user *buf, ssize_t *read)
 		data_event = scribe_dequeue_event_specific(
 						scribe, SCRIBE_EVENT_DATA);
 		if (data_event->data_type != SCRIBE_DATA_NON_DETERMINISTIC) {
+			scribe_free_event(data_event);
 			scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_DATA_TYPE,
 				       .type = SCRIBE_DATA_NON_DETERMINISTIC);
 			return -EDIVERGE;
 		}
 
 		if (__copy_to_user(buf, data_event->data, data_event->h.size)) {
+			scribe_free_event(data_event);
 			scribe_emergency_stop(scribe->ctx, ERR_PTR(-EFAULT));
 			return -EFAULT;
 		}
 		*read += data_event->h.size;
 		buf += data_event->h.size;
+		scribe_free_event(data_event);
 	}
 	return 1;
 }

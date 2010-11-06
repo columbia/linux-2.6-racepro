@@ -53,17 +53,6 @@ struct scribe_queue_bare *scribe_alloc_queue_bare(void)
 	return bare;
 }
 
-/*
- * The queue initialization is done in scribe_get_queue_by_pid().
- */
-struct scribe_queue *scribe_alloc_queue(void)
-{
-	struct scribe_queue *queue;
-
-	queue = kmalloc(sizeof(*queue), GFP_KERNEL);
-	return queue;
-}
-
 void scribe_free_queue_bare(struct scribe_queue_bare *bare)
 {
 	scribe_free_all_events(bare);
@@ -84,7 +73,7 @@ static struct scribe_queue *find_queue(struct scribe_context *ctx, pid_t pid)
 /*
  * scribe_get_queue_by_pid() never fails. The pre allocated queue is useful
  * for attach_process() to perform without failing.
- * When the pre allocated queue is used, it's address is set NULL.
+ * When the pre allocated queue is used, its address is set NULL.
  */
 struct scribe_queue *scribe_get_queue_by_pid(
 				struct scribe_context *ctx,

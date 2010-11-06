@@ -149,7 +149,6 @@ struct scribe_queue {
 };
 
 extern struct scribe_queue_bare *scribe_alloc_queue_bare(void);
-extern struct scribe_queue *scribe_alloc_queue(void);
 extern void scribe_free_queue_bare(struct scribe_queue_bare *bare);
 
 extern struct scribe_queue *scribe_get_queue_by_pid(
