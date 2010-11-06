@@ -236,13 +236,11 @@ out:
 
 	/*
 	 * If the current process called emergency_stop(), we must detach
-	 * ourselves, and die in peace. We cannot call do_exit() here because
-	 * we don't know the context, we may be holding locks for example.
-	 * We have a SIGKILL waiting for us anyways.
+	 * ourselves, and die in peace. We have a SIGKILL waiting for us...
 	 */
 	scribe = current->scribe;
-	if (is_scribed(scribe) && scribe->ctx == ctx)
-		scribe_detach(scribe);
+	if (is_replaying(scribe) && scribe->ctx == ctx)
+		scribe_free_all_events(&scribe->queue->bare);
 }
 
 /*

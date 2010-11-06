@@ -177,7 +177,7 @@ void scribe_post_uaccess(const void *data, const void __user *user_ptr,
 
 	event = get_data_event(scribe, size);
 	if (IS_ERR(event))
-		return;
+		goto out_forbid;
 
 	if (is_recording(scribe)) {
 		event->data_type = data_flags;
