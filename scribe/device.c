@@ -19,6 +19,7 @@
 #include <linux/kthread.h>
 #include <linux/splice.h>
 #include <linux/mutex.h>
+#include <linux/sched.h>
 
 #define PUMP_BUFFER_ORDER 2
 #define PUMP_BUFFER_SIZE (PAGE_SIZE << PUMP_BUFFER_ORDER)
@@ -263,11 +264,22 @@ static void event_pump_record(struct scribe_context *ctx,
 	size_t pending_offset = 0;
 	pid_t last_pid = 0;
 
+	int buffer_full = 0;
 	ssize_t ret;
 	size_t to_write;
 	char *write_buf;
 
 	while (!kthread_should_stop()) {
+		/*
+		 * Looping here on every event is inefficient.
+		 * We are waiting one second on each full iteration.
+		 * And instant return when the context goes idle
+		 */
+		if (!buffer_full) {
+			wait_event_timeout(ctx->tasks_wait,
+					   ctx->flags == SCRIBE_IDLE, HZ);
+		}
+
 		ret = serialize_events(ctx, buf, PUMP_BUFFER_SIZE,
 				       &last_pid, &current_queue,
 				       &pending_event, &pending_offset);
@@ -275,6 +287,8 @@ static void event_pump_record(struct scribe_context *ctx,
 			goto err;
 		if (!ret)
 			break;
+
+		buffer_full = ret == PUMP_BUFFER_SIZE;
 
 		to_write = ret;
 		write_buf = buf;
