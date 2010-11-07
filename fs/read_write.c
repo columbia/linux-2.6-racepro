@@ -365,6 +365,7 @@ static int scribe_do_read(struct file *file, char __user *buf, ssize_t *read)
 
 		data_event = scribe_dequeue_event_specific(
 						scribe, SCRIBE_EVENT_DATA);
+		data_event->data_type &= ~SCRIBE_DATA_ZERO;
 		if (data_event->data_type != SCRIBE_DATA_NON_DETERMINISTIC) {
 			scribe_free_event(data_event);
 			scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_DATA_TYPE,

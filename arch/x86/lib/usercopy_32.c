@@ -130,9 +130,10 @@ EXPORT_SYMBOL(strncpy_from_user);
 
 #define __do_clear_user(addr,size)					\
 do {									\
+	unsigned long _size = size;					\
 	int __d0;							\
 	might_fault();							\
-	scribe_allow_uaccess();						\
+	scribe_pre_uaccess(NULL, addr, _size, SCRIBE_DATA_ZERO);	\
 	__asm__ __volatile__(						\
 		"0:	rep; stosl\n"					\
 		"	movl %2,%0\n"					\
@@ -146,7 +147,7 @@ do {									\
 		_ASM_EXTABLE(1b,2b)					\
 		: "=&c"(size), "=&D" (__d0)				\
 		: "r"(size & 3), "0"(size / 4), "1"(addr), "a"(0));	\
-	scribe_forbid_uaccess();					\
+	scribe_post_uaccess(NULL, addr, _size - size, SCRIBE_DATA_ZERO); \
 } while (0)
 
 /**

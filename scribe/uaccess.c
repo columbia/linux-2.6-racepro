@@ -183,7 +183,11 @@ void scribe_post_uaccess(const void *data, const void __user *user_ptr,
 		event->data_type = data_flags;
 		event->user_ptr = (__u32)user_ptr;
 
-		memcpy(event->data, data, size);
+		if (data_flags & SCRIBE_DATA_ZERO) {
+			memset(event->data, 0, size);
+		} else {
+			memcpy(event->data, data, size);
+		}
 		scribe_queue_event(scribe->queue, event);
 	} else { /* replay */
 		if (event->data_type != data_flags)
@@ -195,14 +199,22 @@ void scribe_post_uaccess(const void *data, const void __user *user_ptr,
 		else if ((void *)event->user_ptr != user_ptr)
 			scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_DATA_PTR,
 				       .user_ptr = (u32)user_ptr);
-		else if (data_flags & SCRIBE_DATA_NON_DETERMINISTIC) {
+		else if (data_flags & SCRIBE_DATA_ZERO) {
+			data_flags = scribe_set_data_flags(scribe,
+							   SCRIBE_DATA_IGNORE);
+			if (__clear_user((void __user *)user_ptr, size)) {
+				scribe_emergency_stop(scribe->ctx,
+						      ERR_PTR(-EDIVERGE));
+			}
+			scribe_set_data_flags(scribe, data_flags);
+		} else if (data_flags & SCRIBE_DATA_NON_DETERMINISTIC) {
 			/*
 			 * FIXME Do the copying in pre_uaccess and skip the
 			 * extra copy_to_user that happened before.
 			 */
 
-			data_flags = scribe_get_data_flags(scribe);
-			scribe_set_data_flags(scribe, SCRIBE_DATA_IGNORE);
+			data_flags = scribe_set_data_flags(scribe,
+							   SCRIBE_DATA_IGNORE);
 
 			/*
 			 * We're using the inatomic version so that we don't

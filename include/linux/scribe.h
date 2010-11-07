@@ -384,8 +384,9 @@ extern void scribe_prepare_data_event(size_t pre_alloc_size);
 #define SCRIBE_DATA_STRING		0x02
 #define SCRIBE_DATA_NON_DETERMINISTIC	0x04
 #define SCRIBE_DATA_INTERNAL		0x08
-#define SCRIBE_DATA_DONT_RECORD		0x10
-#define SCRIBE_DATA_IGNORE		0x20
+#define SCRIBE_DATA_ZERO		0x10
+#define SCRIBE_DATA_DONT_RECORD		0x20
+#define SCRIBE_DATA_IGNORE		0x40
 static inline int scribe_set_data_flags(struct scribe_ps *scribe, int flags)
 {
 	int res = scribe->data_flags;

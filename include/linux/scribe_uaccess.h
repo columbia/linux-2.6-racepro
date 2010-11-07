@@ -14,6 +14,11 @@
 
 #define SCRIBE_DATA_INPUT		0x01
 #define SCRIBE_DATA_STRING		0x02
+#define SCRIBE_DATA_NON_DETERMINISTIC	0x04
+#define SCRIBE_DATA_INTERNAL		0x08
+#define SCRIBE_DATA_ZERO		0x10
+#define SCRIBE_DATA_DONT_RECORD		0x20
+#define SCRIBE_DATA_IGNORE		0x40
 
 /*
  * For x86, all user accesses can be probed by hooking on:
