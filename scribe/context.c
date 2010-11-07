@@ -418,10 +418,16 @@ void scribe_detach(struct scribe_ps *scribe)
 	spin_unlock(&ctx->tasks_lock);
 	wake_up(&ctx->tasks_wait);
 
+	/*
+	 * We want to set the wont_grow flag and put the queue in an atomic
+	 * way so that the event pump can send a QUEUE_EOF event just once.
+	 */
+	spin_lock(&ctx->queues_lock);
 	if (is_recording(scribe))
 		scribe_set_queue_wont_grow(&scribe->queue->bare);
+	scribe_put_queue_locked(scribe->queue);
+	spin_unlock(&ctx->queues_lock);
 
-	scribe_put_queue(scribe->queue);
 	scribe->queue = NULL;
 
 	scribe->flags &= ~(SCRIBE_PS_RECORD | SCRIBE_PS_REPLAY);
