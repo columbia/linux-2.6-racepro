@@ -39,7 +39,15 @@ struct scribe_context *scribe_alloc_context(void)
 	spin_lock_init(&ctx->backtrace_lock);
 	ctx->backtrace = NULL;
 
+	ctx->res_ctx = scribe_alloc_resource_context();
+	if (!ctx->res_ctx)
+		goto err_ctx;
+
 	return ctx;
+
+err_ctx:
+	kfree(ctx);
+	return NULL;
 }
 
 void scribe_exit_context(struct scribe_context *ctx)
@@ -62,6 +70,8 @@ void scribe_exit_context(struct scribe_context *ctx)
 
 	BUG_ON(ctx->idle_event);
 	BUG_ON(ctx->backtrace);
+
+	scribe_free_resource_context(ctx->res_ctx);
 
 	scribe_put_context(ctx);
 }
@@ -383,12 +393,16 @@ void scribe_attach(struct scribe_ps *scribe)
 	scribe->data_flags = 0;
 	scribe->prepared_data_event = NULL;
 	scribe->can_uaccess = 0;
+
+	scribe_resource_open_files(scribe->p->files);
 }
 
 void scribe_detach(struct scribe_ps *scribe)
 {
 	struct scribe_context *ctx = scribe->ctx;
 	BUG_ON(!is_scribed(scribe));
+
+	scribe_resource_close_files(scribe->p->files);
 
 	if (scribe->prepared_data_event) {
 		WARN(1, "prepared_data_event present\n");

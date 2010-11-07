@@ -29,6 +29,7 @@
 #include <linux/falloc.h>
 #include <linux/fs_struct.h>
 #include <linux/ima.h>
+#include <linux/scribe.h>
 
 #include "internal.h"
 
@@ -897,12 +898,18 @@ long do_sys_open(int dfd, const char __user *filename, int flags, int mode)
 		goto out_fd;
 	}
 
+	ret = scribe_resource_open_inode(f->f_path.dentry->d_inode);
+	if (ret)
+		goto out_filp;
+
 	fsnotify_open(f->f_path.dentry);
 	fd_install(fd, f);
 
 	ret = fd;
 	goto out_name;
 
+out_filp:
+	fput(f);
 out_fd:
 	put_unused_fd(fd);
 out_name:
@@ -997,6 +1004,9 @@ SYSCALL_DEFINE1(close, unsigned int, fd)
 	FD_CLR(fd, fdt->close_on_exec);
 	__put_unused_fd(files, fd);
 	spin_unlock(&files->file_lock);
+
+	scribe_resource_close_inode(filp->f_path.dentry->d_inode);
+
 	retval = filp_close(filp, files);
 
 	/* can't restart close syscall because file table entry was cleared */

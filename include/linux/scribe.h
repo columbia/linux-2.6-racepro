@@ -15,15 +15,15 @@
 #ifdef CONFIG_SCRIBE
 
 #include <linux/scribe_api.h>
+#include <linux/scribe_resource.h>
+#include <linux/scribe_uaccess.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/list.h>
 #include <linux/wait.h>
 #include <asm/atomic.h>
 #include <linux/slab.h>
-
-struct proc_dir_entry;
-struct task_struct;
+#include <linux/fs.h>
 
 /* Events */
 
@@ -327,6 +327,9 @@ struct scribe_ps {
 	struct scribe_event_data *prepared_data_event;
 	int data_flags;
 	int can_uaccess;
+
+	int waiting_for_serial;
+	struct scribe_resource_handle *pre_alloc_hres;
 };
 
 static inline int is_scribed(struct scribe_ps *scribe)
@@ -359,9 +362,9 @@ static inline int should_scribe_data(struct scribe_ps *scribe)
 /* Using defines instead of inline functions so that we don't need
  * to include sched.h
  */
-#define is_ps_scribed(t)  is_scribed(t->scribe)
-#define is_ps_recording(t) is_recording(t->scribe)
-#define is_ps_replaying(t) is_replaying(t->scribe)
+#define is_ps_scribed(t)	is_scribed(t->scribe)
+#define is_ps_recording(t)	is_recording(t->scribe)
+#define is_ps_replaying(t)	is_replaying(t->scribe)
 
 extern int init_scribe(struct task_struct *p, struct scribe_context *ctx);
 extern void exit_scribe(struct task_struct *p);
@@ -456,6 +459,40 @@ extern void scribe_backtrace_dump(struct scribe_backtrace *bt,
 extern void scribe_enter_syscall(struct pt_regs *regs);
 extern void scribe_exit_syscall(struct pt_regs *regs);
 extern int is_kernel_copy(void);
+
+/* Resources */
+
+struct scribe_lock_region {
+	struct list_head node;
+	struct scribe_insert_point ip;
+	struct scribe_event_resource_lock *lock_event;
+	struct scribe_event_resource_unlock *unlock_event;
+	struct scribe_resource *res;
+};
+
+extern void scribe_free_resource_handle(struct scribe_resource_handle *hres);
+
+extern struct scribe_resource_context *scribe_alloc_resource_context(void);
+extern void scribe_free_resource_context(struct scribe_resource_context *);
+
+extern int scribe_init_lock_region(struct scribe_lock_region *lock_region,
+				   struct scribe_resource *res);
+extern void scribe_exit_lock_region(struct scribe_lock_region *lock_region);
+
+extern void scribe_resource_lock(struct scribe_lock_region *lock_region);
+extern void scribe_resource_unlock(struct scribe_lock_region *lock_region);
+extern void scribe_resource_unlock_discard(
+				struct scribe_lock_region *lock_region);
+
+extern int scribe_resource_open_inode_nosync(struct inode *inode);
+extern int scribe_resource_open_inode(struct inode *inode);
+extern void scribe_resource_close_inode(struct inode *inode);
+
+extern void scribe_resource_lock_inode(struct inode *inode,
+				       struct scribe_lock_region *lock_region);
+
+extern int scribe_resource_open_files(struct files_struct *files);
+extern void scribe_resource_close_files(struct files_struct *files);
 
 #else /* CONFIG_SCRIBE */
 

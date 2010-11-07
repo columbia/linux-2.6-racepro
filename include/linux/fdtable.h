@@ -11,6 +11,7 @@
 #include <linux/rcupdate.h>
 #include <linux/types.h>
 #include <linux/init.h>
+#include <linux/scribe_resource.h>
 
 #include <asm/atomic.h>
 
@@ -55,6 +56,9 @@ struct files_struct {
 	struct embedded_fd_set close_on_exec_init;
 	struct embedded_fd_set open_fds_init;
 	struct file * fd_array[NR_OPEN_DEFAULT];
+#ifdef CONFIG_SCRIBE
+	struct scribe_resource scribe_resource;
+#endif
 };
 
 #define rcu_dereference_check_fdtable(files, fdtfd) \

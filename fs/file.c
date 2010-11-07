@@ -20,6 +20,7 @@
 #include <linux/spinlock.h>
 #include <linux/rcupdate.h>
 #include <linux/workqueue.h>
+#include <linux/scribe_resource.h>
 
 struct fdtable_defer {
 	spinlock_t lock;
@@ -305,6 +306,9 @@ struct files_struct *dup_fd(struct files_struct *oldf, int *errorp)
 
 	atomic_set(&newf->count, 1);
 
+#ifdef CONFIG_SCRIBE
+	scribe_init_resource(&newf->scribe_resource, SCRIBE_RES_TYPE_FILES);
+#endif
 	spin_lock_init(&newf->file_lock);
 	newf->next_fd = 0;
 	new_fdt = &newf->fdtab;

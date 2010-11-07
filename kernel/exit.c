@@ -910,6 +910,8 @@ static void do_scribe_exit(struct task_struct *p, long code)
 		syscall_set_return_value(p, regs, 0, code);
 		scribe_exit_syscall(regs);
 	}
+
+	scribe_detach(scribe);
 }
 
 void exit_scribe(struct task_struct *p)
@@ -918,11 +920,13 @@ void exit_scribe(struct task_struct *p)
 	if (!scribe)
 		return;
 
-	if (is_scribed(scribe))
-		scribe_detach(scribe);
+	BUG_ON(is_scribed(scribe));
 
 	if (scribe->pre_alloc_queue)
 		kfree(scribe->pre_alloc_queue);
+
+	if (scribe->pre_alloc_hres)
+		scribe_free_resource_handle(scribe->pre_alloc_hres);
 
 	scribe_put_context(scribe->ctx);
 

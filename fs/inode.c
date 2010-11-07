@@ -193,6 +193,10 @@ int inode_init_always(struct super_block *sb, struct inode *inode)
 	inode->i_fsnotify_mask = 0;
 #endif
 
+#ifdef CONFIG_SCRIBE
+	scribe_init_resource_container(&inode->i_scribe_resource);
+#endif
+
 	return 0;
 out:
 	return -ENOMEM;
