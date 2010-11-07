@@ -20,9 +20,9 @@
 struct scribe_resource_handle {
 	struct scribe_resource_context *ctx;
 	struct list_head container_node;
+	struct rcu_head rcu;
 
 	struct scribe_resource res;
-
 	/*
 	 * We do not want to fail the resource close. So we need to allocate
 	 * all the necessary memory during open. This is where it goes.
@@ -222,7 +222,7 @@ void scribe_resource_lock(struct scribe_lock_region *lock_region)
 	 * stay consistent.
 	 */
 out:
-	mutex_lock(&res->lock);
+	mutex_lock_nested(&res->lock, res->type);
 }
 
 static void wake_up_for_serial(struct scribe_resource *res)
@@ -368,6 +368,14 @@ static struct scribe_resource_handle *get_resource_handle(
 	return hres;
 }
 
+static void free_rcu_hres(struct rcu_head *rcu)
+{
+	struct scribe_resource_handle *hres;
+
+	hres = container_of(rcu, typeof(*hres), rcu);
+	scribe_free_resource_handle(hres);
+}
+
 static void put_resource_handle(struct scribe_resource_context *ctx,
 				struct scribe_resource_container *container,
 				struct scribe_resource_handle *hres)
@@ -376,8 +384,7 @@ static void put_resource_handle(struct scribe_resource_context *ctx,
 		spin_lock(&container->lock);
 		list_del_rcu(&hres->container_node);
 		spin_unlock(&container->lock);
-		synchronize_rcu();
-		scribe_free_resource_handle(hres);
+		call_rcu(&hres->rcu, free_rcu_hres);
 	}
 }
 
@@ -555,7 +562,7 @@ int scribe_resource_open_files(struct files_struct *files)
 	int fd;
 	int ret = 0;
 
-	mutex_lock(&files_res->lock);
+	mutex_lock_nested(&files_res->lock, files_res->type);
 	if (atomic_inc_return(&files_res->ref_cnt) != 1) {
 		mutex_unlock(&files_res->lock);
 		return 0;
@@ -568,7 +575,7 @@ int scribe_resource_open_files(struct files_struct *files)
 	 */
 	fdt = files_fdtable(files);
 	for (fd = 0; fd < fdt->max_fds; fd++) {
-		file = rcu_dereference(fdt->fd[fd]);
+		file = rcu_dereference_check(fdt->fd[fd], 1);
 		if (!file)
 			continue;
 
@@ -614,7 +621,7 @@ void scribe_resource_close_files(struct files_struct *files)
 	 */
 	fdt = files_fdtable(files);
 	for (fd = 0; fd < fdt->max_fds; fd++) {
-		file = rcu_dereference(fdt->fd[fd]);
+		file = rcu_dereference_check(fdt->fd[fd], 1);
 		if (!file)
 			continue;
 
