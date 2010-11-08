@@ -86,7 +86,7 @@ struct scribe_queue *scribe_get_queue_by_pid(
 	 */
 	scribe_set_persistent(queue);
 
-	list_add(&queue->node, &ctx->queues);
+	list_add_tail(&queue->node, &ctx->queues);
 
 out:
 	spin_unlock(&ctx->queues_lock);

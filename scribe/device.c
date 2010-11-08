@@ -63,26 +63,31 @@ static inline int is_queue_active(struct scribe_queue *queue)
 }
 
 /*
- * __get_active_queue() tries to find the the first non empty queue, or ready
+ * __get_active_queue() tries to find the the next non empty queue, or ready
  * to be ripped off. Returns -ENODATA if the queue list is empty and will stay
- * empty, -EAGAIN if at least one queue is present and all queues are empty.
+ * empty, -EAGAIN if at least one queue is present and all queues are empty
+ * (or that we are waiting for the recording to start).
  */
 static int __get_active_queue(struct scribe_context *ctx,
-			      struct scribe_queue **ptr_queue)
+			      struct scribe_queue **current_queue)
 {
 	struct scribe_queue *queue;
-	int ret;
+	int ret = 0;
+
+	queue = *current_queue;
+	if (queue && is_queue_active(queue))
+		return 0;
 
 	spin_lock(&ctx->queues_lock);
-	list_for_each_entry(queue, &ctx->queues, node) {
+	queue = list_prepare_entry(queue, &ctx->queues, node);
+	list_for_each_entry_continue(queue, &ctx->queues, node) {
 		if (is_queue_active(queue)) {
 			scribe_get_queue(queue);
-			spin_unlock(&ctx->queues_lock);
-			*ptr_queue = queue;
-			return 0;
+			goto out;
 		}
 	}
 
+	queue = NULL;
 	ret = -EAGAIN;
 	if (list_empty(&ctx->queues)) {
 		/*
@@ -97,8 +102,13 @@ static int __get_active_queue(struct scribe_context *ctx,
 		if (ctx->flags == SCRIBE_IDLE)
 			ret = -ENODATA;
 	}
-
+out:
 	spin_unlock(&ctx->queues_lock);
+
+	if (*current_queue)
+		scribe_put_queue(*current_queue);
+	*current_queue = queue;
+
 	return ret;
 }
 
@@ -106,28 +116,15 @@ static int get_active_queue(struct scribe_context *ctx,
 			    struct scribe_queue **current_queue,
 			    int wait)
 {
-	struct scribe_queue *queue;
 	int ret;
 
-	queue = *current_queue;
-	if (queue) {
-		if (is_queue_active(queue))
-			return 0;
-		scribe_put_queue(queue);
-		*current_queue = NULL;
-	}
+	if (wait == SCRIBE_NO_WAIT)
+		return __get_active_queue(ctx, current_queue);
 
-	if (wait == SCRIBE_WAIT)
-		wait_event(ctx->queues_wait,
-			   (ret = __get_active_queue(ctx, &queue)) != -EAGAIN);
-	else /* SCRIBE_NO_WAIT */
-		ret = __get_active_queue(ctx, &queue);
+	wait_event(ctx->queues_wait,
+		   (ret = __get_active_queue(ctx, current_queue)) != -EAGAIN);
 
-	if (ret)
-		return ret;
-
-	*current_queue = queue;
-	return 0;
+	return ret;
 }
 
 /*
