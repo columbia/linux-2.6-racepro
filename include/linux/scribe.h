@@ -295,6 +295,38 @@ extern int scribe_stop(struct scribe_context *ctx);
 	scribe_emergency_stop((sp)->ctx, (struct scribe_event *)__event); \
 })
 
+/* Resources */
+
+struct scribe_resource_cache {
+	struct scribe_resource_handle *hres;
+	/*
+	 * For registering an inode, we'll need at most two pre-allocated
+	 * regions, one for opening a resource, and one other to close.
+	 * Also we'll never take more than 2 locks at the same time when
+	 * locking non-registration resources.
+	 */
+	struct scribe_lock_region *lock_regions[2];
+};
+
+extern struct scribe_resource_context *scribe_alloc_resource_context(void);
+extern void scribe_free_resource_context(struct scribe_resource_context *);
+
+extern void scribe_resource_init_cache(struct scribe_resource_cache *cache);
+extern int scribe_resource_prepare(void);
+extern void scribe_resource_exit_cache(struct scribe_resource_cache *cache);
+
+extern int scribe_resource_open_inode_nosync(struct inode *inode);
+extern int scribe_resource_open_inode(struct inode *inode);
+extern void scribe_resource_close_inode(struct inode *inode);
+extern void scribe_resource_lock_inode(struct inode *inode);
+
+extern int scribe_resource_open_files(struct files_struct *files);
+extern void scribe_resource_close_files(struct files_struct *files);
+extern void scribe_resource_lock_files(struct files_struct *files);
+
+extern void scribe_resource_unlock(void *object);
+
+
 /* Process */
 
 /* Per process flags. Some of them are also defined in scribe_api.h */
@@ -329,7 +361,7 @@ struct scribe_ps {
 	int can_uaccess;
 
 	int waiting_for_serial;
-	struct scribe_resource_handle *pre_alloc_hres;
+	struct scribe_resource_cache res_cache;
 };
 
 static inline int is_scribed(struct scribe_ps *scribe)
@@ -460,40 +492,6 @@ extern void scribe_backtrace_dump(struct scribe_backtrace *bt,
 extern void scribe_enter_syscall(struct pt_regs *regs);
 extern void scribe_exit_syscall(struct pt_regs *regs);
 extern int is_kernel_copy(void);
-
-/* Resources */
-
-struct scribe_lock_region {
-	struct list_head node;
-	struct scribe_insert_point ip;
-	struct scribe_event_resource_lock *lock_event;
-	struct scribe_event_resource_unlock *unlock_event;
-	struct scribe_resource *res;
-};
-
-extern void scribe_free_resource_handle(struct scribe_resource_handle *hres);
-
-extern struct scribe_resource_context *scribe_alloc_resource_context(void);
-extern void scribe_free_resource_context(struct scribe_resource_context *);
-
-extern int scribe_init_lock_region(struct scribe_lock_region *lock_region,
-				   struct scribe_resource *res);
-extern void scribe_exit_lock_region(struct scribe_lock_region *lock_region);
-
-extern void scribe_resource_lock(struct scribe_lock_region *lock_region);
-extern void scribe_resource_unlock(struct scribe_lock_region *lock_region);
-extern void scribe_resource_unlock_discard(
-				struct scribe_lock_region *lock_region);
-
-extern int scribe_resource_open_inode_nosync(struct inode *inode);
-extern int scribe_resource_open_inode(struct inode *inode);
-extern void scribe_resource_close_inode(struct inode *inode);
-
-extern void scribe_resource_lock_inode(struct inode *inode,
-				       struct scribe_lock_region *lock_region);
-
-extern int scribe_resource_open_files(struct files_struct *files);
-extern void scribe_resource_close_files(struct files_struct *files);
 
 #else /* CONFIG_SCRIBE */
 

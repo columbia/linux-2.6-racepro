@@ -17,39 +17,6 @@
 #define INODE_HASH_BITS 8
 #define INODE_HASH_SIZE (1 << INODE_HASH_BITS)
 
-struct scribe_resource_handle {
-	struct scribe_resource_context *ctx;
-	struct list_head container_node;
-	struct rcu_head rcu;
-
-	struct scribe_resource res;
-	/*
-	 * We do not want to fail the resource close. So we need to allocate
-	 * all the necessary memory during open. This is where it goes.
-	 */
-	spinlock_t lock;
-	struct list_head close_lock_regions;
-};
-
-static int refill_hres_cache(struct scribe_ps *scribe)
-{
-	struct scribe_resource_handle *hres;
-	if (scribe->pre_alloc_hres)
-		return 0;
-
-	hres = kmalloc(sizeof(*hres), GFP_KERNEL);
-	if (!hres)
-		return -ENOMEM;
-
-	scribe->pre_alloc_hres = hres;
-	return 0;
-}
-
-void scribe_free_resource_handle(struct scribe_resource_handle *hres)
-{
-	kfree(hres);
-}
-
 struct scribe_resource_context {
 	/*
 	 * For inodes, instead of using one registration resource, we are
@@ -87,6 +54,32 @@ void scribe_init_resource_container(struct scribe_resource_container *container)
 	INIT_LIST_HEAD(&container->handles);
 }
 
+static struct scribe_resource *find_registration_res_inode(
+		struct scribe_resource_context *ctx, struct inode *inode)
+{
+	/*
+	 * We don't really care about the reference counter on the
+	 * registration resources.
+	 */
+	int index = hash_long(inode->i_ino, INODE_HASH_BITS);
+	return &ctx->registration_res_inode[index];
+}
+
+struct scribe_resource_handle {
+	struct scribe_resource_context *ctx;
+	struct list_head container_node;
+	struct rcu_head rcu;
+
+	struct scribe_resource res;
+	/*
+	 * We cannot fail resource_close(), because it might get called in
+	 * do_exit(). We need to keep all the necessary memory to close the
+	 * resource. This is where it goes.
+	 */
+	spinlock_t lock;
+	struct list_head close_lock_regions;
+};
+
 void scribe_init_resource(struct scribe_resource *res, int type)
 {
 	atomic_set(&res->ref_cnt, 0);
@@ -105,216 +98,132 @@ static void init_resource_handle(struct scribe_resource_context *ctx,
 	INIT_LIST_HEAD(&hres->close_lock_regions);
 }
 
-static struct scribe_resource *find_registration_res_inode(
-		struct scribe_resource_context *ctx, struct inode *inode)
+struct scribe_lock_region {
+	struct list_head node;
+	struct scribe_insert_point ip;
+	struct scribe_event_resource_lock *lock_event;
+	struct scribe_event_resource_unlock *unlock_event;
+	struct scribe_resource *res;
+	void *object;
+};
+
+static int reinit_lock_region(struct scribe_lock_region *lock_region,
+			      int doing_recording)
 {
 	/*
-	 * We don't really care about the reference counter on the
-	 * registration resources.
+	 * During replaying, we don't really need those events, since they
+	 * will be coming from the event pump.
 	 */
-	int index = hash_long(inode->i_ino, INODE_HASH_BITS);
-	return &ctx->registration_res_inode[index];
-}
+	if (!doing_recording)
+		return 0;
 
-int scribe_init_lock_region(struct scribe_lock_region *lock_region,
-			    struct scribe_resource *res)
-{
-	struct scribe_ps *scribe = current->scribe;
-
-	lock_region->lock_event = NULL;
-	lock_region->unlock_event = NULL;
-
-	might_sleep();
-
-	if (is_recording(scribe)) {
+	if (!lock_region->lock_event) {
 		lock_region->lock_event = scribe_alloc_event(
-				SCRIBE_EVENT_RESOURCE_LOCK);
+						SCRIBE_EVENT_RESOURCE_LOCK);
 		if (!lock_region->lock_event)
 			return -ENOMEM;
+	}
 
+	if (!lock_region->unlock_event) {
 		lock_region->unlock_event = scribe_alloc_event(
-				SCRIBE_EVENT_RESOURCE_UNLOCK);
+						SCRIBE_EVENT_RESOURCE_UNLOCK);
 		if (!lock_region->unlock_event) {
 			scribe_free_event(lock_region->lock_event);
+			lock_region->lock_event = NULL;
 			return -ENOMEM;
 		}
 	}
-
-	lock_region->res = res;
 
 	return 0;
 }
 
-void scribe_exit_lock_region(struct scribe_lock_region *lock_region)
+static int init_lock_region(struct scribe_lock_region *lock_region,
+			    int record_mode)
 {
-	if (unlikely(lock_region->lock_event))
+	lock_region->lock_event = NULL;
+	lock_region->unlock_event = NULL;
+	lock_region->res = NULL;
+	lock_region->object = NULL;
+
+	return reinit_lock_region(lock_region, record_mode);
+}
+
+/* Use this when you didn't had the chance to lock()/unlock() the resource */
+static void exit_lock_region(struct scribe_lock_region *lock_region)
+{
+	if (lock_region->lock_event)
 		scribe_free_event(lock_region->lock_event);
-	if (unlikely(lock_region->unlock_event))
+	if (lock_region->unlock_event)
 		scribe_free_event(lock_region->unlock_event);
 }
 
-static struct scribe_lock_region *alloc_lock_region(struct scribe_resource *res)
+void scribe_resource_init_cache(struct scribe_resource_cache *cache)
+{
+	memset(cache, 0, sizeof(*cache));
+}
+
+static int scribe_resource_pre_alloc(struct scribe_resource_cache *cache,
+				     int doing_recording)
 {
 	struct scribe_lock_region *lock_region;
-	lock_region = kmalloc(sizeof(*lock_region), GFP_KERNEL);
-	if (lock_region)
-		scribe_init_lock_region(lock_region, res);
-	return lock_region;
+	int i;
+
+	if (!cache->hres) {
+		cache->hres = kmalloc(sizeof(*cache->hres), GFP_KERNEL);
+		if (!cache->hres)
+			return -ENOMEM;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(cache->lock_regions); i++) {
+		lock_region = cache->lock_regions[i];
+
+		if (lock_region) {
+			if (reinit_lock_region(lock_region, doing_recording))
+				return -ENOMEM;
+			continue;
+		}
+
+		lock_region = kmalloc(sizeof(*lock_region), GFP_KERNEL);
+		if (!lock_region)
+			return -ENOMEM;
+		if (init_lock_region(lock_region, doing_recording)) {
+			kfree(lock_region);
+			return -ENOMEM;
+		}
+		cache->lock_regions[i] = lock_region;
+	}
+
+	return 0;
 }
 
-static void free_lock_region(struct scribe_lock_region *lock_region)
+int scribe_resource_prepare(void)
 {
-	scribe_exit_lock_region(lock_region);
-	kfree(lock_region);
-}
-
-static int serial_match(struct scribe_resource *res, int serial)
-{
-	WARN_ON(res->serial > serial);
-	return res->serial == serial;
-}
-
-static int get_lockdep_subclass(int type)
-{
-	if (type & SCRIBE_RES_TYPE_REGISTRATION_FLAG)
-		return SCRIBE_RES_TYPE_RESERVED;
-	return type;
-}
-
-void scribe_resource_lock(struct scribe_lock_region *lock_region)
-{
-	struct scribe_resource *res;
-	struct scribe_event_resource_lock *event;
 	struct scribe_ps *scribe = current->scribe;
-	int type;
-	int serial;
 
 	might_sleep();
 
 	if (!is_scribed(scribe))
-		return;
+		return 0;
 
-	res = lock_region->res;
-
-	if (is_recording(scribe)) {
-		scribe_create_insert_point(&scribe->queue->bare,
-					   &lock_region->ip);
-	} else {
-		event = scribe_dequeue_event_specific(scribe,
-						SCRIBE_EVENT_RESOURCE_LOCK);
-		if (IS_ERR(event))
-			goto out;
-
-		type = event->type;
-		serial = event->serial;
-		scribe_free_event(event);
-
-		if (type != res->type) {
-			scribe_diverge(scribe,
-				       SCRIBE_EVENT_DIVERGE_RESOURCE_TYPE,
-				       .type = res->type);
-			scribe_free_event(event);
-			goto out;
-		}
-
-		/* That's for avoiding a thundering herd */
-		scribe->waiting_for_serial = serial;
-		wmb();
-
-		wait_event_killable(res->wait, serial_match(res, serial));
-	}
-
-	/*
-	 * Even in case of replay errors, we want to take the lock, so that we
-	 * stay consistent.
-	 */
-out:
-	mutex_lock_nested(&res->lock, get_lockdep_subclass(res->type));
+	return scribe_resource_pre_alloc(&scribe->res_cache,
+					 is_recording(scribe));
 }
 
-static void wake_up_for_serial(struct scribe_resource *res)
+void scribe_resource_exit_cache(struct scribe_resource_cache *cache)
 {
-	wait_queue_head_t *q = &res->wait;
-	wait_queue_t *wq;
+	struct scribe_lock_region *lock_region;
+	int i;
 
-	spin_lock(&q->lock);
-	list_for_each_entry(wq, &q->task_list, task_list) {
-		struct task_struct *p = wq->private;
-		if (p->scribe->waiting_for_serial == res->serial) {
-			wq->func(wq, TASK_NORMAL, 0, NULL);
-			break;
+	if (cache->hres)
+		kfree(cache->hres);
+
+	for (i = 0; i < ARRAY_SIZE(cache->lock_regions); i++) {
+		lock_region = cache->lock_regions[i];
+		if (lock_region) {
+			exit_lock_region(lock_region);
+			kfree(lock_region);
 		}
 	}
-	spin_unlock(&q->lock);
-}
-
-void scribe_resource_unlock(struct scribe_lock_region *lock_region)
-{
-	struct scribe_resource *res;
-	struct scribe_event_resource_unlock *res_event;
-	struct scribe_ps *scribe = current->scribe;
-	int serial;
-
-	might_sleep();
-
-	if (!is_scribed(scribe))
-		return;
-
-	res = lock_region->res;
-	serial = res->serial++;
-	mutex_unlock(&res->lock);
-
-	if (is_recording(scribe)) {
-		lock_region->lock_event->type = res->type;
-		lock_region->lock_event->serial = serial;
-
-		scribe_queue_event_at(&lock_region->ip,
-				      lock_region->lock_event);
-		scribe_commit_insert_point(&lock_region->ip);
-		scribe_queue_event(scribe->queue, lock_region->unlock_event);
-
-		lock_region->lock_event = NULL;
-		lock_region->unlock_event = NULL;
-	} else {
-		wake_up_for_serial(res);
-		res_event = scribe_dequeue_event_specific(scribe,
-						  SCRIBE_EVENT_RESOURCE_UNLOCK);
-		if (!IS_ERR(res_event))
-			scribe_free_event(res_event);
-	}
-}
-
-void scribe_resource_unlock_discard(struct scribe_lock_region *lock_region)
-{
-	struct scribe_ps *scribe = current->scribe;
-	struct scribe_resource *res;
-
-	if (!is_scribed(scribe))
-		return;
-
-	res = lock_region->res;
-	mutex_unlock(&res->lock);
-
-	if (is_recording(scribe))
-		scribe_commit_insert_point(&lock_region->ip);
-}
-
-static struct scribe_resource_handle *find_resource_handle(
-				struct scribe_resource_context *ctx,
-				struct scribe_resource_container *container)
-{
-	struct scribe_resource_handle *hres;
-
-	rcu_read_lock();
-	list_for_each_entry_rcu(hres, &container->handles, container_node) {
-		if (hres->ctx == ctx) {
-			rcu_read_unlock();
-			return hres;
-		}
-	}
-	rcu_read_unlock();
-
-	return NULL;
 }
 
 /*
@@ -377,10 +286,7 @@ static struct scribe_resource_handle *get_resource_handle(
 
 static void free_rcu_hres(struct rcu_head *rcu)
 {
-	struct scribe_resource_handle *hres;
-
-	hres = container_of(rcu, typeof(*hres), rcu);
-	scribe_free_resource_handle(hres);
+	kfree(container_of(rcu, struct scribe_resource_handle, rcu));
 }
 
 static void put_resource_handle(struct scribe_resource_context *ctx,
@@ -395,31 +301,284 @@ static void put_resource_handle(struct scribe_resource_context *ctx,
 	}
 }
 
-static void resource_open(struct scribe_resource_context *ctx,
-			  struct scribe_resource_container *container,
-			  int type,
-			  struct scribe_lock_region *open_lock_region,
-			  struct scribe_lock_region *close_lock_region,
-			  struct scribe_resource_handle **pre_alloc_hres)
+static struct scribe_resource_handle *find_resource_handle(
+				struct scribe_resource_context *ctx,
+				struct scribe_resource_container *container)
 {
 	struct scribe_resource_handle *hres;
 
-	if (open_lock_region)
-		scribe_resource_lock(open_lock_region);
+	rcu_read_lock();
+	list_for_each_entry_rcu(hres, &container->handles, container_node) {
+		if (hres->ctx == ctx) {
+			rcu_read_unlock();
+			return hres;
+		}
+	}
+	rcu_read_unlock();
 
-	hres = get_resource_handle(ctx, container, type, pre_alloc_hres);
+	return NULL;
+}
 
-	if (open_lock_region) {
-		scribe_resource_unlock(open_lock_region);
-		free_lock_region(open_lock_region);
+static int serial_match(struct scribe_resource *res, int serial)
+{
+	WARN_ON(res->serial > serial);
+	return res->serial == serial;
+}
+
+static int get_lockdep_subclass(int type)
+{
+	if (type & SCRIBE_RES_TYPE_REGISTRATION_FLAG)
+		return SCRIBE_RES_TYPE_RESERVED;
+	return type;
+}
+
+static void resource_lock(struct scribe_lock_region *lock_region)
+{
+	struct scribe_resource *res;
+	struct scribe_event_resource_lock *event;
+	struct scribe_ps *scribe = current->scribe;
+	int type;
+	int serial;
+
+	res = lock_region->res;
+
+	if (is_recording(scribe)) {
+		scribe_create_insert_point(&scribe->queue->bare,
+					   &lock_region->ip);
+	} else {
+		event = scribe_dequeue_event_specific(scribe,
+						SCRIBE_EVENT_RESOURCE_LOCK);
+		if (IS_ERR(event))
+			goto out;
+
+		type = event->type;
+		serial = event->serial;
+		scribe_free_event(event);
+
+		if (type != res->type) {
+			scribe_diverge(scribe,
+				       SCRIBE_EVENT_DIVERGE_RESOURCE_TYPE,
+				       .type = res->type);
+			scribe_free_event(event);
+			goto out;
+		}
+
+		/* That's for avoiding a thundering herd */
+		scribe->waiting_for_serial = serial;
+		wmb();
+
+		wait_event_killable(res->wait, serial_match(res, serial));
 	}
 
-	if (close_lock_region) {
+	/*
+	 * Even in case of replay errors, we want to take the lock, so that we
+	 * stay consistent.
+	 */
+out:
+	mutex_lock_nested(&res->lock, get_lockdep_subclass(res->type));
+}
+
+static void wake_up_for_serial(struct scribe_resource *res)
+{
+	wait_queue_head_t *q = &res->wait;
+	wait_queue_t *wq;
+
+	spin_lock(&q->lock);
+	list_for_each_entry(wq, &q->task_list, task_list) {
+		struct task_struct *p = wq->private;
+		if (p->scribe->waiting_for_serial == res->serial) {
+			wq->func(wq, TASK_NORMAL, 0, NULL);
+			break;
+		}
+	}
+	spin_unlock(&q->lock);
+}
+
+static void resource_unlock(struct scribe_lock_region *lock_region)
+{
+	struct scribe_resource *res;
+	struct scribe_event_resource_unlock *res_event;
+	struct scribe_ps *scribe = current->scribe;
+	int serial;
+
+	might_sleep();
+
+	res = lock_region->res;
+	serial = res->serial++;
+	mutex_unlock(&res->lock);
+
+	if (is_recording(scribe)) {
+		lock_region->lock_event->type = res->type;
+		lock_region->lock_event->serial = serial;
+
+		scribe_queue_event_at(&lock_region->ip,
+				      lock_region->lock_event);
+		scribe_commit_insert_point(&lock_region->ip);
+		scribe_queue_event(scribe->queue, lock_region->unlock_event);
+
+		lock_region->lock_event = NULL;
+		lock_region->unlock_event = NULL;
+
+		/*
+		 * We don't need to call exit_lock_region(),
+		 * The events are gone.
+		 */
+	} else {
+		wake_up_for_serial(res);
+		res_event = scribe_dequeue_event_specific(scribe,
+						  SCRIBE_EVENT_RESOURCE_UNLOCK);
+		if (!IS_ERR(res_event))
+			scribe_free_event(res_event);
+	}
+
+	lock_region->res = NULL;
+	lock_region->object = NULL;
+}
+
+static void resource_unlock_discard(struct scribe_lock_region *lock_region)
+{
+	struct scribe_ps *scribe = current->scribe;
+	struct scribe_resource *res;
+
+	res = lock_region->res;
+	mutex_unlock(&res->lock);
+
+	if (is_recording(scribe)) {
+		scribe_commit_insert_point(&lock_region->ip);
+		exit_lock_region(lock_region);
+	}
+
+	lock_region->res = NULL;
+	lock_region->object = NULL;
+}
+
+static inline struct scribe_lock_region **find_lock_region_ptr(
+		struct scribe_resource_cache *cache, void *object)
+{
+	struct scribe_lock_region *lock_region;
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(cache->lock_regions); i++) {
+		lock_region = cache->lock_regions[i];
+		if (lock_region && lock_region->object == object)
+			return &cache->lock_regions[i];
+	}
+
+	return NULL;
+}
+
+static inline struct scribe_lock_region *find_lock_region(
+		struct scribe_resource_cache *cache, void *object)
+{
+	struct scribe_lock_region **lock_region_ptr;
+	lock_region_ptr = find_lock_region_ptr(cache, object);
+	if (lock_region_ptr)
+		return *lock_region_ptr;
+	return NULL;
+}
+
+static void __resource_lock_object(struct scribe_ps *scribe,
+				   void *object, struct scribe_resource *res)
+{
+	struct scribe_lock_region *lock_region;
+
+	lock_region = find_lock_region(&scribe->res_cache, NULL);
+	BUG_ON(!lock_region);
+
+	lock_region->object = object;
+	lock_region->res = res;
+
+	resource_lock(lock_region);
+}
+
+static void resource_lock_object(void *object, struct scribe_resource *res)
+{
+	struct scribe_ps *scribe = current->scribe;
+
+	if (!is_scribed(scribe))
+		return;
+
+	__resource_lock_object(scribe, object, res);
+}
+
+static void resource_lock_object_handle(
+		void *object, struct scribe_resource_container *container)
+{
+	struct scribe_resource_handle *hres;
+	struct scribe_ps *scribe = current->scribe;
+
+	if (!is_scribed(scribe))
+		return;
+
+	hres = find_resource_handle(scribe->ctx->res_ctx, container);
+	BUG_ON(!hres);
+
+	__resource_lock_object(scribe, object, &hres->res);
+}
+
+void scribe_resource_unlock(void *object)
+{
+	struct scribe_ps *scribe = current->scribe;
+	struct scribe_lock_region *lock_region;
+
+	if (!is_scribed(scribe))
+		return;
+
+	lock_region = find_lock_region(&scribe->res_cache, object);
+	BUG_ON(!lock_region);
+
+	resource_unlock(lock_region);
+}
+
+void scribe_resource_unlock_discard(void *object)
+{
+	struct scribe_ps *scribe = current->scribe;
+	struct scribe_lock_region *lock_region;
+
+	if (!is_scribed(scribe))
+		return;
+
+	lock_region = find_lock_region(&scribe->res_cache, object);
+	BUG_ON(!lock_region);
+
+	resource_unlock_discard(lock_region);
+}
+
+static void resource_open(struct scribe_resource_context *ctx,
+			  struct scribe_resource_container *container,
+			  int type, struct scribe_resource *sync_res,
+			  int do_sync_open, int do_sync_close,
+			  struct scribe_resource_cache *cache)
+{
+	struct scribe_resource_handle *hres;
+	struct scribe_lock_region *open_lock_region;
+	struct scribe_lock_region *close_lock_region;
+	struct scribe_lock_region **close_lock_region_ptr;
+
+	if (do_sync_open) {
+		open_lock_region = find_lock_region(cache, NULL);
+		open_lock_region->res = sync_res;
+		open_lock_region->object = sync_res;
+		resource_lock(open_lock_region);
+	}
+
+	hres = get_resource_handle(ctx, container, type, &cache->hres);
+
+	if (do_sync_close) {
+		close_lock_region_ptr = find_lock_region_ptr(cache, NULL);
+		close_lock_region = *close_lock_region_ptr;
+		*close_lock_region_ptr = NULL;
+
+		close_lock_region->res = sync_res;
+		close_lock_region->object = sync_res;
+
 		spin_lock(&hres->lock);
-		list_add(&close_lock_region->node,
-			 &hres->close_lock_regions);
+		list_add(&close_lock_region->node, &hres->close_lock_regions);
 		spin_unlock(&hres->lock);
 	}
+
+	if (do_sync_open)
+		resource_unlock(open_lock_region);
 }
 
 static void resource_close(struct scribe_resource_context *ctx,
@@ -441,26 +600,26 @@ static void resource_close(struct scribe_resource_context *ctx,
 		list_del(&close_lock_region->node);
 		spin_unlock(&hres->lock);
 
-		scribe_resource_lock(close_lock_region);
+		resource_lock(close_lock_region);
 	}
 
 	put_resource_handle(ctx, container, hres);
 
 	if (has_close_region) {
-		scribe_resource_unlock(close_lock_region);
-		free_lock_region(close_lock_region);
+		resource_unlock(close_lock_region);
+		kfree(close_lock_region);
 	}
 }
 
 static int open_inode(struct scribe_ps *scribe, struct inode *inode,
 		      int do_sync_open, int do_sync_close)
 {
-	struct scribe_resource *sync_res;
+	struct scribe_resource_cache *cache;
+	struct scribe_resource *sync_res = NULL;
 	struct scribe_resource_context *ctx;
-	struct scribe_lock_region *open_lock_region;
-	struct scribe_lock_region *close_lock_region;
 
-	if (refill_hres_cache(scribe))
+	cache = &scribe->res_cache;
+	if (scribe_resource_pre_alloc(&scribe->res_cache, is_recording(scribe)))
 		return -ENOMEM;
 
 	ctx = scribe->ctx->res_ctx;
@@ -468,28 +627,8 @@ static int open_inode(struct scribe_ps *scribe, struct inode *inode,
 	if (do_sync_open || do_sync_close)
 		sync_res = find_registration_res_inode(ctx, inode);
 
-	open_lock_region = NULL;
-	close_lock_region = NULL;
-
-	if (do_sync_open) {
-		open_lock_region = alloc_lock_region(sync_res);
-		if (!open_lock_region)
-			return -ENOMEM;
-	}
-
-	if (do_sync_close) {
-		close_lock_region = alloc_lock_region(sync_res);
-		if (!close_lock_region) {
-			if (open_lock_region)
-				free_lock_region(open_lock_region);
-			return -ENOMEM;
-		}
-	}
-
 	resource_open(ctx, &inode->i_scribe_resource, SCRIBE_RES_TYPE_INODE,
-		      open_lock_region, close_lock_region,
-		      &scribe->pre_alloc_hres);
-
+		      sync_res, do_sync_open, do_sync_close, cache);
 	return 0;
 }
 
@@ -545,19 +684,9 @@ void scribe_resource_close_inode(struct inode *inode)
 	resource_close(ctx, &inode->i_scribe_resource, do_sync);
 }
 
-int scribe_init_lock_region_inode(struct scribe_lock_region *lock_region,
-				  struct inode *inode)
+void scribe_resource_lock_inode(struct inode *inode)
 {
-	struct scribe_ps *scribe = current->scribe;
-	struct scribe_resource_handle *hres;
-
-	if (!is_scribed(scribe))
-		return 0;
-
-	hres = find_resource_handle(scribe->ctx->res_ctx,
-				    &inode->i_scribe_resource);
-	BUG_ON(!hres);
-	return scribe_init_lock_region(lock_region, &hres->res);
+	resource_lock_object_handle(inode, &inode->i_scribe_resource);
 }
 
 int scribe_resource_open_files(struct files_struct *files)
@@ -637,4 +766,9 @@ void scribe_resource_close_files(struct files_struct *files)
 		inode = file->f_path.dentry->d_inode;
 		scribe_resource_close_inode(inode);
 	}
+}
+
+void scribe_resource_lock_files(struct files_struct *files)
+{
+	resource_lock_object(files, &files->scribe_resource);
 }
