@@ -20,6 +20,7 @@
 #include <linux/splice.h>
 #include <linux/mutex.h>
 #include <linux/sched.h>
+#include <linux/completion.h>
 
 #define PUMP_BUFFER_ORDER 2
 #define PUMP_BUFFER_SIZE (PAGE_SIZE << PUMP_BUFFER_ORDER)
@@ -29,6 +30,7 @@ struct scribe_dev {
 	struct mutex lock_read;
 	struct mutex lock_write;
 	struct task_struct *kthread_event_pump;
+	struct completion pump_done;
 	char *pump_buffer;
 	struct file *log_file;
 	struct scribe_event *pending_notification_event;
@@ -558,6 +560,8 @@ static int kthread_event_pump(void *_dev)
 
 	fput(dev->log_file);
 
+	complete(&dev->pump_done);
+
 	do_exit(0);
 }
 
@@ -602,6 +606,8 @@ static int do_start(struct scribe_dev *dev, int state, int log_fd,
 		ret = scribe_start_replay(dev->ctx, backtrace_len);
 	if (ret)
 		goto err_file;
+
+	INIT_COMPLETION(dev->pump_done);
 
 	wake_up_process(dev->kthread_event_pump);
 	return 0;
@@ -703,6 +709,12 @@ static ssize_t dev_read(struct file *file,
 		}
 	}
 
+	if (event->type == SCRIBE_EVENT_CONTEXT_IDLE) {
+		err = -ERESTARTSYS;
+		if (wait_for_completion_interruptible(&dev->pump_done))
+			goto out;
+	}
+
 	to_copy = sizeof_event_payload(event);
 	err = -EINVAL;
 	if (count < to_copy)
@@ -744,6 +756,8 @@ static int dev_open(struct inode *inode, struct file *file)
 						    PUMP_BUFFER_ORDER);
 	if (!dev->pump_buffer)
 		goto out_ctx;
+
+	init_completion(&dev->pump_done);
 
 	file->private_data = dev;
 	return 0;
