@@ -300,31 +300,32 @@ extern int scribe_stop(struct scribe_context *ctx);
 struct scribe_resource_cache {
 	struct scribe_resource_handle *hres;
 	/*
-	 * For registering an inode, we'll need at most two pre-allocated
-	 * regions, one for opening a resource, and one other to close.
-	 * Also we'll never take more than 2 locks at the same time when
-	 * locking non-registration resources.
+	 * We need at most 3 lock_regions pre allocated upfront:
+	 * - One for locking the files struct
+	 * - One for the open on an inode
+	 * - One for the close
 	 */
-	struct scribe_lock_region *lock_regions[2];
+	struct scribe_lock_region *lock_regions[3];
 };
 
 extern struct scribe_resource_context *scribe_alloc_resource_context(void);
 extern void scribe_free_resource_context(struct scribe_resource_context *);
 
 extern void scribe_resource_init_cache(struct scribe_resource_cache *cache);
-extern int scribe_resource_prepare(void);
 extern void scribe_resource_exit_cache(struct scribe_resource_cache *cache);
+extern int scribe_resource_prepare(void);
 
-extern int scribe_resource_open_inode_nosync(struct inode *inode);
-extern int scribe_resource_open_inode(struct inode *inode);
+extern void scribe_resource_open_inode_nosync(struct inode *inode);
+extern void scribe_resource_open_inode(struct inode *inode);
 extern void scribe_resource_close_inode(struct inode *inode);
 extern void scribe_resource_lock_inode(struct inode *inode);
 
-extern int scribe_resource_open_files(struct files_struct *files);
+extern void scribe_resource_open_files(struct files_struct *files);
 extern void scribe_resource_close_files(struct files_struct *files);
 extern void scribe_resource_lock_files(struct files_struct *files);
 
 extern void scribe_resource_unlock(void *object);
+extern void scribe_resource_unlock_discard(void *object);
 
 
 /* Process */

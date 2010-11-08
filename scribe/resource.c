@@ -516,15 +516,17 @@ static void resource_lock_object_handle(
 void scribe_resource_unlock(void *object)
 {
 	struct scribe_ps *scribe = current->scribe;
-	struct scribe_lock_region *lock_region;
+	struct scribe_lock_region **lock_region;
 
 	if (!is_scribed(scribe))
 		return;
 
-	lock_region = find_lock_region(&scribe->res_cache, object);
+	lock_region = find_lock_region_ptr(&scribe->res_cache, object);
 	BUG_ON(!lock_region);
 
-	resource_unlock(lock_region);
+	resource_unlock(*lock_region);
+	kfree(*lock_region);
+	*lock_region = NULL;
 }
 
 void scribe_resource_unlock_discard(void *object)
@@ -548,18 +550,28 @@ static void resource_open(struct scribe_resource_context *ctx,
 			  struct scribe_resource_cache *cache)
 {
 	struct scribe_resource_handle *hres;
-	struct scribe_lock_region *open_lock_region;
-	struct scribe_lock_region *close_lock_region;
+	struct scribe_lock_region *open_lock_region
+	struct scribe_lock_region *close_lock_region
+	struct scribe_lock_region **open_lock_region_ptr
 	struct scribe_lock_region **close_lock_region_ptr;
 
 	if (do_sync_open) {
-		open_lock_region = find_lock_region(cache, NULL);
+		open_lock_region_ptr = find_lock_region_ptr(cache, NULL);
+		open_lock_region = *open_lock_region_ptr;
+		open_lock_region_ptr = NULL;
+
 		open_lock_region->res = sync_res;
 		open_lock_region->object = sync_res;
+
 		resource_lock(open_lock_region);
 	}
 
 	hres = get_resource_handle(ctx, container, type, &cache->hres);
+
+	if (do_sync_open) {
+		resource_unlock(open_lock_region);
+		kfree(open_lock_region);
+	}
 
 	if (do_sync_close) {
 		close_lock_region_ptr = find_lock_region_ptr(cache, NULL);
@@ -573,9 +585,6 @@ static void resource_open(struct scribe_resource_context *ctx,
 		list_add(&close_lock_region->node, &hres->close_lock_regions);
 		spin_unlock(&hres->lock);
 	}
-
-	if (do_sync_open)
-		resource_unlock(open_lock_region);
 }
 
 static void resource_close(struct scribe_resource_context *ctx,
@@ -608,16 +617,11 @@ static void resource_close(struct scribe_resource_context *ctx,
 	}
 }
 
-static int open_inode(struct scribe_ps *scribe, struct inode *inode,
+static void open_inode(struct scribe_ps *scribe, struct inode *inode,
 		      int do_sync_open, int do_sync_close)
 {
-	struct scribe_resource_cache *cache;
 	struct scribe_resource *sync_res = NULL;
 	struct scribe_resource_context *ctx;
-
-	cache = &scribe->res_cache;
-	if (scribe_resource_pre_alloc(&scribe->res_cache, is_recording(scribe)))
-		return -ENOMEM;
 
 	ctx = scribe->ctx->res_ctx;
 
@@ -625,8 +629,8 @@ static int open_inode(struct scribe_ps *scribe, struct inode *inode,
 		sync_res = find_registration_res_inode(ctx, inode);
 
 	resource_open(ctx, &inode->i_scribe_resource, SCRIBE_RES_TYPE_INODE,
-		      sync_res, do_sync_open, do_sync_close, cache);
-	return 0;
+		      sync_res, do_sync_open, do_sync_close,
+		      &scribe->res_cache);
 }
 
 static inline int inode_need_reg_sync(struct inode *inode)
@@ -642,28 +646,28 @@ static inline int inode_need_reg_sync(struct inode *inode)
  * opening. It's fine to do so when the inode is already registered and will
  * stay so deterministically.
  */
-int scribe_resource_open_inode_nosync(struct inode *inode)
+void scribe_resource_open_inode_nosync(struct inode *inode)
 {
 	int do_sync;
 	struct scribe_ps *scribe = current->scribe;
 
 	if (!is_scribed(scribe))
-		return 0;
+		return;
 
 	do_sync = inode_need_reg_sync(inode);
-	return open_inode(scribe, inode, 0, do_sync);
+	open_inode(scribe, inode, 0, do_sync);
 }
 
-int scribe_resource_open_inode(struct inode *inode)
+void scribe_resource_open_inode(struct inode *inode)
 {
 	int do_sync;
 	struct scribe_ps *scribe = current->scribe;
 
 	if (!is_scribed(scribe))
-		return 0;
+		return;
 
 	do_sync = inode_need_reg_sync(inode);
-	return open_inode(scribe, inode, do_sync, do_sync);
+	open_inode(scribe, inode, do_sync, do_sync);
 }
 
 void scribe_resource_close_inode(struct inode *inode)
@@ -686,21 +690,20 @@ void scribe_resource_lock_inode(struct inode *inode)
 	resource_lock_object_handle(inode, &inode->i_scribe_resource);
 }
 
-int scribe_resource_open_files(struct files_struct *files)
+void scribe_resource_open_files(struct files_struct *files)
 {
 	struct scribe_resource *files_res = &files->scribe_resource;
 	struct file *file;
 	struct fdtable *fdt;
 	struct inode *inode;
 	int fd;
-	int ret = 0;
 
 	mutex_lock_nested(&files_res->lock,
 			  get_lockdep_subclass(files_res->type));
 
 	if (atomic_inc_return(&files_res->ref_cnt) != 1) {
 		mutex_unlock(&files_res->lock);
-		return 0;
+		return;
 	}
 
 	/*
@@ -714,6 +717,16 @@ int scribe_resource_open_files(struct files_struct *files)
 		if (!file)
 			continue;
 
+		if (scribe_resource_prepare()) {
+			/*
+			 * FIXME Make this unfailable (do the memory
+			 * allocation in init_scribe()).
+			 */
+			scribe_emergency_stop(current->scribe->ctx,
+					      ERR_PTR(-ENOMEM));
+			break;
+		}
+
 		/*
 		 * We don't need to synchronize the registration because:
 		 * - We are starting a scribe session
@@ -721,21 +734,10 @@ int scribe_resource_open_files(struct files_struct *files)
 		 *   race condition risk.
 		 */
 		inode = file->f_path.dentry->d_inode;
-		ret = scribe_resource_open_inode(inode);
-		if (ret) {
-			/*
-			 * FIXME Do some cleanup and return an error instead
-			 * of dying.
-			 */
-			if (current->scribe)
-				scribe_emergency_stop(current->scribe->ctx,
-						      ERR_PTR(ret));
-			break;
-		}
+		scribe_resource_open_inode_nosync(inode);
 	}
 
 	mutex_unlock(&files_res->lock);
-	return ret;
 }
 
 void scribe_resource_close_files(struct files_struct *files)
