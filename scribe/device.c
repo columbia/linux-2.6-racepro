@@ -524,10 +524,8 @@ static void event_pump_replay(struct scribe_context *ctx, char *buf,
 free:
 	if (current_queue)
 		scribe_put_queue(current_queue);
-	if (pre_alloc_queue)
-		kfree(pre_alloc_queue);
-	if (pending_event)
-		scribe_free_event(pending_event);
+	kfree(pre_alloc_queue);
+	scribe_free_event(pending_event);
 	return;
 err:
 	scribe_emergency_stop(ctx, ERR_PTR(ret));

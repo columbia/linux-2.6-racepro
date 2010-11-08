@@ -183,11 +183,10 @@ void scribe_post_uaccess(const void *data, const void __user *user_ptr,
 		event->data_type = data_flags;
 		event->user_ptr = (__u32)user_ptr;
 
-		if (data_flags & SCRIBE_DATA_ZERO) {
+		if (data_flags & SCRIBE_DATA_ZERO)
 			memset(event->data, 0, size);
-		} else {
+		else
 			memcpy(event->data, data, size);
-		}
 		scribe_queue_event(scribe->queue, event);
 	} else { /* replay */
 		if (event->data_type != data_flags)

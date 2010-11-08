@@ -151,10 +151,8 @@ static int init_lock_region(struct scribe_lock_region *lock_region,
 /* Use this when you didn't had the chance to lock()/unlock() the resource */
 static void exit_lock_region(struct scribe_lock_region *lock_region)
 {
-	if (lock_region->lock_event)
-		scribe_free_event(lock_region->lock_event);
-	if (lock_region->unlock_event)
-		scribe_free_event(lock_region->unlock_event);
+	scribe_free_event(lock_region->lock_event);
+	scribe_free_event(lock_region->unlock_event);
 }
 
 void scribe_resource_init_cache(struct scribe_resource_cache *cache)
@@ -214,8 +212,7 @@ void scribe_resource_exit_cache(struct scribe_resource_cache *cache)
 	struct scribe_lock_region *lock_region;
 	int i;
 
-	if (cache->hres)
-		kfree(cache->hres);
+	kfree(cache->hres);
 
 	for (i = 0; i < ARRAY_SIZE(cache->lock_regions); i++) {
 		lock_region = cache->lock_regions[i];

@@ -319,10 +319,8 @@ void scribe_attach(struct scribe_ps *scribe)
 	BUG_ON(!scribe->pre_alloc_queue);
 	scribe->queue = scribe_get_queue_by_pid(ctx, &scribe->pre_alloc_queue,
 						task_pid_vnr(scribe->p));
-	if (scribe->pre_alloc_queue) {
-		kfree(scribe->pre_alloc_queue);
-		scribe->pre_alloc_queue = NULL;
-	}
+	kfree(scribe->pre_alloc_queue);
+	scribe->pre_alloc_queue = NULL;
 
 	spin_lock(&ctx->tasks_lock);
 	BUG_ON(is_scribed(scribe));
