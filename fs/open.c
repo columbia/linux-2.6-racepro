@@ -835,6 +835,7 @@ EXPORT_SYMBOL(dentry_open);
 static void __put_unused_fd(struct files_struct *files, unsigned int fd)
 {
 	struct fdtable *fdt = files_fdtable(files);
+	scribe_resource_assert_locked(files);
 	__FD_CLR(fd, fdt->open_fds);
 	if (fd < files->next_fd)
 		files->next_fd = fd;
@@ -878,18 +879,26 @@ EXPORT_SYMBOL(fd_install);
 
 long do_sys_open(int dfd, const char __user *filename, int flags, int mode)
 {
+	struct files_struct *files;
 	struct file *f;
-	char *tmp = getname(filename);
+	char *tmp;
 	int ret;
 	int fd;
 
+	if (scribe_resource_prepare())
+		return -ENOMEM;
+
+	tmp = getname(filename);
 	if (IS_ERR(tmp))
 		return PTR_ERR(tmp);
+
+	files = current->files;
+	scribe_resource_lock_files(files);
 
 	fd = get_unused_fd_flags(flags);
 	if (fd < 0) {
 		ret = fd;
-		goto out_name;
+		goto out_unlock_discard;
 	}
 
 	f = do_filp_open(dfd, tmp, flags, mode, 0);
@@ -898,9 +907,9 @@ long do_sys_open(int dfd, const char __user *filename, int flags, int mode)
 		goto out_fd;
 	}
 
-	ret = scribe_resource_open_inode(f->f_path.dentry->d_inode);
-	if (ret)
-		goto out_filp;
+	scribe_resource_unlock(files);
+
+	scribe_resource_open_file_sync(f);
 
 	fsnotify_open(f->f_path.dentry);
 	fd_install(fd, f);
@@ -908,10 +917,10 @@ long do_sys_open(int dfd, const char __user *filename, int flags, int mode)
 	ret = fd;
 	goto out_name;
 
-out_filp:
-	fput(f);
 out_fd:
 	put_unused_fd(fd);
+out_unlock_discard:
+	scribe_resource_unlock_discard(files);
 out_name:
 	putname(tmp);
 	return ret;
@@ -988,10 +997,26 @@ EXPORT_SYMBOL(filp_close);
  */
 SYSCALL_DEFINE1(close, unsigned int, fd)
 {
-	struct file * filp;
+	struct file * filp = NULL;
 	struct files_struct *files = current->files;
 	struct fdtable *fdt;
 	int retval;
+	int scribed = is_ps_scribed(current);
+
+	if (scribed && scribe_resource_prepare())
+		return -ENOMEM;
+
+	if (scribed) {
+		scribe_resource_lock_files(files);
+
+		/*
+		 * We need to sync on the file because another thread could be
+		 * doing some read/write on it, and we don't want that thread
+		 * to do so after we close the file descriptor.
+		 */
+		filp = fget(fd);
+		scribe_resource_lock_file_only(filp);
+	}
 
 	spin_lock(&files->file_lock);
 	fdt = files_fdtable(files);
@@ -1005,7 +1030,13 @@ SYSCALL_DEFINE1(close, unsigned int, fd)
 	__put_unused_fd(files, fd);
 	spin_unlock(&files->file_lock);
 
-	scribe_resource_close_inode(filp->f_path.dentry->d_inode);
+	if (scribed) {
+		scribe_resource_unlock(filp);
+		fput(filp);
+		scribe_resource_unlock(files);
+
+		scribe_resource_close_file(filp);
+	}
 
 	retval = filp_close(filp, files);
 
@@ -1016,10 +1047,23 @@ SYSCALL_DEFINE1(close, unsigned int, fd)
 		     retval == -ERESTART_RESTARTBLOCK))
 		retval = -EINTR;
 
+	if (scribed) {
+		/*
+		 * FIXME Is this really what we want to do ?
+		 * Because technically, the syscall succeeded.
+		 */
+		retval = 0;
+	}
+
 	return retval;
 
 out_unlock:
 	spin_unlock(&files->file_lock);
+	if (scribed) {
+		scribe_resource_unlock_discard(filp);
+		fput(filp);
+		scribe_resource_unlock_discard(files);
+	}
 	return -EBADF;
 }
 EXPORT_SYMBOL(sys_close);

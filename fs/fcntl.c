@@ -20,6 +20,7 @@
 #include <linux/signal.h>
 #include <linux/rcupdate.h>
 #include <linux/pid_namespace.h>
+#include <linux/scribe.h>
 
 #include <asm/poll.h>
 #include <asm/siginfo.h>
@@ -345,6 +346,13 @@ static long do_fcntl(int fd, unsigned int cmd, unsigned long arg,
 {
 	long err = -EINVAL;
 
+	if (scribe_resource_prepare())
+		return -ENOMEM;
+
+	if (cmd == F_DUPFD || cmd == F_DUPFD_CLOEXEC)
+		scribe_resource_lock_files(current->files);
+	scribe_resource_lock_file_only(filp);
+
 	switch (cmd) {
 	case F_DUPFD:
 	case F_DUPFD_CLOEXEC:
@@ -352,6 +360,7 @@ static long do_fcntl(int fd, unsigned int cmd, unsigned long arg,
 			break;
 		err = alloc_fd(arg, cmd == F_DUPFD_CLOEXEC ? O_CLOEXEC : 0);
 		if (err >= 0) {
+			scribe_resource_open_file(filp);
 			get_file(filp);
 			fd_install(err, filp);
 		}
@@ -423,6 +432,12 @@ static long do_fcntl(int fd, unsigned int cmd, unsigned long arg,
 	default:
 		break;
 	}
+
+	scribe_resource_unlock_may_discard(filp, err);
+	if (cmd == F_DUPFD || cmd == F_DUPFD_CLOEXEC)
+		scribe_resource_unlock_may_discard(current->files, err);
+
+
 	return err;
 }
 

@@ -20,7 +20,7 @@
 #include <linux/spinlock.h>
 #include <linux/rcupdate.h>
 #include <linux/workqueue.h>
-#include <linux/scribe_resource.h>
+#include <linux/scribe.h>
 
 struct fdtable_defer {
 	spinlock_t lock;
@@ -448,6 +448,8 @@ int alloc_fd(unsigned start, unsigned flags)
 	unsigned int fd;
 	int error;
 	struct fdtable *fdt;
+
+	scribe_resource_assert_locked(files);
 
 	spin_lock(&files->file_lock);
 repeat:

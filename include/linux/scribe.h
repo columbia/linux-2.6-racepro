@@ -301,9 +301,10 @@ struct scribe_resource_cache {
 	struct scribe_resource_handle *hres;
 	/*
 	 * We need at most 3 lock_regions pre allocated upfront:
-	 * - One for locking the files struct
-	 * - One for the open on an inode
-	 * - One for the close
+	 * see in do_fcntl(): filp, files, and the close region on the inode
+	 * registration.
+	 * or in sys_open(): files, and two for the open/close region on the
+	 * inode registration.
 	 */
 	struct scribe_lock_region *lock_regions[3];
 };
@@ -315,10 +316,11 @@ extern void scribe_resource_init_cache(struct scribe_resource_cache *cache);
 extern void scribe_resource_exit_cache(struct scribe_resource_cache *cache);
 extern int scribe_resource_prepare(void);
 
-extern void scribe_resource_open_inode_nosync(struct inode *inode);
-extern void scribe_resource_open_inode(struct inode *inode);
-extern void scribe_resource_close_inode(struct inode *inode);
-extern void scribe_resource_lock_inode(struct inode *inode);
+extern void scribe_resource_open_file(struct file *file);
+extern void scribe_resource_open_file_sync(struct file *file);
+extern void scribe_resource_close_file(struct file *file);
+extern void scribe_resource_lock_file_only(struct file *file);
+extern void scribe_resource_lock_file(struct file *file);
 
 extern void scribe_resource_open_files(struct files_struct *files);
 extern void scribe_resource_close_files(struct files_struct *files);
@@ -326,6 +328,8 @@ extern void scribe_resource_lock_files(struct files_struct *files);
 
 extern void scribe_resource_unlock(void *object);
 extern void scribe_resource_unlock_discard(void *object);
+extern void scribe_resource_unlock_may_discard(void *object, int err);
+extern void scribe_resource_assert_locked(void *object);
 
 
 /* Process */
