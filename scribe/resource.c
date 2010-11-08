@@ -174,6 +174,13 @@ static int serial_match(struct scribe_resource *res, int serial)
 	return res->serial == serial;
 }
 
+static int get_lockdep_subclass(int type)
+{
+	if (type & SCRIBE_RES_TYPE_REGISTRATION_FLAG)
+		return SCRIBE_RES_TYPE_RESERVED;
+	return type;
+}
+
 void scribe_resource_lock(struct scribe_lock_region *lock_region)
 {
 	struct scribe_resource *res;
@@ -222,7 +229,7 @@ void scribe_resource_lock(struct scribe_lock_region *lock_region)
 	 * stay consistent.
 	 */
 out:
-	mutex_lock_nested(&res->lock, res->type);
+	mutex_lock_nested(&res->lock, get_lockdep_subclass(res->type));
 }
 
 static void wake_up_for_serial(struct scribe_resource *res)
@@ -562,7 +569,9 @@ int scribe_resource_open_files(struct files_struct *files)
 	int fd;
 	int ret = 0;
 
-	mutex_lock_nested(&files_res->lock, files_res->type);
+	mutex_lock_nested(&files_res->lock,
+			  get_lockdep_subclass(files_res->type));
+
 	if (atomic_inc_return(&files_res->ref_cnt) != 1) {
 		mutex_unlock(&files_res->lock);
 		return 0;
