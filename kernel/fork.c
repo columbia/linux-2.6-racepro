@@ -1371,7 +1371,8 @@ static struct task_struct *copy_process(unsigned long long clone_flags,
 		 * ret_from_fork will get executed, we want to be ready for
 		 * user accesses.
 		 */
-		__scribe_allow_uaccess(p->scribe);
+		if (is_scribed(p->scribe))
+			__scribe_allow_uaccess(p->scribe);
 	}
 #endif /* CONFIG_SCRIBE */
 
