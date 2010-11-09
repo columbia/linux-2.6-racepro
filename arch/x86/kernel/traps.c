@@ -31,6 +31,7 @@
 #include <linux/mm.h>
 #include <linux/smp.h>
 #include <linux/io.h>
+#include <linux/scribe.h>
 
 #ifdef CONFIG_EISA
 #include <linux/ioport.h>
@@ -249,10 +250,27 @@ dotraplinkage void do_double_fault(struct pt_regs *regs, long error_code)
 }
 #endif
 
+#define RDTSC_OPCODE 0x310F
+static int scribe_handle_gp(struct scribe_ps *scribe,
+			    struct pt_regs *regs, long error_code)
+{
+	short opcode;
+
+	scribe_set_data_flags(scribe, SCRIBE_DATA_IGNORE);
+	if (get_user(opcode, (short *)regs->ip))
+		return -EFAULT;
+
+	if (opcode == RDTSC_OPCODE && !scribe->arch.tsc_disabled)
+		return scribe_handle_rdtsc(scribe, regs);
+
+	return -EFAULT;
+}
+
 dotraplinkage void __kprobes
 do_general_protection(struct pt_regs *regs, long error_code)
 {
 	struct task_struct *tsk;
+	struct scribe_ps *scribe;
 
 	conditional_sti(regs);
 
@@ -264,6 +282,12 @@ do_general_protection(struct pt_regs *regs, long error_code)
 	tsk = current;
 	if (!user_mode(regs))
 		goto gp_in_kernel;
+
+	scribe = tsk->scribe;
+	if (is_scribed(scribe)) {
+		if (!scribe_handle_gp(scribe, regs, error_code))
+			return;
+	}
 
 	tsk->thread.error_code = error_code;
 	tsk->thread.trap_no = 13;

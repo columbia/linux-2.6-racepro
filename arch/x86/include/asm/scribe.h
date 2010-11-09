@@ -15,6 +15,7 @@
 #ifdef CONFIG_SCRIBE
 
 struct scribe_ps_arch {
+	int tsc_disabled;
 };
 
 struct scribe_ps;
@@ -22,6 +23,8 @@ extern int init_scribe_arch(struct scribe_ps *scribe);
 extern void exit_scribe_arch(struct scribe_ps *scribe);
 extern void scribe_attach_arch(struct scribe_ps *scribe);
 extern void scribe_detach_arch(struct scribe_ps *scribe);
+
+extern int scribe_handle_rdtsc(struct scribe_ps *scribe, struct pt_regs *regs);
 
 #endif /* CONFIG_SCRIBE */
 

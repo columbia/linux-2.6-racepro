@@ -164,24 +164,38 @@ static void enable_TSC(void)
 
 int get_tsc_mode(unsigned long adr)
 {
-	unsigned int val;
+	struct scribe_ps *scribe = current->scribe;
+	int val;
+	unsigned int tsc_disabled;
 
-	if (test_thread_flag(TIF_NOTSC))
-		val = PR_TSC_SIGSEGV;
+	if (is_scribed(scribe))
+		tsc_disabled = scribe->arch.tsc_disabled;
 	else
-		val = PR_TSC_ENABLE;
+		tsc_disabled = test_thread_flag(TIF_NOTSC);
 
+	val = tsc_disabled ? PR_TSC_SIGSEGV : PR_TSC_ENABLE;
 	return put_user(val, (unsigned int __user *)adr);
 }
 
 int set_tsc_mode(unsigned int val)
 {
-	if (val == PR_TSC_SIGSEGV)
-		disable_TSC();
-	else if (val == PR_TSC_ENABLE)
-		enable_TSC();
-	else
+	struct scribe_ps *scribe = current->scribe;
+	int tsc_disabled;
+
+	if (val != PR_TSC_SIGSEGV || val != PR_TSC_ENABLE)
 		return -EINVAL;
+
+	tsc_disabled = val == PR_TSC_SIGSEGV;
+
+	if (is_scribed(scribe)) {
+		/* With scribe enabled, TSC is always disabled */
+		scribe->arch.tsc_disabled = tsc_disabled;
+	} else {
+		if (tsc_disabled)
+			disable_TSC();
+		else
+			enable_TSC();
+	}
 
 	return 0;
 }
@@ -736,7 +750,6 @@ unsigned long arch_randomize_brk(struct mm_struct *mm)
 	return randomize_range(mm->brk, range_end, 0) ? : mm->brk;
 }
 
-
 int init_scribe_arch(struct scribe_ps *scribe)
 {
 	return 0;
@@ -748,8 +761,28 @@ void exit_scribe_arch(struct scribe_ps *scribe)
 
 void scribe_attach_arch(struct scribe_ps *scribe)
 {
+	int tsc_disabled;
+
+	if (current == scribe->p) {
+		tsc_disabled = test_thread_flag(TIF_NOTSC);
+		disable_TSC();
+	} else {
+		/* We are in copy_process() */
+		BUG_ON(current->scribe->ctx != scribe->ctx);
+
+		tsc_disabled = current->scribe->arch.tsc_disabled;
+		/* The child has inherited the TIF_NOTSC flag */
+	}
+	scribe->arch.tsc_disabled = tsc_disabled;
 }
 
 void scribe_detach_arch(struct scribe_ps *scribe)
 {
+	if (scribe->arch.tsc_disabled)
+		return;
+
+	if (current == scribe->p)
+		enable_TSC();
+	else
+		clear_ti_thread_flag(scribe->p->stack, TIF_NOTSC);
 }

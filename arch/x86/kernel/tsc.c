@@ -10,6 +10,7 @@
 #include <linux/clocksource.h>
 #include <linux/percpu.h>
 #include <linux/timex.h>
+#include <linux/scribe.h>
 
 #include <asm/hpet.h>
 #include <asm/timer.h>
@@ -967,3 +968,42 @@ void __init tsc_init(void)
 	init_tsc_clocksource();
 }
 
+int scribe_handle_rdtsc(struct scribe_ps *scribe, struct pt_regs *regs)
+{
+	int ret;
+	struct scribe_event_rdtsc *event;
+	u64 tsc;
+	u32 low, high;
+
+	if (is_recording(scribe)) {
+		rdtscll(tsc);
+		ret = scribe_queue_new_event(scribe->queue, SCRIBE_EVENT_RDTSC,
+					     .tsc = tsc);
+		if (ret) {
+			/* FIXME do something smarter */
+			scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
+			return -ENOMEM;
+		}
+	} else {
+		event = scribe_dequeue_event_specific(scribe,
+						      SCRIBE_EVENT_RDTSC);
+		if (IS_ERR(event))
+			return PTR_ERR(event);
+
+		tsc = event->tsc;
+		scribe_free_event(event);
+	}
+
+	low = (u32)tsc;
+	high = (u32)(tsc >> 32);
+#ifdef CONFIG_X86_32
+	regs->ax = low;
+	regs->dx = high;
+#else
+	regs->ax = (regs->ax & (u32)-1) | low;
+	regs->dx = (regs->dx & (u32)-1) | high;
+#endif
+	regs->ip += 2;
+
+	return 0;
+}
