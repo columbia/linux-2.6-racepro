@@ -17,6 +17,14 @@
 #define INODE_HASH_BITS 8
 #define INODE_HASH_SIZE (1 << INODE_HASH_BITS)
 
+static inline int should_handle_resources(struct scribe_ps *scribe)
+{
+	if (!is_scribed(scribe))
+		return 0;
+
+	return should_scribe_resources(scribe);
+}
+
 struct scribe_resource_context {
 	/*
 	 * For inodes, instead of using one registration resource, we are
@@ -200,7 +208,7 @@ int scribe_resource_prepare(void)
 
 	might_sleep();
 
-	if (!is_scribed(scribe))
+	if (!should_handle_resources(scribe))
 		return 0;
 
 	return scribe_resource_pre_alloc(&scribe->res_cache,
@@ -513,7 +521,7 @@ static void resource_lock_object(void *object, struct scribe_resource *res)
 {
 	struct scribe_ps *scribe = current->scribe;
 
-	if (!is_scribed(scribe))
+	if (!should_handle_resources(scribe))
 		return;
 
 	__resource_lock_object(scribe, object, res);
@@ -525,7 +533,7 @@ static void resource_lock_object_handle(
 	struct scribe_resource_handle *hres;
 	struct scribe_ps *scribe = current->scribe;
 
-	if (!is_scribed(scribe))
+	if (!should_handle_resources(scribe))
 		return;
 
 	hres = find_resource_handle(scribe->ctx->res_ctx, container);
@@ -539,7 +547,7 @@ void scribe_resource_unlock(void *object)
 	struct scribe_ps *scribe = current->scribe;
 	struct scribe_lock_region *lock_region;
 
-	if (!is_scribed(scribe))
+	if (!should_handle_resources(scribe))
 		return;
 
 	lock_region = get_lock_region(&scribe->res_cache, object);
@@ -553,7 +561,7 @@ void scribe_resource_unlock_discard(void *object)
 	struct scribe_ps *scribe = current->scribe;
 	struct scribe_lock_region *lock_region;
 
-	if (!is_scribed(scribe))
+	if (!should_handle_resources(scribe))
 		return;
 
 	lock_region = find_lock_region(&scribe->res_cache, object);
@@ -574,7 +582,7 @@ void scribe_resource_assert_locked(void *object)
 {
 	struct scribe_ps *scribe = current->scribe;
 
-	if (!is_scribed(scribe))
+	if (!should_handle_resources(scribe))
 		return;
 
 	WARN_ON(!find_lock_region(&scribe->res_cache, object));
@@ -686,7 +694,7 @@ void scribe_resource_open_file(struct file *file)
 {
 	struct scribe_ps *scribe = current->scribe;
 
-	if (!is_scribed(scribe))
+	if (!should_handle_resources(scribe))
 		return;
 
 	open_inode(scribe, file_inode(file), 0);
@@ -696,7 +704,7 @@ void scribe_resource_open_file_sync(struct file *file)
 {
 	struct scribe_ps *scribe = current->scribe;
 
-	if (!is_scribed(scribe))
+	if (!should_handle_resources(scribe))
 		return;
 
 	open_inode(scribe, file_inode(file), 1);
@@ -709,7 +717,7 @@ void scribe_resource_close_file(struct file *file)
 	struct scribe_resource_context *ctx;
 	struct scribe_ps *scribe = current->scribe;
 
-	if (!is_scribed(scribe))
+	if (!should_handle_resources(scribe))
 		return;
 
 	ctx = scribe->ctx->res_ctx;

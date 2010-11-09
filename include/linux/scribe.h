@@ -387,6 +387,7 @@ static inline int is_stopping(struct scribe_ps *scribe)
 	return scribe != NULL && scribe->ctx &&
 		(scribe->ctx->flags & SCRIBE_STOP);
 }
+
 static inline int should_scribe_syscalls(struct scribe_ps *scribe)
 {
 	return scribe->flags & SCRIBE_PS_ENABLE_SYSCALL;
@@ -394,6 +395,10 @@ static inline int should_scribe_syscalls(struct scribe_ps *scribe)
 static inline int should_scribe_data(struct scribe_ps *scribe)
 {
 	return scribe->flags & SCRIBE_PS_ENABLE_DATA;
+}
+static inline int should_scribe_resources(struct scribe_ps *scribe)
+{
+	return scribe->flags & SCRIBE_PS_ENABLE_RESOURCE;
 }
 
 /* Using defines instead of inline functions so that we don't need

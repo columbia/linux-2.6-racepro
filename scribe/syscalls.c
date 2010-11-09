@@ -124,6 +124,10 @@ asmlinkage long sys_get_scribe_flags(void)
 	return scribe->flags;
 }
 
+/*
+ * Scribe enable flags are not inherited on fork().
+ * The flags are also reset in scribe_detach().
+ */
 asmlinkage long sys_set_scribe_flags(int flags)
 {
 	struct scribe_ps *scribe = current->scribe;

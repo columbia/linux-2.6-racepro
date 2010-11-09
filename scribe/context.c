@@ -400,6 +400,8 @@ void scribe_detach(struct scribe_ps *scribe)
 	struct scribe_context *ctx = scribe->ctx;
 	BUG_ON(!is_scribed(scribe));
 
+	scribe->flags |= SCRIBE_PS_ENABLE_ALL;
+
 	scribe_resource_close_files(scribe->p->files);
 
 	if (scribe->prepared_data_event) {
