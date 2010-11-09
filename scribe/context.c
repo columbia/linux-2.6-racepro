@@ -392,6 +392,8 @@ void scribe_attach(struct scribe_ps *scribe)
 	scribe->prepared_data_event = NULL;
 	scribe->can_uaccess = 0;
 
+	scribe_attach_arch(scribe);
+
 	scribe_resource_open_files(scribe->p->files);
 }
 
@@ -401,6 +403,8 @@ void scribe_detach(struct scribe_ps *scribe)
 	BUG_ON(!is_scribed(scribe));
 
 	scribe->flags |= SCRIBE_PS_ENABLE_ALL;
+
+	scribe_detach_arch(scribe);
 
 	scribe_resource_close_files(scribe->p->files);
 

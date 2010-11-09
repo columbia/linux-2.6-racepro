@@ -976,11 +976,14 @@ int init_scribe(struct task_struct *p, struct scribe_context *ctx)
 	if (!scribe)
 		goto err;
 
+	if (init_scribe_arch(scribe))
+		goto err_free;
+
 	scribe->queue = NULL;
 	scribe->pre_alloc_queue = kmalloc(sizeof(*scribe->pre_alloc_queue),
 					  GFP_KERNEL);
 	if (!scribe->pre_alloc_queue)
-		goto err_scribe;
+		goto err_exit_arch;
 
 	scribe_resource_init_cache(&scribe->res_cache);
 
@@ -994,7 +997,9 @@ int init_scribe(struct task_struct *p, struct scribe_context *ctx)
 
 	return 0;
 
-err_scribe:
+err_exit_arch:
+	exit_scribe_arch(scribe);
+err_free:
 	kfree(scribe);
 err:
 	return ret;

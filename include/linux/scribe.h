@@ -21,9 +21,10 @@
 #include <linux/kernel.h>
 #include <linux/list.h>
 #include <linux/wait.h>
-#include <asm/atomic.h>
 #include <linux/slab.h>
 #include <linux/fs.h>
+#include <asm/scribe.h>
+#include <asm/atomic.h>
 
 /* Events */
 
@@ -367,6 +368,8 @@ struct scribe_ps {
 
 	int waiting_for_serial;
 	struct scribe_resource_cache res_cache;
+
+	struct scribe_ps_arch arch;
 };
 
 static inline int is_scribed(struct scribe_ps *scribe)

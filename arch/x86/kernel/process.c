@@ -14,6 +14,7 @@
 #include <linux/utsname.h>
 #include <trace/events/power.h>
 #include <linux/hw_breakpoint.h>
+#include <linux/scribe.h>
 #include <asm/system.h>
 #include <asm/apic.h>
 #include <asm/syscalls.h>
@@ -733,4 +734,22 @@ unsigned long arch_randomize_brk(struct mm_struct *mm)
 {
 	unsigned long range_end = mm->brk + 0x02000000;
 	return randomize_range(mm->brk, range_end, 0) ? : mm->brk;
+}
+
+
+int init_scribe_arch(struct scribe_ps *scribe)
+{
+	return 0;
+}
+
+void exit_scribe_arch(struct scribe_ps *scribe)
+{
+}
+
+void scribe_attach_arch(struct scribe_ps *scribe)
+{
+}
+
+void scribe_detach_arch(struct scribe_ps *scribe)
+{
 }
