@@ -975,6 +975,11 @@ int scribe_handle_rdtsc(struct scribe_ps *scribe, struct pt_regs *regs)
 	u64 tsc;
 	u32 low, high;
 
+	if (!should_scribe_tsc(scribe)) {
+		rdtscll(tsc);
+		goto skip;
+	}
+
 	if (is_recording(scribe)) {
 		rdtscll(tsc);
 		ret = scribe_queue_new_event(scribe->queue, SCRIBE_EVENT_RDTSC,
@@ -994,6 +999,7 @@ int scribe_handle_rdtsc(struct scribe_ps *scribe, struct pt_regs *regs)
 		scribe_free_event(event);
 	}
 
+skip:
 	low = (u32)tsc;
 	high = (u32)(tsc >> 32);
 #ifdef CONFIG_X86_32

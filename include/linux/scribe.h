@@ -335,15 +335,6 @@ extern void scribe_resource_assert_locked(void *object);
 
 /* Process */
 
-/* Per process flags. Some of them are also defined in scribe_api.h */
-#define SCRIBE_PS_RECORD		0x00000001
-#define SCRIBE_PS_REPLAY		0x00000002
-#define SCRIBE_PS_ATTACH_ON_EXEC	0x00000004
-
-#define SCRIBE_PS_ENABLE_SYSCALL	0x00000100
-#define SCRIBE_PS_ENABLE_DATA		0x00000200
-#define SCRIBE_PS_ENABLE_ALL		0x0000ff00
-
 struct scribe_ps {
 	struct list_head node;
 
@@ -402,6 +393,10 @@ static inline int should_scribe_data(struct scribe_ps *scribe)
 static inline int should_scribe_resources(struct scribe_ps *scribe)
 {
 	return scribe->flags & SCRIBE_PS_ENABLE_RESOURCE;
+}
+static inline int should_scribe_tsc(struct scribe_ps *scribe)
+{
+	return scribe->flags & SCRIBE_PS_ENABLE_TSC;
 }
 
 /* Using defines instead of inline functions so that we don't need
