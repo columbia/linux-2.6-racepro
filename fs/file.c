@@ -449,7 +449,10 @@ int alloc_fd(unsigned start, unsigned flags)
 	int error;
 	struct fdtable *fdt;
 
-	scribe_resource_assert_locked(files);
+	if (scribe_resource_prepare())
+		return -ENOMEM;
+
+	scribe_resource_lock_files(files);
 
 	spin_lock(&files->file_lock);
 repeat:
@@ -492,6 +495,14 @@ repeat:
 
 out:
 	spin_unlock(&files->file_lock);
+	scribe_resource_unlock_discard_err(files, error);
+
+	/* We must refill the cache for fd_install() */
+	if (scribe_resource_prepare()) {
+		put_unused_fd(error);
+		return -ENOMEM;
+	}
+
 	return error;
 }
 

@@ -14,6 +14,29 @@
 #include <linux/fdtable.h>
 #include <linux/sched.h>
 
+/*
+ * A few notes:
+ * - scribe_resource_prepare() must be called prior to any resource lock/open
+ *   operations. get_unused_fd() will successfully return only with the cache
+ *   refilled (so that fd_install() can proceed).
+ *
+ * - The files_struct lock will be taken in call get_unused_fd(), and
+ *   put_unused_fd(). This ensure consistency on file descriptors value when
+ *   concurrent open/close happens. You have to call scribe_resource_prepare()
+ *   before calling those functions.
+ *
+ * - FIXME fget() needs to take the files_struct lock to guard with
+ *   fd_install() and "fd_uninstall()".
+ *
+ * - The files_struct lock must be taken as well to access any close_on_exec
+ *   flags.
+ *
+ * - The filp lock must be taken to access any of the file related data.
+ *
+ * - The filp+inode lock must be taken to access any of the file related data
+ *   and/or inode related data.
+ */
+
 #define INODE_HASH_BITS 8
 #define INODE_HASH_SIZE (1 << INODE_HASH_BITS)
 
@@ -334,6 +357,7 @@ static int serial_match(struct scribe_resource *res, int serial)
 
 static int get_lockdep_subclass(int type)
 {
+	/* MAX_LOCKDEP_SUBCLASSES is small, trying not to overflow it */
 	if (type & SCRIBE_RES_TYPE_REGISTRATION_FLAG)
 		return SCRIBE_RES_TYPE_RESERVED;
 	return type;
@@ -570,7 +594,7 @@ void scribe_resource_unlock_discard(void *object)
 	resource_unlock_discard(lock_region);
 }
 
-void scribe_resource_unlock_may_discard(void *object, int err)
+void scribe_resource_unlock_discard_err(void *object, int err)
 {
 	if (err >= 0)
 		scribe_resource_unlock(object);
@@ -588,6 +612,22 @@ void scribe_resource_assert_locked(void *object)
 	WARN_ON(!find_lock_region(&scribe->res_cache, object));
 }
 
+/*
+ * We need to open/close any resources that can be used within different
+ * scribe contexts because we need a serial number per resource, and per
+ * scribe context.
+ *
+ * This resource (un)registration has to be done in the same order during the
+ * replay (compared to the recording) to avoid an open/close race.
+ *
+ * An open/close race happens when we don't ensure 1) or 2) from happening
+ * deterministically during the replay:
+ * 1) Task A closes the resource and its reference counter reaches 0. Thus
+ *    releasing the resource memory. Then task B opens the resource and its
+ *    serial number is initialized to 0.
+ * 2) Task B opens the resource, bumps its reference counter. Then task A
+ *    closes the resource. The serial number is not re-initialized to 0.
+ */
 static void resource_open(struct scribe_resource_context *ctx,
 			  struct scribe_resource_container *container,
 			  int type, struct scribe_resource *sync_res,
@@ -695,24 +735,14 @@ static inline struct inode *file_inode(struct file *file)
  * opening. It's fine to do so when the file is already registered and will
  * stay so deterministically.
  */
-void scribe_resource_open_file(struct file *file)
+void scribe_resource_open_file(struct file *file, int do_sync)
 {
 	struct scribe_ps *scribe = current->scribe;
 
 	if (!should_handle_resources(scribe))
 		return;
 
-	open_inode(scribe, file_inode(file), 0);
-}
-
-void scribe_resource_open_file_sync(struct file *file)
-{
-	struct scribe_ps *scribe = current->scribe;
-
-	if (!should_handle_resources(scribe))
-		return;
-
-	open_inode(scribe, file_inode(file), 1);
+	open_inode(scribe, file_inode(file), do_sync);
 }
 
 void scribe_resource_close_file(struct file *file)
@@ -793,7 +823,7 @@ void scribe_resource_open_files(struct files_struct *files)
 		 * - Or those inodes are already registered, so there is no
 		 *   race condition risk.
 		 */
-		scribe_resource_open_file(file);
+		scribe_resource_open_file(file, SCRIBE_NOSYNC);
 	}
 
 	mutex_unlock(&files_res->lock);

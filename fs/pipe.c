@@ -1087,6 +1087,11 @@ int do_pipe_flags(int *fd, int flags)
 	fdw = error;
 
 	audit_fd_pair(fdr, fdw);
+	/*
+	 * No open/close events will be generated (because it's a pipe), so no
+	 * worries about refilling the resource cache between the two
+	 * fd_install().
+	 */
 	fd_install(fdr, fr);
 	fd_install(fdw, fw);
 	fd[0] = fdr;
@@ -1112,6 +1117,8 @@ SYSCALL_DEFINE2(pipe2, int __user *, fildes, int, flags)
 {
 	int fd[2];
 	int error;
+
+	/* FIXME Scribe: this syscall needs to be fully replayed on -EFAULT */
 
 	error = do_pipe_flags(fd, flags);
 	if (!error) {

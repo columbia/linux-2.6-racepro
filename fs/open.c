@@ -835,7 +835,6 @@ EXPORT_SYMBOL(dentry_open);
 static void __put_unused_fd(struct files_struct *files, unsigned int fd)
 {
 	struct fdtable *fdt = files_fdtable(files);
-	scribe_resource_assert_locked(files);
 	__FD_CLR(fd, fdt->open_fds);
 	if (fd < files->next_fd)
 		files->next_fd = fd;
@@ -844,9 +843,12 @@ static void __put_unused_fd(struct files_struct *files, unsigned int fd)
 void put_unused_fd(unsigned int fd)
 {
 	struct files_struct *files = current->files;
+
+	scribe_resource_lock_files(files);
 	spin_lock(&files->file_lock);
 	__put_unused_fd(files, fd);
 	spin_unlock(&files->file_lock);
+	scribe_resource_unlock(files);
 }
 
 EXPORT_SYMBOL(put_unused_fd);
@@ -863,42 +865,39 @@ EXPORT_SYMBOL(put_unused_fd);
  * It should never happen - if we allow dup2() do it, _really_ bad things
  * will follow.
  */
-
 void fd_install(unsigned int fd, struct file *file)
 {
 	struct files_struct *files = current->files;
 	struct fdtable *fdt;
+
+	scribe_resource_open_file(file, SCRIBE_SYNC);
+
+	scribe_resource_lock_files(files);
 	spin_lock(&files->file_lock);
 	fdt = files_fdtable(files);
 	BUG_ON(fdt->fd[fd] != NULL);
 	rcu_assign_pointer(fdt->fd[fd], file);
 	spin_unlock(&files->file_lock);
+	scribe_resource_unlock(files);
 }
 
 EXPORT_SYMBOL(fd_install);
 
+
 long do_sys_open(int dfd, const char __user *filename, int flags, int mode)
 {
-	struct files_struct *files;
 	struct file *f;
-	char *tmp;
+	char *tmp = getname(filename);
 	int ret;
 	int fd;
 
-	if (scribe_resource_prepare())
-		return -ENOMEM;
-
-	tmp = getname(filename);
 	if (IS_ERR(tmp))
 		return PTR_ERR(tmp);
-
-	files = current->files;
-	scribe_resource_lock_files(files);
 
 	fd = get_unused_fd_flags(flags);
 	if (fd < 0) {
 		ret = fd;
-		goto out_unlock_discard;
+		goto out_name;
 	}
 
 	f = do_filp_open(dfd, tmp, flags, mode, 0);
@@ -906,10 +905,6 @@ long do_sys_open(int dfd, const char __user *filename, int flags, int mode)
 		ret = PTR_ERR(f);
 		goto out_fd;
 	}
-
-	scribe_resource_unlock(files);
-
-	scribe_resource_open_file_sync(f);
 
 	fsnotify_open(f->f_path.dentry);
 	fd_install(fd, f);
@@ -919,8 +914,6 @@ long do_sys_open(int dfd, const char __user *filename, int flags, int mode)
 
 out_fd:
 	put_unused_fd(fd);
-out_unlock_discard:
-	scribe_resource_unlock_discard(files);
 out_name:
 	putname(tmp);
 	return ret;
@@ -997,7 +990,7 @@ EXPORT_SYMBOL(filp_close);
  */
 SYSCALL_DEFINE1(close, unsigned int, fd)
 {
-	struct file * filp = NULL;
+	struct file * filp;
 	struct files_struct *files = current->files;
 	struct fdtable *fdt;
 	int retval;
@@ -1006,17 +999,8 @@ SYSCALL_DEFINE1(close, unsigned int, fd)
 	if (scribed && scribe_resource_prepare())
 		return -ENOMEM;
 
-	if (scribed) {
+	if (scribed)
 		scribe_resource_lock_files(files);
-
-		/*
-		 * We need to sync on the file because another thread could be
-		 * doing some read/write on it, and we don't want that thread
-		 * to do so after we close the file descriptor.
-		 */
-		filp = fget(fd);
-		scribe_resource_lock_file_only(filp);
-	}
 
 	spin_lock(&files->file_lock);
 	fdt = files_fdtable(files);
@@ -1031,10 +1015,7 @@ SYSCALL_DEFINE1(close, unsigned int, fd)
 	spin_unlock(&files->file_lock);
 
 	if (scribed) {
-		scribe_resource_unlock(filp);
-		fput(filp);
 		scribe_resource_unlock(files);
-
 		scribe_resource_close_file(filp);
 	}
 
@@ -1048,10 +1029,7 @@ SYSCALL_DEFINE1(close, unsigned int, fd)
 		retval = -EINTR;
 
 	if (scribed) {
-		/*
-		 * FIXME Is this really what we want to do ?
-		 * Because technically, the syscall succeeded.
-		 */
+		/* XXX Scribe: Technically, the syscall succeeded.  */
 		retval = 0;
 	}
 
@@ -1059,11 +1037,8 @@ SYSCALL_DEFINE1(close, unsigned int, fd)
 
 out_unlock:
 	spin_unlock(&files->file_lock);
-	if (scribed) {
-		scribe_resource_unlock_discard(filp);
-		fput(filp);
+	if (scribed)
 		scribe_resource_unlock_discard(files);
-	}
 	return -EBADF;
 }
 EXPORT_SYMBOL(sys_close);

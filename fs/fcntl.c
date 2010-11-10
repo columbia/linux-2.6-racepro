@@ -30,6 +30,7 @@ void set_close_on_exec(unsigned int fd, int flag)
 {
 	struct files_struct *files = current->files;
 	struct fdtable *fdt;
+	scribe_resource_lock_files(files);
 	spin_lock(&files->file_lock);
 	fdt = files_fdtable(files);
 	if (flag)
@@ -37,6 +38,7 @@ void set_close_on_exec(unsigned int fd, int flag)
 	else
 		FD_CLR(fd, fdt->close_on_exec);
 	spin_unlock(&files->file_lock);
+	scribe_resource_unlock(files);
 }
 
 static int get_close_on_exec(unsigned int fd)
@@ -44,10 +46,12 @@ static int get_close_on_exec(unsigned int fd)
 	struct files_struct *files = current->files;
 	struct fdtable *fdt;
 	int res;
+	scribe_resource_lock_files(files);
 	rcu_read_lock();
 	fdt = files_fdtable(files);
 	res = FD_ISSET(fd, fdt->close_on_exec);
 	rcu_read_unlock();
+	scribe_resource_unlock(files);
 	return res;
 }
 
@@ -63,6 +67,11 @@ SYSCALL_DEFINE3(dup3, unsigned int, oldfd, unsigned int, newfd, int, flags)
 
 	if (unlikely(oldfd == newfd))
 		return -EINVAL;
+
+	if (scribe_resource_prepare())
+		return -ENOMEM;
+
+	scribe_resource_lock_files(files);
 
 	spin_lock(&files->file_lock);
 	err = expand_files(files, newfd);
@@ -94,6 +103,7 @@ SYSCALL_DEFINE3(dup3, unsigned int, oldfd, unsigned int, newfd, int, flags)
 	if (!tofree && FD_ISSET(newfd, fdt->open_fds))
 		goto out_unlock;
 	get_file(file);
+	get_file(file);
 	rcu_assign_pointer(fdt->fd[newfd], file);
 	FD_SET(newfd, fdt->open_fds);
 	if (flags & O_CLOEXEC)
@@ -101,15 +111,22 @@ SYSCALL_DEFINE3(dup3, unsigned int, oldfd, unsigned int, newfd, int, flags)
 	else
 		FD_CLR(newfd, fdt->close_on_exec);
 	spin_unlock(&files->file_lock);
+	scribe_resource_unlock(files);
 
-	if (tofree)
+	scribe_resource_open_file(file, SCRIBE_NOSYNC);
+	fput(file);
+
+	if (tofree) {
+		scribe_resource_close_file(tofree);
 		filp_close(tofree, files);
+	}
 
 	return newfd;
 
 Ebadf:
 	err = -EBADF;
 out_unlock:
+	scribe_resource_unlock_discard(files);
 	spin_unlock(&files->file_lock);
 	return err;
 }
@@ -117,8 +134,12 @@ out_unlock:
 SYSCALL_DEFINE2(dup2, unsigned int, oldfd, unsigned int, newfd)
 {
 	if (unlikely(newfd == oldfd)) { /* corner case */
+		struct scribe_ps *scribe = current->scribe;
 		struct files_struct *files = current->files;
 		int retval = oldfd;
+
+		if (is_replaying(scribe))
+			return scribe->orig_ret;
 
 		rcu_read_lock();
 		if (!fcheck_files(files, oldfd))
@@ -349,10 +370,6 @@ static long do_fcntl(int fd, unsigned int cmd, unsigned long arg,
 	if (scribe_resource_prepare())
 		return -ENOMEM;
 
-	if (cmd == F_DUPFD || cmd == F_DUPFD_CLOEXEC)
-		scribe_resource_lock_files(current->files);
-	scribe_resource_lock_file_only(filp);
-
 	switch (cmd) {
 	case F_DUPFD:
 	case F_DUPFD_CLOEXEC:
@@ -360,7 +377,6 @@ static long do_fcntl(int fd, unsigned int cmd, unsigned long arg,
 			break;
 		err = alloc_fd(arg, cmd == F_DUPFD_CLOEXEC ? O_CLOEXEC : 0);
 		if (err >= 0) {
-			scribe_resource_open_file(filp);
 			get_file(filp);
 			fd_install(err, filp);
 		}
@@ -372,6 +388,14 @@ static long do_fcntl(int fd, unsigned int cmd, unsigned long arg,
 		err = 0;
 		set_close_on_exec(fd, arg & FD_CLOEXEC);
 		break;
+	default:
+		goto cmd_with_lock;
+	}
+	return err;
+
+cmd_with_lock:
+	scribe_resource_lock_file_only(filp);
+	switch (cmd) {
 	case F_GETFL:
 		err = filp->f_flags;
 		break;
@@ -433,11 +457,9 @@ static long do_fcntl(int fd, unsigned int cmd, unsigned long arg,
 		break;
 	}
 
-	scribe_resource_unlock_may_discard(filp, err);
-	if (cmd == F_DUPFD || cmd == F_DUPFD_CLOEXEC)
-		scribe_resource_unlock_may_discard(current->files, err);
-
-
+	/* F_GETOWN can return negative values on success */
+	scribe_resource_unlock_discard_err(filp,
+					   cmd == F_GETOWN ? 0 : err);
 	return err;
 }
 
