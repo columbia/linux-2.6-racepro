@@ -21,8 +21,15 @@ struct path;
 extern struct file *alloc_file(struct path *, fmode_t mode,
 	const struct file_operations *fop);
 
+#ifdef CONFIG_SCRIBE
+extern void scribe_pre_fput(struct file *file);
+#endif
+
 static inline void fput_light(struct file *file, int fput_needed)
 {
+#ifdef CONFIG_SCRIBE
+	scribe_pre_fput(file);
+#endif
 	if (unlikely(fput_needed))
 		fput(file);
 }

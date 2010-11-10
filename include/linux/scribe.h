@@ -314,6 +314,7 @@ extern void scribe_free_resource_context(struct scribe_resource_context *);
 extern void scribe_resource_init_cache(struct scribe_resource_cache *cache);
 extern void scribe_resource_exit_cache(struct scribe_resource_cache *cache);
 extern int scribe_resource_prepare(void);
+extern int scribe_resource_lock_next_file(void);
 
 #define SCRIBE_NOSYNC	0
 #define SCRIBE_SYNC	1
@@ -358,6 +359,9 @@ struct scribe_ps {
 
 	int waiting_for_serial;
 	struct scribe_resource_cache res_cache;
+	short files_to_lock;
+	short files_to_unlock;
+	struct file *locked_files[2];
 
 	struct scribe_ps_arch arch;
 };

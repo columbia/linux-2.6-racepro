@@ -225,17 +225,32 @@ static int scribe_resource_pre_alloc(struct scribe_resource_cache *cache,
 	return 0;
 }
 
-int scribe_resource_prepare(void)
+static int __scribe_resource_prepare(int lock_next_file)
 {
 	struct scribe_ps *scribe = current->scribe;
-
 	might_sleep();
 
 	if (!should_handle_resources(scribe))
 		return 0;
+	if (scribe_resource_pre_alloc(&scribe->res_cache, is_recording(scribe)))
+		return -ENOMEM;
+	if (lock_next_file) {
+		scribe->files_to_lock++;
+		BUG_ON(scribe->files_to_lock + scribe->files_to_unlock >
+		       ARRAY_SIZE(scribe->locked_files));
+	}
 
-	return scribe_resource_pre_alloc(&scribe->res_cache,
-					 is_recording(scribe));
+	return 0;
+}
+
+int scribe_resource_prepare(void)
+{
+	return __scribe_resource_prepare(0);
+}
+
+int scribe_resource_lock_next_file(void)
+{
+	return __scribe_resource_prepare(1);
 }
 
 void scribe_resource_exit_cache(struct scribe_resource_cache *cache)
