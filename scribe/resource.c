@@ -600,6 +600,7 @@ static void resource_open(struct scribe_resource_context *ctx,
 
 	if (do_sync_open) {
 		open_lock_region = get_lock_region(cache, NULL);
+		BUG_ON(!open_lock_region);
 
 		open_lock_region->res = sync_res;
 		open_lock_region->object = sync_res;
@@ -614,6 +615,7 @@ static void resource_open(struct scribe_resource_context *ctx,
 
 	if (do_sync_close) {
 		close_lock_region = get_lock_region(cache, NULL);
+		BUG_ON(!close_lock_region);
 
 		close_lock_region->res = sync_res;
 		close_lock_region->object = sync_res;
@@ -742,6 +744,13 @@ void scribe_resource_lock_file(struct file *file)
 	scribe_resource_lock_file_only(file);
 }
 
+#define rcu_dereference_check_fd(files, fdt, _fd) \
+	(rcu_dereference_check((fdt)->fd[(_fd)], \
+			       rcu_read_lock_held() || \
+			       lockdep_is_held(&(files)->file_lock) || \
+			       atomic_read(&(files)->count) == 1 || \
+			       rcu_my_thread_group_empty()))
+
 void scribe_resource_open_files(struct files_struct *files)
 {
 	struct scribe_resource *files_res = &files->scribe_resource;
@@ -764,7 +773,7 @@ void scribe_resource_open_files(struct files_struct *files)
 	 */
 	fdt = files_fdtable(files);
 	for (fd = 0; fd < fdt->max_fds; fd++) {
-		file = rcu_dereference_check(fdt->fd[fd], 1);
+		file = rcu_dereference_check_fd(files, fdt, fd);
 		if (!file)
 			continue;
 
@@ -807,7 +816,7 @@ void scribe_resource_close_files(struct files_struct *files)
 	 */
 	fdt = files_fdtable(files);
 	for (fd = 0; fd < fdt->max_fds; fd++) {
-		file = rcu_dereference_check(fdt->fd[fd], 1);
+		file = rcu_dereference_check_fd(files, fdt, fd);
 		if (!file)
 			continue;
 
