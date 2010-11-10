@@ -183,7 +183,7 @@ static int scribe_resource_pre_alloc(struct scribe_resource_cache *cache,
 	for (i = 0; i < ARRAY_SIZE(cache->lock_regions); i++) {
 		lock_region = cache->lock_regions[i];
 
-		if (lock_region) {
+		if (lock_region && !lock_region->object) {
 			if (reinit_lock_region(lock_region, doing_recording))
 				return -ENOMEM;
 			continue;
