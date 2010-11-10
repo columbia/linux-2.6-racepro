@@ -655,9 +655,12 @@ static void resource_close(struct scribe_resource_context *ctx,
 static inline int inode_need_reg_sync(struct inode *inode)
 {
 	umode_t mode = inode->i_mode;
-
-	/* never sync registration on fifo/socks/chr */
-	return !(S_ISFIFO(mode) || S_ISSOCK(mode) || S_ISCHR(mode));
+	/*
+	 * For fifos and sockets, we don't need to synchronize open/close
+	 * because once closed permanantly (ref_cnt reaches 0), they cannot be
+	 * reopened: the open/close race cannot happen.
+	 */
+	return !(S_ISFIFO(mode) || S_ISSOCK(mode));
 }
 
 static void open_inode(struct scribe_ps *scribe, struct inode *inode,
