@@ -57,7 +57,7 @@ void scribe_enter_syscall(struct pt_regs *regs)
 		scribe_free_event(event);
 	}
 	scribe->in_syscall = 1;
-	scribe_set_data_flags(scribe, 0);
+	scribe_data_push_flags(0);
 }
 
 void scribe_exit_syscall(struct pt_regs *regs)

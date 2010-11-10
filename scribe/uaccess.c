@@ -199,22 +199,24 @@ void scribe_post_uaccess(const void *data, const void __user *user_ptr,
 			scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_DATA_PTR,
 				       .user_ptr = (u32)user_ptr);
 		else if (data_flags & SCRIBE_DATA_ZERO) {
-			data_flags = scribe_set_data_flags(scribe,
-							   SCRIBE_DATA_IGNORE);
+			/*
+			 * Avoiding the use of scribe_data_ignore so that we
+			 * don't pollute the data flags 'stack'.
+			 */
+			data_flags = scribe->data_flags;
+			scribe->data_flags = SCRIBE_DATA_IGNORE;
 			if (__clear_user((void __user *)user_ptr, size)) {
 				scribe_emergency_stop(scribe->ctx,
 						      ERR_PTR(-EDIVERGE));
 			}
-			scribe_set_data_flags(scribe, data_flags);
+			scribe->data_flags = data_flags;
 		} else if (data_flags & SCRIBE_DATA_NON_DETERMINISTIC) {
 			/*
 			 * FIXME Do the copying in pre_uaccess and skip the
 			 * extra copy_to_user that happened before.
 			 */
-
-			data_flags = scribe_set_data_flags(scribe,
-							   SCRIBE_DATA_IGNORE);
-
+			data_flags = scribe->data_flags;
+			scribe->data_flags = SCRIBE_DATA_IGNORE;
 			/*
 			 * We're using the inatomic version so that we don't
 			 * get the might_sleep(), but if we're not in an
@@ -234,11 +236,10 @@ void scribe_post_uaccess(const void *data, const void __user *user_ptr,
 						      ERR_PTR(-EDIVERGE));
 			}
 
-			scribe_set_data_flags(scribe, data_flags);
-		} else {
+			scribe->data_flags = data_flags;
+		} else
 			ensure_data_correctness(scribe, event->data,
 						data, size);
-		}
 		scribe_free_event(event);
 	}
 
@@ -289,13 +290,13 @@ int fault_in_pages_writeable(char __user *uaddr, int size)
 	int data_flags = 0;
 	int ret;
 
-	if (scribe) {
-		data_flags = scribe_get_data_flags(scribe);
-		scribe_set_data_flags(scribe, SCRIBE_DATA_DONT_RECORD);
+	if (may_be_scribed(scribe)) {
+		data_flags = scribe->data_flags;
+		scribe->data_flags = SCRIBE_DATA_DONT_RECORD;
 	}
 	ret = __fault_in_pages_writeable(uaddr, size);
-	if (scribe)
-		scribe_set_data_flags(scribe, data_flags);
+	if (may_be_scribed(scribe))
+		scribe->data_flags = data_flags;
 
 	return ret;
 }
@@ -306,13 +307,48 @@ int fault_in_pages_readable(char __user *uaddr, int size)
 	int data_flags = 0;
 	int ret;
 
-	if (scribe) {
-		data_flags = scribe_get_data_flags(scribe);
-		scribe_set_data_flags(scribe, SCRIBE_DATA_DONT_RECORD);
+	if (may_be_scribed(scribe)) {
+		data_flags = scribe->data_flags;
+		scribe->data_flags = SCRIBE_DATA_DONT_RECORD;
 	}
 	ret = __fault_in_pages_readable(uaddr, size);
-	if (scribe)
-		scribe_set_data_flags(scribe, data_flags);
+	if (may_be_scribed(scribe))
+		scribe->data_flags = data_flags;
 
 	return ret;
+}
+
+/* XXX You have only one level of data_flags "levels" */
+void scribe_data_push_flags(int flags)
+{
+	struct scribe_ps *scribe = current->scribe;
+	if (!is_scribed(scribe))
+		return;
+
+	scribe->old_data_flags = scribe->data_flags;
+	scribe->data_flags = flags;
+}
+
+void scribe_data_non_det(void)
+{
+	scribe_data_push_flags(SCRIBE_DATA_NON_DETERMINISTIC);
+}
+
+void scribe_data_dont_record(void)
+{
+	scribe_data_push_flags(SCRIBE_DATA_DONT_RECORD);
+}
+
+void scribe_data_ignore(void)
+{
+	scribe_data_push_flags(SCRIBE_DATA_IGNORE);
+}
+
+void scribe_data_pop_flags(void)
+{
+	struct scribe_ps *scribe = current->scribe;
+	if (!is_scribed(scribe))
+		return;
+
+	scribe->data_flags = scribe->old_data_flags;
 }

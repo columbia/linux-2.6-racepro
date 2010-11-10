@@ -2559,7 +2559,7 @@ long do_futex(u32 __user *uaddr, int op, u32 val, ktime_t *timeout,
 
 	if (scribe) {
 		scribe_allow_uaccess();
-		scribe_set_data_flags(scribe, SCRIBE_DATA_DONT_RECORD);
+		scribe_data_dont_record();
 	}
 
 	switch (cmd) {

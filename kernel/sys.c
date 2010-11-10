@@ -1099,7 +1099,7 @@ SYSCALL_DEFINE1(newuname, struct new_utsname __user *, name)
 {
 	int errno = 0;
 
-	scribe_set_current_data_flags(SCRIBE_DATA_NON_DETERMINISTIC);
+	scribe_data_non_det();
 
 	down_read(&uts_sem);
 	if (copy_to_user(name, utsname(), sizeof *name))
@@ -1122,7 +1122,7 @@ SYSCALL_DEFINE1(uname, struct old_utsname __user *, name)
 	if (!name)
 		return -EFAULT;
 
-	scribe_set_current_data_flags(SCRIBE_DATA_NON_DETERMINISTIC);
+	scribe_data_non_det();
 
 	down_read(&uts_sem);
 	if (copy_to_user(name, utsname(), sizeof(*name)))
@@ -1143,7 +1143,7 @@ SYSCALL_DEFINE1(olduname, struct oldold_utsname __user *, name)
 	if (!access_ok(VERIFY_WRITE, name, sizeof(struct oldold_utsname)))
 		return -EFAULT;
 
-	scribe_set_current_data_flags(SCRIBE_DATA_NON_DETERMINISTIC);
+	scribe_data_non_det();
 
 	down_read(&uts_sem);
 	error = __copy_to_user(&name->sysname, &utsname()->sysname,

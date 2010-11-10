@@ -898,7 +898,7 @@ static void do_scribe_exit(struct task_struct *p, long code)
 		return;
 
 	scribe_allow_uaccess();
-	scribe_set_data_flags(scribe, SCRIBE_DATA_DONT_RECORD);
+	scribe_data_dont_record();
 	mm_clear_child_tid(p, p->mm, 1);
 
 	if (scribe->in_syscall) {

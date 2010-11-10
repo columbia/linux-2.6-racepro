@@ -2075,13 +2075,8 @@ static inline void cow_user_page(struct page *dst, struct page *src, unsigned lo
 	if (unlikely(!src)) {
 		void *kaddr = kmap_atomic(dst, KM_USER0);
 		void __user *uaddr = (void __user *)(va & PAGE_MASK);
-		struct scribe_ps *scribe = current->scribe;
-		int data_flags;
 
-		if (scribe) {
-			data_flags = scribe_get_data_flags(scribe);
-			scribe_set_data_flags(scribe, SCRIBE_DATA_DONT_RECORD);
-		}
+		scribe_data_dont_record();
 
 		/*
 		 * This really shouldn't fail, because the page is there
@@ -2096,8 +2091,7 @@ static inline void cow_user_page(struct page *dst, struct page *src, unsigned lo
 		scribe_forbid_uaccess();
 		flush_dcache_page(dst);
 
-		if (scribe)
-			scribe_set_data_flags(scribe, data_flags);
+		scribe_data_pop_flags();
 	} else
 		copy_user_highpage(dst, src, va, vma);
 }

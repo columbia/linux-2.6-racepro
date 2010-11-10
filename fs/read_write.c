@@ -340,7 +340,7 @@ static int scribe_do_read(struct file *file, char __user *buf, ssize_t *read)
 		return 0;
 
 	if (is_recording(scribe)) {
-		scribe_set_data_flags(scribe, SCRIBE_DATA_NON_DETERMINISTIC);
+		scribe_data_non_det();
 		return 0;
 	}
 
@@ -350,7 +350,7 @@ static int scribe_do_read(struct file *file, char __user *buf, ssize_t *read)
 	 * We're doing the copying manually by looking what's coming in terms
 	 * of data events.
 	 */
-	scribe_set_data_flags(scribe, SCRIBE_DATA_DONT_RECORD);
+	scribe_data_dont_record();
 	*read = 0;
 	for (;;) {
 		/* Replaying on a non-deterministic stream */

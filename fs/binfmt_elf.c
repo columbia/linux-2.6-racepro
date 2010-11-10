@@ -206,7 +206,7 @@ create_elf_tables(struct linux_binprm *bprm, struct elfhdr *exec,
 		       STACK_ALLOC(p, sizeof(k_rand_bytes));
 #ifdef CONFIG_SCRIBE
 	if (scribe) {
-		scribe_set_data_flags(scribe, SCRIBE_DATA_NON_DETERMINISTIC);
+		scribe_data_non_det();
 
 		/*
 		 * If we are doing an attach_on_exec, we need to throw any
@@ -217,10 +217,7 @@ create_elf_tables(struct linux_binprm *bprm, struct elfhdr *exec,
 	}
 #endif
 	ret = __copy_to_user(u_rand_bytes, k_rand_bytes, sizeof(k_rand_bytes));
-#ifdef CONFIG_SCRIBE
-	if (scribe)
-		scribe_set_data_flags(scribe, 0);
-#endif
+	scribe_data_pop_flags();
 	if (ret)
 		return -EFAULT;
 

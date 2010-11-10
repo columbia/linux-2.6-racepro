@@ -256,7 +256,7 @@ static int scribe_handle_gp(struct scribe_ps *scribe,
 {
 	short opcode;
 
-	scribe_set_data_flags(scribe, SCRIBE_DATA_IGNORE);
+	scribe_data_ignore();
 	if (get_user(opcode, (short *)regs->ip))
 		return -EFAULT;
 

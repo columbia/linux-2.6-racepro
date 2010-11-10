@@ -355,6 +355,7 @@ struct scribe_ps {
 
 	struct scribe_event_data *prepared_data_event;
 	int data_flags;
+	int old_data_flags;
 	int can_uaccess;
 
 	int waiting_for_serial;
@@ -366,6 +367,10 @@ struct scribe_ps {
 	struct scribe_ps_arch arch;
 };
 
+static inline int may_be_scribed(struct scribe_ps *scribe)
+{
+	return scribe != NULL;
+}
 static inline int is_scribed(struct scribe_ps *scribe)
 {
 	return scribe != NULL &&
@@ -421,35 +426,13 @@ extern void __scribe_forbid_uaccess(struct scribe_ps *scribe);
 extern void scribe_allow_uaccess(void);
 extern void scribe_forbid_uaccess(void);
 extern void scribe_prepare_data_event(size_t pre_alloc_size);
-
-/* Data flags, some of them are also defined in scribe_api.h */
-#define SCRIBE_DATA_INPUT		0x01
-#define SCRIBE_DATA_STRING		0x02
-#define SCRIBE_DATA_NON_DETERMINISTIC	0x04
-#define SCRIBE_DATA_INTERNAL		0x08
-#define SCRIBE_DATA_ZERO		0x10
-#define SCRIBE_DATA_DONT_RECORD		0x20
-#define SCRIBE_DATA_IGNORE		0x40
-static inline int scribe_set_data_flags(struct scribe_ps *scribe, int flags)
-{
-	int res = scribe->data_flags;
-	scribe->data_flags = flags;
-	return res;
-}
-static inline int scribe_get_data_flags(struct scribe_ps *scribe)
-{
-	return scribe->data_flags;
-}
-#define scribe_set_current_data_flags(flags)			\
-({								\
-	struct scribe_ps *scribe = current->scribe;		\
-	int res = 0;						\
-	if (scribe)						\
-		res = scribe_set_data_flags(scribe, flags);	\
-	res;							\
-})
 extern void scribe_pre_schedule(void);
 extern void scribe_post_schedule(void);
+extern void scribe_data_push_flags(int flags);
+extern void scribe_data_non_det(void);
+extern void scribe_data_dont_record(void);
+extern void scribe_data_ignore(void);
+extern void scribe_data_pop_flags(void);
 
 #define scribe_interpose_value(dst, src)				\
 ({									\
