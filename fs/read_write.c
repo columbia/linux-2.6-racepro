@@ -172,6 +172,9 @@ SYSCALL_DEFINE3(lseek, unsigned int, fd, off_t, offset, unsigned int, origin)
 	struct file * file;
 	int fput_needed;
 
+	if (scribe_resource_lock_next_file())
+		return -ENOMEM;
+
 	retval = -EBADF;
 	file = fget_light(fd, &fput_needed);
 	if (!file)
@@ -198,6 +201,9 @@ SYSCALL_DEFINE5(llseek, unsigned int, fd, unsigned long, offset_high,
 	struct file * file;
 	loff_t offset;
 	int fput_needed;
+
+	if (scribe_resource_lock_next_file())
+		return -ENOMEM;
 
 	retval = -EBADF;
 	file = fget_light(fd, &fput_needed);
@@ -502,6 +508,9 @@ SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
 	ssize_t ret = -EBADF;
 	int fput_needed;
 
+	if (scribe_resource_lock_next_file())
+		return -ENOMEM;
+
 	file = fget_light(fd, &fput_needed);
 	if (file) {
 		loff_t pos = file_pos_read(file);
@@ -519,6 +528,9 @@ SYSCALL_DEFINE3(write, unsigned int, fd, const char __user *, buf,
 	struct file *file;
 	ssize_t ret = -EBADF;
 	int fput_needed;
+
+	if (scribe_resource_lock_next_file())
+		return -ENOMEM;
 
 	file = fget_light(fd, &fput_needed);
 	if (file) {
@@ -540,6 +552,9 @@ SYSCALL_DEFINE(pread64)(unsigned int fd, char __user *buf,
 
 	if (pos < 0)
 		return -EINVAL;
+
+	if (scribe_resource_lock_next_file())
+		return -ENOMEM;
 
 	file = fget_light(fd, &fput_needed);
 	if (file) {
@@ -569,6 +584,9 @@ SYSCALL_DEFINE(pwrite64)(unsigned int fd, const char __user *buf,
 
 	if (pos < 0)
 		return -EINVAL;
+
+	if (scribe_resource_lock_next_file())
+		return -ENOMEM;
 
 	file = fget_light(fd, &fput_needed);
 	if (file) {
@@ -823,6 +841,9 @@ SYSCALL_DEFINE3(readv, unsigned long, fd, const struct iovec __user *, vec,
 	ssize_t ret = -EBADF;
 	int fput_needed;
 
+	if (scribe_resource_lock_next_file())
+		return -ENOMEM;
+
 	file = fget_light(fd, &fput_needed);
 	if (file) {
 		loff_t pos = file_pos_read(file);
@@ -843,6 +864,9 @@ SYSCALL_DEFINE3(writev, unsigned long, fd, const struct iovec __user *, vec,
 	struct file *file;
 	ssize_t ret = -EBADF;
 	int fput_needed;
+
+	if (scribe_resource_lock_next_file())
+		return -ENOMEM;
 
 	file = fget_light(fd, &fput_needed);
 	if (file) {
@@ -875,6 +899,9 @@ SYSCALL_DEFINE5(preadv, unsigned long, fd, const struct iovec __user *, vec,
 	if (pos < 0)
 		return -EINVAL;
 
+	if (scribe_resource_lock_next_file())
+		return -ENOMEM;
+
 	file = fget_light(fd, &fput_needed);
 	if (file) {
 		ret = -ESPIPE;
@@ -900,6 +927,9 @@ SYSCALL_DEFINE5(pwritev, unsigned long, fd, const struct iovec __user *, vec,
 	if (pos < 0)
 		return -EINVAL;
 
+	if (scribe_resource_lock_next_file())
+		return -ENOMEM;
+
 	file = fget_light(fd, &fput_needed);
 	if (file) {
 		ret = -ESPIPE;
@@ -922,6 +952,11 @@ static ssize_t do_sendfile(int out_fd, int in_fd, loff_t *ppos,
 	loff_t pos;
 	ssize_t retval;
 	int fput_needed_in, fput_needed_out, fl;
+
+	/*
+	 * FIXME Scribe: Lock the two file descriptor in the right order
+	 * (but what would be the right order ?)
+	 */
 
 	/*
 	 * Get input file, and verify that it is ok..
