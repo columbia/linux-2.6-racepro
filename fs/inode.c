@@ -195,6 +195,8 @@ int inode_init_always(struct super_block *sb, struct inode *inode)
 
 #ifdef CONFIG_SCRIBE
 	scribe_init_resource_container(&inode->i_scribe_resource);
+	scribe_init_resource_container(
+			&inode->i_scribe_resource_other_endpoint);
 #endif
 
 	return 0;

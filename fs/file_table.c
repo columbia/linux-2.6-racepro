@@ -133,6 +133,9 @@ struct file *get_empty_filp(void)
 	f->f_cred = get_cred(cred);
 	spin_lock_init(&f->f_lock);
 	eventpoll_init_file(f);
+#ifdef CONFIG_SCRIBE
+	scribe_init_resource(&f->scribe_resource, SCRIBE_RES_TYPE_FILE);
+#endif
 	/* f->f_version: 0 */
 	return f;
 
@@ -260,77 +263,6 @@ static void __fput(struct file *file)
 	mntput(mnt);
 }
 
-#ifdef CONFIG_SCRIBE
-static void scribe_pre_fget(struct files_struct *files, struct file ***slot)
-{
-	struct scribe_ps *scribe = current->scribe;
-	
-	*slot = NULL;
-
-	if (!is_scribed(scribe))
-		return;
-
-	if (scribe->files_to_lock) {
-		scribe->files_to_lock--;
-		*slot = &scribe->locked_files[scribe->files_to_unlock];
-
-		/*
-		 * We need to lock the files_struct while doing fcheck_files()
-		 * to guards against races with fd_install()
-		 */
-		scribe_resource_lock_files(files);
-	}
-}
-
-static void scribe_post_fget(struct files_struct *files, struct file *file,
-			     struct file ***slot)
-{
-	if (!*slot)
-		return;
-
-	if (file) {
-		scribe_resource_unlock(files);
-
-		**slot = file;
-		current->scribe->files_to_unlock++;
-		scribe_resource_lock_file(file);
-	} else
-		scribe_resource_unlock_discard(files);
-}
-
-void scribe_pre_fput(struct file *file)
-{
-	struct scribe_ps *scribe = current->scribe;
-	struct file *last;
-	int to_unlock;
-	int i;
-
-	if (!is_scribed(scribe))
-		return;
-
-	to_unlock = scribe->files_to_unlock;
-	if (!to_unlock)
-		return;
-
-	for (i = 0; i < to_unlock; i++) {
-		if (scribe->locked_files[i] != file)
-			continue;
-
-		last = scribe->locked_files[to_unlock-1];
-		scribe->locked_files[i] = last;
-		scribe->files_to_unlock--;
-		scribe_resource_unlock(file);
-	}
-}
-
-#else
-static inline void scribe_pre_fget(struct files_struct *files,
-				   struct file ***slot) {}
-static inline void scribe_post_fget(struct files_struct *files,
-				    struct file *file, struct file ***slot) {}
-static inline void scribe_pre_fput(struct file *file) {}
-#endif /* CONFIG_SCRIBE */
-
 void fput(struct file *file)
 {
 	scribe_pre_fput(file);
@@ -345,9 +277,9 @@ struct file *fget(unsigned int fd)
 {
 	struct file *file;
 	struct files_struct *files = current->files;
-	struct file **slot;
+	int lock_flags;
 
-	scribe_pre_fget(files, &slot);
+	scribe_pre_fget(files, &lock_flags);
 
 	rcu_read_lock();
 	file = fcheck_files(files, fd);
@@ -355,13 +287,13 @@ struct file *fget(unsigned int fd)
 		if (!atomic_long_inc_not_zero(&file->f_count)) {
 			/* File object ref couldn't be taken */
 			rcu_read_unlock();
-			scribe_post_fget(files, NULL, &slot);
+			scribe_post_fget(files, NULL, lock_flags);
 			return NULL;
 		}
 	}
 	rcu_read_unlock();
 
-	scribe_post_fget(files, file, &slot);
+	scribe_post_fget(files, file, lock_flags);
 
 	return file;
 }
@@ -379,9 +311,9 @@ struct file *fget_light(unsigned int fd, int *fput_needed)
 {
 	struct file *file;
 	struct files_struct *files = current->files;
-	struct file **slot;
+	int lock_flags;
 
-	scribe_pre_fget(files, &slot);
+	scribe_pre_fget(files, &lock_flags);
 
 	*fput_needed = 0;
 	if (likely((atomic_read(&files->count) == 1))) {
@@ -399,7 +331,7 @@ struct file *fget_light(unsigned int fd, int *fput_needed)
 		rcu_read_unlock();
 	}
 
-	scribe_post_fget(files, file, &slot);
+	scribe_post_fget(files, file, lock_flags);
 
 	return file;
 }

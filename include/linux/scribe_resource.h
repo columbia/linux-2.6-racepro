@@ -53,7 +53,8 @@ extern void scribe_init_resource_container(
 /* Types are also in scribe_api.h */
 #define SCRIBE_RES_TYPE_RESERVED	0
 #define SCRIBE_RES_TYPE_INODE		1
-#define SCRIBE_RES_TYPE_FILES		2
+#define SCRIBE_RES_TYPE_FILE		2
+#define SCRIBE_RES_TYPE_FILES_STRUCT	3
 #define SCRIBE_RES_TYPE_REGISTRATION_FLAG 0x80
 #define SCRIBE_RES_TYPE_REGISTRATION(type) \
 	((type) | SCRIBE_RES_TYPE_REGISTRATION_FLAG)

@@ -986,8 +986,8 @@ int init_scribe(struct task_struct *p, struct scribe_context *ctx)
 		goto err_exit_arch;
 
 	scribe_resource_init_cache(&scribe->res_cache);
-	scribe->files_to_lock = 0;
-	scribe->files_to_unlock = 0;
+	scribe->lock_next_file = 0;
+	scribe->locked_file = NULL;
 
 	scribe_get_context(ctx);
 

@@ -299,11 +299,15 @@ extern int scribe_stop(struct scribe_context *ctx);
 /* Resources */
 
 struct scribe_resource_cache {
-	struct scribe_resource_handle *hres;
+	/*
+	 * We need two pre-allocated hres because an inode can have two of
+	 * them (one for each end point of a pipe for instance).
+	 */
+	struct scribe_resource_handle *hres[2];
 	/*
 	 * We need at most 3 lock_regions pre allocated upfront:
-	 * in fd_install(): two for the open/close region on the
-	 * inode registration, and one for the files_struct
+	 * - in fd_install(): Two for the open/close region on the inode
+	 *   registration, and one for the files_struct.
 	 */
 	struct scribe_lock_region *lock_regions[3];
 };
@@ -314,18 +318,27 @@ extern void scribe_free_resource_context(struct scribe_resource_context *);
 extern void scribe_resource_init_cache(struct scribe_resource_cache *cache);
 extern void scribe_resource_exit_cache(struct scribe_resource_cache *cache);
 extern int scribe_resource_prepare(void);
-extern int scribe_resource_lock_next_file(void);
 
 #define SCRIBE_NOSYNC	0
 #define SCRIBE_SYNC	1
 extern void scribe_resource_open_file(struct file *file, int do_sync);
 extern void scribe_resource_close_file(struct file *file);
-extern void scribe_resource_lock_file_only(struct file *file);
-extern void scribe_resource_lock_file(struct file *file);
+extern void scribe_resource_lock_file_no_inode(struct file *file);
+extern void scribe_resource_lock_file_read(struct file *file);
+extern void scribe_resource_lock_file_write(struct file *file);
+
+extern int scribe_resource_lock_next_file_no_inode(void);
+extern int scribe_resource_lock_next_file_read(void);
+extern int scribe_resource_lock_next_file_write(void);
+extern void scribe_pre_fget(struct files_struct *files, int *lock_flags);
+extern void scribe_post_fget(struct files_struct *files, struct file *file,
+			     int lock_flags);
+extern void scribe_pre_fput(struct file *file);
 
 extern void scribe_resource_open_files(struct files_struct *files);
 extern void scribe_resource_close_files(struct files_struct *files);
-extern void scribe_resource_lock_files(struct files_struct *files);
+extern void scribe_resource_lock_files_read(struct files_struct *files);
+extern void scribe_resource_lock_files_write(struct files_struct *files);
 
 extern void scribe_resource_unlock(void *object);
 extern void scribe_resource_unlock_discard(void *object);
@@ -360,9 +373,8 @@ struct scribe_ps {
 
 	int waiting_for_serial;
 	struct scribe_resource_cache res_cache;
-	short files_to_lock;
-	short files_to_unlock;
-	struct file *locked_files[2];
+	int lock_next_file;
+	struct file *locked_file;
 
 	struct scribe_ps_arch arch;
 };

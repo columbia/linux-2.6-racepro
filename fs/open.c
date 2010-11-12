@@ -844,7 +844,7 @@ void put_unused_fd(unsigned int fd)
 {
 	struct files_struct *files = current->files;
 
-	scribe_resource_lock_files(files);
+	scribe_resource_lock_files_write(files);
 	spin_lock(&files->file_lock);
 	__put_unused_fd(files, fd);
 	spin_unlock(&files->file_lock);
@@ -872,7 +872,7 @@ void fd_install(unsigned int fd, struct file *file)
 
 	scribe_resource_open_file(file, SCRIBE_SYNC);
 
-	scribe_resource_lock_files(files);
+	scribe_resource_lock_files_write(files);
 	spin_lock(&files->file_lock);
 	fdt = files_fdtable(files);
 	BUG_ON(fdt->fd[fd] != NULL);
@@ -987,7 +987,7 @@ SYSCALL_DEFINE1(close, unsigned int, fd)
 		return -ENOMEM;
 
 	if (scribed)
-		scribe_resource_lock_files(files);
+		scribe_resource_lock_files_write(files);
 
 	spin_lock(&files->file_lock);
 	fdt = files_fdtable(files);

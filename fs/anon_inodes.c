@@ -172,6 +172,12 @@ int anon_inode_getfd(const char *name, const struct file_operations *fops,
 		error = PTR_ERR(file);
 		goto err_put_unused_fd;
 	}
+	/*
+	 * FIXME Scribe: we should not register for the inode here, because
+	 * it's not really used. Also all files operation made on the filp
+	 * should not take the inode lock because the inode is a dummy object
+	 * in that case.
+	 */
 	fd_install(fd, file);
 
 	return fd;

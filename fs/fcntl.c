@@ -30,7 +30,7 @@ void set_close_on_exec(unsigned int fd, int flag)
 {
 	struct files_struct *files = current->files;
 	struct fdtable *fdt;
-	scribe_resource_lock_files(files);
+	scribe_resource_lock_files_write(files);
 	spin_lock(&files->file_lock);
 	fdt = files_fdtable(files);
 	if (flag)
@@ -46,7 +46,7 @@ static int get_close_on_exec(unsigned int fd)
 	struct files_struct *files = current->files;
 	struct fdtable *fdt;
 	int res;
-	scribe_resource_lock_files(files);
+	scribe_resource_lock_files_read(files);
 	rcu_read_lock();
 	fdt = files_fdtable(files);
 	res = FD_ISSET(fd, fdt->close_on_exec);
@@ -71,7 +71,7 @@ SYSCALL_DEFINE3(dup3, unsigned int, oldfd, unsigned int, newfd, int, flags)
 	if (scribe_resource_prepare())
 		return -ENOMEM;
 
-	scribe_resource_lock_files(files);
+	scribe_resource_lock_files_write(files);
 
 	spin_lock(&files->file_lock);
 	err = expand_files(files, newfd);
@@ -378,6 +378,11 @@ static long do_fcntl(int fd, unsigned int cmd, unsigned long arg,
 		err = alloc_fd(arg, cmd == F_DUPFD_CLOEXEC ? O_CLOEXEC : 0);
 		if (err >= 0) {
 			get_file(filp);
+			/*
+			 * FIXME fd_install() will perform with SCRIBE_SYNC,
+			 * we should have SCRIBE_NOSYNC because it's a dup
+			 * (so there is no risk of open/close races)
+			 */
 			fd_install(err, filp);
 		}
 		break;
@@ -389,25 +394,18 @@ static long do_fcntl(int fd, unsigned int cmd, unsigned long arg,
 		set_close_on_exec(fd, arg & FD_CLOEXEC);
 		break;
 	default:
-		goto cmd_with_lock;
+		goto cmd_with_lock_no_inode;
 	}
 	return err;
 
-cmd_with_lock:
-	scribe_resource_lock_file_only(filp);
+cmd_with_lock_no_inode:
+	scribe_resource_lock_file_no_inode(filp);
 	switch (cmd) {
 	case F_GETFL:
 		err = filp->f_flags;
 		break;
 	case F_SETFL:
 		err = setfl(fd, filp, arg);
-		break;
-	case F_GETLK:
-		err = fcntl_getlk(filp, (struct flock __user *) arg);
-		break;
-	case F_SETLK:
-	case F_SETLKW:
-		err = fcntl_setlk(fd, filp, cmd, (struct flock __user *) arg);
 		break;
 	case F_GETOWN:
 		/*
@@ -440,6 +438,24 @@ cmd_with_lock:
 		err = 0;
 		filp->f_owner.signum = arg;
 		break;
+	default:
+		goto cmd_with_lock_inode;
+	}
+	goto unlock;
+
+cmd_with_lock_inode:
+	/* FIXME This is a little inefficient... */
+	scribe_resource_unlock_discard(filp);
+	scribe_resource_lock_file_write(filp);
+
+	switch (cmd) {
+	case F_GETLK:
+		err = fcntl_getlk(filp, (struct flock __user *) arg);
+		break;
+	case F_SETLK:
+	case F_SETLKW:
+		err = fcntl_setlk(fd, filp, cmd, (struct flock __user *) arg);
+		break;
 	case F_GETLEASE:
 		err = fcntl_getlease(filp);
 		break;
@@ -457,6 +473,7 @@ cmd_with_lock:
 		break;
 	}
 
+unlock:
 	/* F_GETOWN can return negative values on success */
 	scribe_resource_unlock_discard_err(filp,
 					   cmd == F_GETOWN ? 0 : err);
