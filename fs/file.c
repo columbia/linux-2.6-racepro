@@ -496,7 +496,7 @@ repeat:
 
 out:
 	spin_unlock(&files->file_lock);
-	scribe_resource_unlock_discard_err(files, error);
+	scribe_resource_unlock_err(files, error);
 
 	/* We must refill the cache for the next fd_install() */
 	if (scribe_resource_prepare()) {

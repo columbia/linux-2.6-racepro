@@ -475,8 +475,7 @@ cmd_with_lock_inode:
 
 unlock:
 	/* F_GETOWN can return negative values on success */
-	scribe_resource_unlock_discard_err(filp,
-					   cmd == F_GETOWN ? 0 : err);
+	scribe_resource_unlock_err(filp, cmd == F_GETOWN ? 0 : err);
 	return err;
 }
 

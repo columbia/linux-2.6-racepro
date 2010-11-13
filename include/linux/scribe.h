@@ -341,7 +341,7 @@ extern void scribe_resource_lock_files_write(struct files_struct *files);
 
 extern void scribe_resource_unlock(void *object);
 extern void scribe_resource_unlock_discard(void *object);
-extern void scribe_resource_unlock_discard_err(void *object, int err);
+extern void scribe_resource_unlock_err(void *object, int err);
 extern void scribe_resource_assert_locked(void *object);
 
 

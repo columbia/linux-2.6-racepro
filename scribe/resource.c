@@ -583,7 +583,7 @@ static inline struct inode *file_inode(struct file *file)
 	return file->f_path.dentry->d_inode;
 }
 
-void scribe_resource_unlock_discard_err(void *object, int err)
+void scribe_resource_unlock_err(void *object, int err)
 {
 	struct scribe_ps *scribe = current->scribe;
 	struct scribe_lock_region *lock_region;
@@ -597,7 +597,7 @@ void scribe_resource_unlock_discard_err(void *object, int err)
 
 	if (lock_region->flags & (SCRIBE_INODE_READ | SCRIBE_INODE_WRITE)) {
 		file = object;
-		scribe_resource_unlock_discard_err(file_inode(file), err);
+		scribe_resource_unlock_err(file_inode(file), err);
 	}
 
 	if (likely(err >= 0))
@@ -608,12 +608,12 @@ void scribe_resource_unlock_discard_err(void *object, int err)
 
 void scribe_resource_unlock(void *object)
 {
-	scribe_resource_unlock_discard_err(object, 0);
+	scribe_resource_unlock_err(object, 0);
 }
 
 void scribe_resource_unlock_discard(void *object)
 {
-	scribe_resource_unlock_discard_err(object, -1);
+	scribe_resource_unlock_err(object, -1);
 }
 
 void scribe_resource_assert_locked(void *object)
