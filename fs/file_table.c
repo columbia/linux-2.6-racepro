@@ -134,7 +134,7 @@ struct file *get_empty_filp(void)
 	spin_lock_init(&f->f_lock);
 	eventpoll_init_file(f);
 #ifdef CONFIG_SCRIBE
-	scribe_init_resource(&f->scribe_resource, SCRIBE_RES_TYPE_FILE);
+	f->scribe_context = NULL;
 #endif
 	/* f->f_version: 0 */
 	return f;

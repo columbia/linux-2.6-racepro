@@ -299,11 +299,7 @@ extern int scribe_stop(struct scribe_context *ctx);
 /* Resources */
 
 struct scribe_resource_cache {
-	/*
-	 * We need two pre-allocated hres because an inode can have two of
-	 * them (one for each end point of a pipe for instance).
-	 */
-	struct scribe_resource_handle *hres[2];
+	struct scribe_resource_handle *hres;
 	/*
 	 * We need at most 3 lock_regions pre allocated upfront:
 	 * - in fd_install(): Two for the open/close region on the inode

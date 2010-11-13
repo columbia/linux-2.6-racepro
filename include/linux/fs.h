@@ -794,7 +794,6 @@ struct inode {
 
 #ifdef CONFIG_SCRIBE
 	struct scribe_resource_container i_scribe_resource;
-	struct scribe_resource_container i_scribe_resource_other_endpoint;
 #endif
 };
 
@@ -956,6 +955,7 @@ struct file {
 #endif
 #ifdef CONFIG_SCRIBE
 	struct scribe_resource scribe_resource;
+	struct scribe_resource_context *scribe_context;
 #endif
 };
 extern spinlock_t files_lock;
