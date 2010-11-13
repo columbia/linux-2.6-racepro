@@ -295,8 +295,6 @@ static struct scribe_resource_handle *get_resource_handle(
 {
 	struct scribe_resource_handle *hres;
 
-	BUG_ON(!*pre_alloc_hres);
-
 	rcu_read_lock();
 	hres = __get_resource_handle(ctx, container);
 	rcu_read_unlock();
@@ -312,6 +310,7 @@ static struct scribe_resource_handle *get_resource_handle(
 
 	hres = *pre_alloc_hres;
 	*pre_alloc_hres = NULL;
+	BUG_ON(!hres);
 
 	init_resource_handle(ctx, hres, type);
 	atomic_set(&hres->res.ref_cnt, 1);
