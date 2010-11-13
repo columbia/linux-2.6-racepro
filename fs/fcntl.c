@@ -444,9 +444,7 @@ cmd_with_lock_no_inode:
 	goto unlock;
 
 cmd_with_lock_inode:
-	/* FIXME This is a little inefficient... */
-	scribe_resource_unlock_discard(filp);
-	scribe_resource_lock_file_write(filp);
+	scribe_resource_lock_inode_write(filp->f_path.dentry->d_inode);
 
 	switch (cmd) {
 	case F_GETLK:
@@ -472,6 +470,8 @@ cmd_with_lock_inode:
 	default:
 		break;
 	}
+
+	scribe_resource_unlock(filp->f_path.dentry->d_inode);
 
 unlock:
 	/* F_GETOWN can return negative values on success */

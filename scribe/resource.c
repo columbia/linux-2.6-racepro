@@ -821,6 +821,27 @@ void scribe_resource_lock_file_write(struct file *file)
 	__scribe_resource_lock_file(file, SCRIBE_WRITE | SCRIBE_INODE_WRITE);
 }
 
+static void __scribe_resource_lock_inode(struct inode *inode, int flags)
+{
+	struct scribe_ps *scribe = current->scribe;
+
+	if (!should_handle_resources(scribe))
+		return;
+
+	__resource_lock_object_handle(scribe, inode,
+				      &inode->i_scribe_resource, flags);
+}
+
+void scribe_resource_lock_inode_read(struct inode *inode)
+{
+	__scribe_resource_lock_inode(inode, SCRIBE_READ);
+}
+
+void scribe_resource_lock_inode_write(struct inode *inode)
+{
+	__scribe_resource_lock_inode(inode, SCRIBE_WRITE);
+}
+
 static int __scribe_resource_lock_next_file(int flags)
 {
 	struct scribe_ps *scribe = current->scribe;

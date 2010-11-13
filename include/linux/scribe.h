@@ -323,6 +323,9 @@ extern void scribe_resource_lock_file_no_inode(struct file *file);
 extern void scribe_resource_lock_file_read(struct file *file);
 extern void scribe_resource_lock_file_write(struct file *file);
 
+extern void scribe_resource_lock_inode_read(struct inode *inode);
+extern void scribe_resource_lock_inode_write(struct inode *inode);
+
 extern int scribe_resource_lock_next_file_no_inode(void);
 extern int scribe_resource_lock_next_file_read(void);
 extern int scribe_resource_lock_next_file_write(void);
