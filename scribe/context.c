@@ -394,7 +394,7 @@ void scribe_attach(struct scribe_ps *scribe)
 
 	scribe_attach_arch(scribe);
 
-	scribe_resource_open_files(scribe->p->files);
+	scribe_open_files(scribe->p->files);
 }
 
 void scribe_detach(struct scribe_ps *scribe)
@@ -406,7 +406,7 @@ void scribe_detach(struct scribe_ps *scribe)
 
 	scribe_detach_arch(scribe);
 
-	scribe_resource_close_files(scribe->p->files);
+	scribe_close_files(scribe->p->files);
 
 	if (scribe->prepared_data_event) {
 		WARN(1, "prepared_data_event present\n");

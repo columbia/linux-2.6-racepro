@@ -172,7 +172,7 @@ SYSCALL_DEFINE3(lseek, unsigned int, fd, off_t, offset, unsigned int, origin)
 	struct file * file;
 	int fput_needed;
 
-	if (scribe_resource_lock_next_file_no_inode())
+	if (scribe_track_next_file_no_inode())
 		return -ENOMEM;
 
 	retval = -EBADF;
@@ -202,7 +202,7 @@ SYSCALL_DEFINE5(llseek, unsigned int, fd, unsigned long, offset_high,
 	loff_t offset;
 	int fput_needed;
 
-	if (scribe_resource_lock_next_file_no_inode())
+	if (scribe_track_next_file_no_inode())
 		return -ENOMEM;
 
 	retval = -EBADF;
@@ -508,7 +508,7 @@ SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
 	ssize_t ret = -EBADF;
 	int fput_needed;
 
-	if (scribe_resource_lock_next_file_read())
+	if (scribe_track_next_file_read())
 		return -ENOMEM;
 
 	file = fget_light(fd, &fput_needed);
@@ -529,7 +529,7 @@ SYSCALL_DEFINE3(write, unsigned int, fd, const char __user *, buf,
 	ssize_t ret = -EBADF;
 	int fput_needed;
 
-	if (scribe_resource_lock_next_file_write())
+	if (scribe_track_next_file_write())
 		return -ENOMEM;
 
 	file = fget_light(fd, &fput_needed);
@@ -553,7 +553,7 @@ SYSCALL_DEFINE(pread64)(unsigned int fd, char __user *buf,
 	if (pos < 0)
 		return -EINVAL;
 
-	if (scribe_resource_lock_next_file_read())
+	if (scribe_track_next_file_read())
 		return -ENOMEM;
 
 	file = fget_light(fd, &fput_needed);
@@ -585,7 +585,7 @@ SYSCALL_DEFINE(pwrite64)(unsigned int fd, const char __user *buf,
 	if (pos < 0)
 		return -EINVAL;
 
-	if (scribe_resource_lock_next_file_write())
+	if (scribe_track_next_file_write())
 		return -ENOMEM;
 
 	file = fget_light(fd, &fput_needed);
@@ -841,7 +841,7 @@ SYSCALL_DEFINE3(readv, unsigned long, fd, const struct iovec __user *, vec,
 	ssize_t ret = -EBADF;
 	int fput_needed;
 
-	if (scribe_resource_lock_next_file_read())
+	if (scribe_track_next_file_read())
 		return -ENOMEM;
 
 	file = fget_light(fd, &fput_needed);
@@ -865,7 +865,7 @@ SYSCALL_DEFINE3(writev, unsigned long, fd, const struct iovec __user *, vec,
 	ssize_t ret = -EBADF;
 	int fput_needed;
 
-	if (scribe_resource_lock_next_file_write())
+	if (scribe_track_next_file_write())
 		return -ENOMEM;
 
 	file = fget_light(fd, &fput_needed);
@@ -899,7 +899,7 @@ SYSCALL_DEFINE5(preadv, unsigned long, fd, const struct iovec __user *, vec,
 	if (pos < 0)
 		return -EINVAL;
 
-	if (scribe_resource_lock_next_file_read())
+	if (scribe_track_next_file_read())
 		return -ENOMEM;
 
 	file = fget_light(fd, &fput_needed);
@@ -927,7 +927,7 @@ SYSCALL_DEFINE5(pwritev, unsigned long, fd, const struct iovec __user *, vec,
 	if (pos < 0)
 		return -EINVAL;
 
-	if (scribe_resource_lock_next_file_write())
+	if (scribe_track_next_file_write())
 		return -ENOMEM;
 
 	file = fget_light(fd, &fput_needed);

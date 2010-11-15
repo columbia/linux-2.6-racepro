@@ -17,16 +17,8 @@
 /*
  * A few notes:
  * - scribe_resource_prepare() must be called prior to any resource lock/open
- *   operations. get_unused_fd() will successfully return only with the cache
- *   refilled (so that fd_install() can proceed).
- *
- * - The files_struct lock will be taken in call get_unused_fd(), and
- *   put_unused_fd(). This ensure consistency on file descriptors value when
- *   concurrent open/close happens. You have to call scribe_resource_prepare()
- *   before calling those functions.
- *
- * - FIXME fget() needs to take the files_struct lock to guard with
- *   fd_install() and "fd_uninstall()".
+ *   operations with the exception that get_unused_fd() will successfully
+ *   return only with the cache refilled (so that fd_install() can proceed).
  *
  * - The files_struct lock must be taken as well to access any close_on_exec
  *   flags.
@@ -34,7 +26,22 @@
  * - The filp lock must be taken to access any of the file related data.
  *
  * - The filp+inode lock must be taken to access any of the file related data
- *   and/or inode related data.
+ *   and/or inode related data, with the exception of pipes
+ *   (inode_need_explicit_locking() returns false in that case).
+ *
+ * - For pipes, it's quite convenient to have two different resources for each
+ *   endpoint:
+ *   - Reduced overhead (decoupling the readers/writers)
+ *   - It Solve the deadlocking issue when the writer wants to send data to the
+ *     pipe while the pipe buffer is full (the reader will not be able to
+ *     consume the data since the writer has the resource lock).
+ *   Instead of having two resources per inode, we are just using the filp
+ *   resource to synchronize each end point (and don't need to take the inode
+ *   resource since no other file pointer can exist on the pipe inode).
+ *   (In rare cases we may take the inode resource lock -- see in fs/fcntl.c)
+ *
+ * - TODO use a rw_semaphore instead of a mutex to synchronize accesses (the
+ *   resource API already use read/write version, but it does the same thing).
  */
 
 #define INODE_HASH_BITS 8
@@ -582,7 +589,7 @@ static inline struct inode *file_inode(struct file *file)
 	return file->f_path.dentry->d_inode;
 }
 
-void scribe_resource_unlock_err(void *object, int err)
+void scribe_unlock_err(void *object, int err)
 {
 	struct scribe_ps *scribe = current->scribe;
 	struct scribe_lock_region *lock_region;
@@ -596,7 +603,7 @@ void scribe_resource_unlock_err(void *object, int err)
 
 	if (lock_region->flags & (SCRIBE_INODE_READ | SCRIBE_INODE_WRITE)) {
 		file = object;
-		scribe_resource_unlock_err(file_inode(file), err);
+		scribe_unlock_err(file_inode(file), err);
 	}
 
 	if (likely(err >= 0))
@@ -605,17 +612,17 @@ void scribe_resource_unlock_err(void *object, int err)
 		resource_unlock_discard(lock_region);
 }
 
-void scribe_resource_unlock(void *object)
+void scribe_unlock(void *object)
 {
-	scribe_resource_unlock_err(object, 0);
+	scribe_unlock_err(object, 0);
 }
 
-void scribe_resource_unlock_discard(void *object)
+void scribe_unlock_discard(void *object)
 {
-	scribe_resource_unlock_err(object, -1);
+	scribe_unlock_err(object, -1);
 }
 
-void scribe_resource_assert_locked(void *object)
+void scribe_assert_locked(void *object)
 {
 	struct scribe_ps *scribe = current->scribe;
 
@@ -729,7 +736,7 @@ static inline int inode_need_explicit_locking(struct inode *inode)
 	return S_ISFIFO(mode) || S_ISSOCK(mode);
 }
 
-void scribe_resource_open_file(struct file *file, int do_sync)
+void scribe_open_file(struct file *file, int do_sync)
 {
 	struct scribe_ps *scribe = current->scribe;
 	struct inode *inode;
@@ -761,7 +768,7 @@ void scribe_resource_open_file(struct file *file, int do_sync)
 		      do_sync_open, do_sync_close, &scribe->res_cache);
 }
 
-void scribe_resource_close_file(struct file *file)
+void scribe_close_file(struct file *file)
 {
 	int do_sync;
 	struct inode *inode;
@@ -780,7 +787,7 @@ void scribe_resource_close_file(struct file *file)
 		file->scribe_context = NULL;
 }
 
-static void __scribe_resource_lock_file(struct file *file, int flags)
+static void __scribe_lock_file(struct file *file, int flags)
 {
 	struct scribe_ps *scribe = current->scribe;
 	struct inode *inode;
@@ -805,22 +812,22 @@ static void __scribe_resource_lock_file(struct file *file, int flags)
 				      &inode->i_scribe_resource, flags);
 }
 
-void scribe_resource_lock_file_no_inode(struct file *file)
+void scribe_lock_file_no_inode(struct file *file)
 {
-	__scribe_resource_lock_file(file, SCRIBE_WRITE);
+	__scribe_lock_file(file, SCRIBE_WRITE);
 }
 
-void scribe_resource_lock_file_read(struct file *file)
+void scribe_lock_file_read(struct file *file)
 {
-	__scribe_resource_lock_file(file, SCRIBE_WRITE | SCRIBE_INODE_READ);
+	__scribe_lock_file(file, SCRIBE_WRITE | SCRIBE_INODE_READ);
 }
 
-void scribe_resource_lock_file_write(struct file *file)
+void scribe_lock_file_write(struct file *file)
 {
-	__scribe_resource_lock_file(file, SCRIBE_WRITE | SCRIBE_INODE_WRITE);
+	__scribe_lock_file(file, SCRIBE_WRITE | SCRIBE_INODE_WRITE);
 }
 
-static void __scribe_resource_lock_inode(struct inode *inode, int flags)
+static void __scribe_lock_inode(struct inode *inode, int flags)
 {
 	struct scribe_ps *scribe = current->scribe;
 
@@ -831,17 +838,17 @@ static void __scribe_resource_lock_inode(struct inode *inode, int flags)
 				      &inode->i_scribe_resource, flags);
 }
 
-void scribe_resource_lock_inode_read(struct inode *inode)
+void scribe_lock_inode_read(struct inode *inode)
 {
-	__scribe_resource_lock_inode(inode, SCRIBE_READ);
+	__scribe_lock_inode(inode, SCRIBE_READ);
 }
 
-void scribe_resource_lock_inode_write(struct inode *inode)
+void scribe_lock_inode_write(struct inode *inode)
 {
-	__scribe_resource_lock_inode(inode, SCRIBE_WRITE);
+	__scribe_lock_inode(inode, SCRIBE_WRITE);
 }
 
-static int __scribe_resource_lock_next_file(int flags)
+static int __scribe_track_next_file(int flags)
 {
 	struct scribe_ps *scribe = current->scribe;
 
@@ -855,21 +862,19 @@ static int __scribe_resource_lock_next_file(int flags)
 	return 0;
 }
 
-int scribe_resource_lock_next_file_no_inode(void)
+int scribe_track_next_file_no_inode(void)
 {
-	return __scribe_resource_lock_next_file(SCRIBE_WRITE);
+	return __scribe_track_next_file(SCRIBE_WRITE);
 }
 
-int scribe_resource_lock_next_file_read(void)
+int scribe_track_next_file_read(void)
 {
-	return __scribe_resource_lock_next_file(SCRIBE_WRITE |
-						SCRIBE_INODE_READ);
+	return __scribe_track_next_file(SCRIBE_WRITE | SCRIBE_INODE_READ);
 }
 
-int scribe_resource_lock_next_file_write(void)
+int scribe_track_next_file_write(void)
 {
-	return __scribe_resource_lock_next_file(SCRIBE_WRITE |
-						SCRIBE_INODE_WRITE);
+	return __scribe_track_next_file(SCRIBE_WRITE | SCRIBE_INODE_WRITE);
 }
 
 void scribe_pre_fget(struct files_struct *files, int *lock_flags)
@@ -889,7 +894,7 @@ void scribe_pre_fget(struct files_struct *files, int *lock_flags)
 		 * We need to lock the files_struct while doing fcheck_files()
 		 * to guards against races with fd_install()
 		 */
-		scribe_resource_lock_files_read(files);
+		scribe_lock_files_read(files);
 	}
 }
 
@@ -900,12 +905,12 @@ void scribe_post_fget(struct files_struct *files, struct file *file,
 		return;
 
 	if (file) {
-		scribe_resource_unlock(files);
+		scribe_unlock(files);
 
 		current->scribe->locked_file = file;
-		__scribe_resource_lock_file(file, lock_flags);
+		__scribe_lock_file(file, lock_flags);
 	} else
-		scribe_resource_unlock_discard(files);
+		scribe_unlock_discard(files);
 }
 
 void scribe_pre_fput(struct file *file)
@@ -916,7 +921,7 @@ void scribe_pre_fput(struct file *file)
 		return;
 
 	if (scribe->locked_file) {
-		scribe_resource_unlock(scribe->locked_file);
+		scribe_unlock(scribe->locked_file);
 		scribe->locked_file = NULL;
 	}
 }
@@ -928,7 +933,7 @@ void scribe_pre_fput(struct file *file)
 			       atomic_read(&(files)->count) == 1 || \
 			       rcu_my_thread_group_empty()))
 
-void scribe_resource_open_files(struct files_struct *files)
+void scribe_open_files(struct files_struct *files)
 {
 	struct scribe_resource *files_res = &files->scribe_resource;
 	struct file *file;
@@ -979,13 +984,13 @@ void scribe_resource_open_files(struct files_struct *files)
 		 * - Or those inodes are already registered, so there is no
 		 *   race condition risk.
 		 */
-		scribe_resource_open_file(file, SCRIBE_NOSYNC);
+		scribe_open_file(file, SCRIBE_NOSYNC);
 	}
 
 	mutex_unlock(&files_res->lock);
 }
 
-void scribe_resource_close_files(struct files_struct *files)
+void scribe_close_files(struct files_struct *files)
 {
 	struct scribe_resource *files_res = &files->scribe_resource;
 	struct file *file;
@@ -1006,16 +1011,16 @@ void scribe_resource_close_files(struct files_struct *files)
 		if (!file)
 			continue;
 
-		scribe_resource_close_file(file);
+		scribe_close_file(file);
 	}
 }
 
-void scribe_resource_lock_files_read(struct files_struct *files)
+void scribe_lock_files_read(struct files_struct *files)
 {
 	resource_lock_object(files, &files->scribe_resource, SCRIBE_READ);
 }
 
-void scribe_resource_lock_files_write(struct files_struct *files)
+void scribe_lock_files_write(struct files_struct *files)
 {
 	resource_lock_object(files, &files->scribe_resource, SCRIBE_WRITE);
 }

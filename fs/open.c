@@ -844,11 +844,11 @@ void put_unused_fd(unsigned int fd)
 {
 	struct files_struct *files = current->files;
 
-	scribe_resource_lock_files_write(files);
+	scribe_lock_files_write(files);
 	spin_lock(&files->file_lock);
 	__put_unused_fd(files, fd);
 	spin_unlock(&files->file_lock);
-	scribe_resource_unlock(files);
+	scribe_unlock(files);
 }
 
 EXPORT_SYMBOL(put_unused_fd);
@@ -870,15 +870,15 @@ void fd_install(unsigned int fd, struct file *file)
 	struct files_struct *files = current->files;
 	struct fdtable *fdt;
 
-	scribe_resource_open_file(file, SCRIBE_SYNC);
+	scribe_open_file(file, SCRIBE_SYNC);
 
-	scribe_resource_lock_files_write(files);
+	scribe_lock_files_write(files);
 	spin_lock(&files->file_lock);
 	fdt = files_fdtable(files);
 	BUG_ON(fdt->fd[fd] != NULL);
 	rcu_assign_pointer(fdt->fd[fd], file);
 	spin_unlock(&files->file_lock);
-	scribe_resource_unlock(files);
+	scribe_unlock(files);
 }
 
 EXPORT_SYMBOL(fd_install);
@@ -987,7 +987,7 @@ SYSCALL_DEFINE1(close, unsigned int, fd)
 		return -ENOMEM;
 
 	if (scribed)
-		scribe_resource_lock_files_write(files);
+		scribe_lock_files_write(files);
 
 	spin_lock(&files->file_lock);
 	fdt = files_fdtable(files);
@@ -1002,8 +1002,8 @@ SYSCALL_DEFINE1(close, unsigned int, fd)
 	spin_unlock(&files->file_lock);
 
 	if (scribed) {
-		scribe_resource_unlock(files);
-		scribe_resource_close_file(filp);
+		scribe_unlock(files);
+		scribe_close_file(filp);
 	}
 
 	retval = filp_close(filp, files);
@@ -1025,7 +1025,7 @@ SYSCALL_DEFINE1(close, unsigned int, fd)
 out_unlock:
 	spin_unlock(&files->file_lock);
 	if (scribed)
-		scribe_resource_unlock_discard(files);
+		scribe_unlock_discard(files);
 	return -EBADF;
 }
 EXPORT_SYMBOL(sys_close);

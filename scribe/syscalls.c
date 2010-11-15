@@ -55,6 +55,11 @@ void scribe_enter_syscall(struct pt_regs *regs)
 
 		scribe->orig_ret = event->ret;
 		scribe_free_event(event);
+
+		/*
+		 * FIXME Do something about non deterministic errors such as
+		 * -ENOMEM.
+		 */
 	}
 	scribe->in_syscall = 1;
 	scribe_data_push_flags(0);

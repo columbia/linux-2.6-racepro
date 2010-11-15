@@ -317,32 +317,32 @@ extern int scribe_resource_prepare(void);
 
 #define SCRIBE_NOSYNC	0
 #define SCRIBE_SYNC	1
-extern void scribe_resource_open_file(struct file *file, int do_sync);
-extern void scribe_resource_close_file(struct file *file);
-extern void scribe_resource_lock_file_no_inode(struct file *file);
-extern void scribe_resource_lock_file_read(struct file *file);
-extern void scribe_resource_lock_file_write(struct file *file);
+extern void scribe_open_file(struct file *file, int do_sync);
+extern void scribe_close_file(struct file *file);
+extern void scribe_lock_file_no_inode(struct file *file);
+extern void scribe_lock_file_read(struct file *file);
+extern void scribe_lock_file_write(struct file *file);
 
-extern void scribe_resource_lock_inode_read(struct inode *inode);
-extern void scribe_resource_lock_inode_write(struct inode *inode);
+extern void scribe_lock_inode_read(struct inode *inode);
+extern void scribe_lock_inode_write(struct inode *inode);
 
-extern int scribe_resource_lock_next_file_no_inode(void);
-extern int scribe_resource_lock_next_file_read(void);
-extern int scribe_resource_lock_next_file_write(void);
+extern int scribe_track_next_file_no_inode(void);
+extern int scribe_track_next_file_read(void);
+extern int scribe_track_next_file_write(void);
 extern void scribe_pre_fget(struct files_struct *files, int *lock_flags);
 extern void scribe_post_fget(struct files_struct *files, struct file *file,
 			     int lock_flags);
 extern void scribe_pre_fput(struct file *file);
 
-extern void scribe_resource_open_files(struct files_struct *files);
-extern void scribe_resource_close_files(struct files_struct *files);
-extern void scribe_resource_lock_files_read(struct files_struct *files);
-extern void scribe_resource_lock_files_write(struct files_struct *files);
+extern void scribe_open_files(struct files_struct *files);
+extern void scribe_close_files(struct files_struct *files);
+extern void scribe_lock_files_read(struct files_struct *files);
+extern void scribe_lock_files_write(struct files_struct *files);
 
-extern void scribe_resource_unlock(void *object);
-extern void scribe_resource_unlock_discard(void *object);
-extern void scribe_resource_unlock_err(void *object, int err);
-extern void scribe_resource_assert_locked(void *object);
+extern void scribe_unlock(void *object);
+extern void scribe_unlock_discard(void *object);
+extern void scribe_unlock_err(void *object, int err);
+extern void scribe_assert_locked(void *object);
 
 
 /* Process */
@@ -499,6 +499,8 @@ extern void scribe_exit_syscall(struct pt_regs *regs);
 extern int is_kernel_copy(void);
 
 #else /* CONFIG_SCRIBE */
+
+/* FIXME Make the kernel compile with !CONFIG_SCRIBE ... */
 
 #define is_ps_scribed(t)  0
 #define is_ps_recording(t) 0

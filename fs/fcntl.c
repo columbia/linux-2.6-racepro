@@ -30,7 +30,7 @@ void set_close_on_exec(unsigned int fd, int flag)
 {
 	struct files_struct *files = current->files;
 	struct fdtable *fdt;
-	scribe_resource_lock_files_write(files);
+	scribe_lock_files_write(files);
 	spin_lock(&files->file_lock);
 	fdt = files_fdtable(files);
 	if (flag)
@@ -38,7 +38,7 @@ void set_close_on_exec(unsigned int fd, int flag)
 	else
 		FD_CLR(fd, fdt->close_on_exec);
 	spin_unlock(&files->file_lock);
-	scribe_resource_unlock(files);
+	scribe_unlock(files);
 }
 
 static int get_close_on_exec(unsigned int fd)
@@ -46,12 +46,12 @@ static int get_close_on_exec(unsigned int fd)
 	struct files_struct *files = current->files;
 	struct fdtable *fdt;
 	int res;
-	scribe_resource_lock_files_read(files);
+	scribe_lock_files_read(files);
 	rcu_read_lock();
 	fdt = files_fdtable(files);
 	res = FD_ISSET(fd, fdt->close_on_exec);
 	rcu_read_unlock();
-	scribe_resource_unlock(files);
+	scribe_unlock(files);
 	return res;
 }
 
@@ -71,7 +71,7 @@ SYSCALL_DEFINE3(dup3, unsigned int, oldfd, unsigned int, newfd, int, flags)
 	if (scribe_resource_prepare())
 		return -ENOMEM;
 
-	scribe_resource_lock_files_write(files);
+	scribe_lock_files_write(files);
 
 	spin_lock(&files->file_lock);
 	err = expand_files(files, newfd);
@@ -111,13 +111,13 @@ SYSCALL_DEFINE3(dup3, unsigned int, oldfd, unsigned int, newfd, int, flags)
 	else
 		FD_CLR(newfd, fdt->close_on_exec);
 	spin_unlock(&files->file_lock);
-	scribe_resource_unlock(files);
+	scribe_unlock(files);
 
-	scribe_resource_open_file(file, SCRIBE_NOSYNC);
+	scribe_open_file(file, SCRIBE_NOSYNC);
 	fput(file);
 
 	if (tofree) {
-		scribe_resource_close_file(tofree);
+		scribe_close_file(tofree);
 		filp_close(tofree, files);
 	}
 
@@ -126,7 +126,7 @@ SYSCALL_DEFINE3(dup3, unsigned int, oldfd, unsigned int, newfd, int, flags)
 Ebadf:
 	err = -EBADF;
 out_unlock:
-	scribe_resource_unlock_discard(files);
+	scribe_unlock_discard(files);
 	spin_unlock(&files->file_lock);
 	return err;
 }
@@ -399,7 +399,7 @@ static long do_fcntl(int fd, unsigned int cmd, unsigned long arg,
 	return err;
 
 cmd_with_lock_no_inode:
-	scribe_resource_lock_file_no_inode(filp);
+	scribe_lock_file_no_inode(filp);
 	switch (cmd) {
 	case F_GETFL:
 		err = filp->f_flags;
@@ -444,7 +444,7 @@ cmd_with_lock_no_inode:
 	goto unlock;
 
 cmd_with_lock_inode:
-	scribe_resource_lock_inode_write(filp->f_path.dentry->d_inode);
+	scribe_lock_inode_write(filp->f_path.dentry->d_inode);
 
 	switch (cmd) {
 	case F_GETLK:
@@ -471,11 +471,11 @@ cmd_with_lock_inode:
 		break;
 	}
 
-	scribe_resource_unlock(filp->f_path.dentry->d_inode);
+	scribe_unlock(filp->f_path.dentry->d_inode);
 
 unlock:
 	/* F_GETOWN can return negative values on success */
-	scribe_resource_unlock_err(filp, cmd == F_GETOWN ? 0 : err);
+	scribe_unlock_err(filp, cmd == F_GETOWN ? 0 : err);
 	return err;
 }
 
