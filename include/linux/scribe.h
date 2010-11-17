@@ -377,6 +377,8 @@ struct scribe_ps {
 	struct file *locked_file;
 
 	struct scribe_ps_arch arch;
+
+	int in_signal_sync_point;
 };
 
 static inline int may_be_scribed(struct scribe_ps *scribe)
@@ -498,6 +500,11 @@ extern void scribe_backtrace_dump(struct scribe_backtrace *bt,
 extern void scribe_enter_syscall(struct pt_regs *regs);
 extern void scribe_exit_syscall(struct pt_regs *regs);
 extern int is_kernel_copy(void);
+
+struct siginfo;
+extern void scribe_signal_sync_point(struct pt_regs *regs);
+extern int scribe_can_deliver_signal(void);
+extern void scribe_delivering_signal(int signr, struct siginfo *info);
 
 #else /* CONFIG_SCRIBE */
 

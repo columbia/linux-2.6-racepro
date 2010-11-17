@@ -31,6 +31,8 @@ void scribe_enter_syscall(struct pt_regs *regs)
 	if (is_scribe_syscall(scribe->nr_syscall))
 		return;
 
+	scribe_signal_sync_point(regs);
+
 	__scribe_forbid_uaccess(scribe);
 
 	if (is_stopping(scribe)) {
@@ -56,9 +58,17 @@ void scribe_enter_syscall(struct pt_regs *regs)
 		scribe->orig_ret = event->ret;
 		scribe_free_event(event);
 
+		if (scribe->orig_ret == -EINTR ||
+		    scribe->orig_ret == -ERESTARTNOHAND ||
+		    scribe->orig_ret == -ERESTARTSYS ||
+		    scribe->orig_ret == -ERESTARTNOINTR ||
+		    scribe->orig_ret == -ERESTART_RESTARTBLOCK)
+			set_thread_flag(TIF_SIGPENDING);
+
 		/*
 		 * FIXME Do something about non deterministic errors such as
-		 * -ENOMEM.
+		 * -ENOMEM. We need to process any events that the syscall
+		 *  may have produced.
 		 */
 	}
 	scribe->in_syscall = 1;
@@ -113,6 +123,8 @@ void scribe_exit_syscall(struct pt_regs *regs)
 	}
 
 	scribe->in_syscall = 0;
+
+	scribe_signal_sync_point(regs);
 	return;
 
 bad:

@@ -28,6 +28,7 @@
 #include <linux/freezer.h>
 #include <linux/pid_namespace.h>
 #include <linux/nsproxy.h>
+#include <linux/scribe.h>
 #define CREATE_TRACE_POINTS
 #include <trace/events/signal.h>
 
@@ -1510,7 +1511,8 @@ int do_notify_parent(struct task_struct *tsk, int sig)
 		if (psig->action[SIGCHLD-1].sa.sa_handler == SIG_IGN)
 			sig = -1;
 	}
-	if (valid_signal(sig) && sig > 0)
+
+	if (valid_signal(sig) && sig > 0 && !is_ps_replaying(current))
 		__group_send_sig_info(sig, &info, tsk->parent);
 	__wake_up_parent(tsk, tsk->parent);
 	spin_unlock_irqrestore(&psig->siglock, flags);
@@ -1831,6 +1833,9 @@ int get_signal_to_deliver(siginfo_t *info, struct k_sigaction *return_ka,
 	struct signal_struct *signal = current->signal;
 	int signr;
 
+	if (!scribe_can_deliver_signal())
+		return 0;
+
 relock:
 	/*
 	 * We'll jump back here after any time we were stopped in TASK_STOPPED.
@@ -1966,6 +1971,7 @@ relock:
 
 		spin_unlock_irq(&sighand->siglock);
 
+		scribe_delivering_signal(signr, info);
 		/*
 		 * Anything else is fatal, maybe with a core dump.
 		 */
@@ -1992,6 +1998,8 @@ relock:
 		/* NOTREACHED */
 	}
 	spin_unlock_irq(&sighand->siglock);
+	if (signr)
+		scribe_delivering_signal(signr, info);
 	return signr;
 }
 
@@ -2313,7 +2321,11 @@ SYSCALL_DEFINE4(rt_sigtimedwait, const sigset_t __user *, uthese,
 
 SYSCALL_DEFINE2(kill, pid_t, pid, int, sig)
 {
+	struct scribe_ps *scribe = current->scribe;
 	struct siginfo info;
+
+	if (is_replaying(scribe))
+		return scribe->orig_ret;
 
 	info.si_signo = sig;
 	info.si_errno = 0;
@@ -2356,7 +2368,11 @@ do_send_specific(pid_t tgid, pid_t pid, int sig, struct siginfo *info)
 
 static int do_tkill(pid_t tgid, pid_t pid, int sig)
 {
+	struct scribe_ps *scribe = current->scribe;
 	struct siginfo info;
+
+	if (is_replaying(scribe))
+		return scribe->orig_ret;
 
 	info.si_signo = sig;
 	info.si_errno = 0;

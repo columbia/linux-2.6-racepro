@@ -985,6 +985,8 @@ int init_scribe(struct task_struct *p, struct scribe_context *ctx)
 	if (!scribe->pre_alloc_queue)
 		goto err_exit_arch;
 
+	scribe->in_signal_sync_point = 0;
+
 	scribe_resource_init_cache(&scribe->res_cache);
 	scribe->lock_next_file = 0;
 	scribe->locked_file = NULL;
