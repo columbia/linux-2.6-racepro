@@ -766,7 +766,7 @@ handle_signal(unsigned long sig, siginfo_t *info, struct k_sigaction *ka,
  * want to handle. Thus you cannot kill init even with a SIGKILL even by
  * mistake.
  */
-static void do_signal(struct pt_regs *regs)
+void do_signal(struct pt_regs *regs)
 {
 	struct k_sigaction ka;
 	siginfo_t info;
