@@ -23,12 +23,12 @@ void scribe_enter_syscall(struct pt_regs *regs)
 {
 	struct scribe_event_syscall *event;
 	struct scribe_ps *scribe = current->scribe;
-	int nr_syscall = syscall_get_nr(current, regs);
 
 	if (!is_scribed(scribe))
 		return;
 
-	if (is_scribe_syscall(nr_syscall))
+	scribe->nr_syscall = syscall_get_nr(current, regs);
+	if (is_scribe_syscall(scribe->nr_syscall))
 		return;
 
 	__scribe_forbid_uaccess(scribe);
@@ -50,7 +50,7 @@ void scribe_enter_syscall(struct pt_regs *regs)
 		if (IS_ERR(event))
 			return;
 
-		if (event->nr != nr_syscall)
+		if (event->nr != scribe->nr_syscall)
 			scribe_emergency_stop(scribe->ctx, ERR_PTR(-EDIVERGE));
 
 		scribe->orig_ret = event->ret;
@@ -70,12 +70,11 @@ void scribe_exit_syscall(struct pt_regs *regs)
 	struct scribe_ps *scribe = current->scribe;
 	struct scribe_event_syscall *event;
 	struct scribe_event_syscall_end *event_end;
-	int nr_syscall = syscall_get_nr(current, regs);
 
 	if (!is_scribed(scribe))
 		return;
 
-	if (is_scribe_syscall(nr_syscall))
+	if (is_scribe_syscall(scribe->nr_syscall))
 		return;
 
 	__scribe_allow_uaccess(scribe);
@@ -94,8 +93,9 @@ void scribe_exit_syscall(struct pt_regs *regs)
 		event = scribe_alloc_event(SCRIBE_EVENT_SYSCALL);
 		if (!event)
 			goto bad;
-		event->nr = nr_syscall;
+		event->nr = scribe->nr_syscall;
 		event->ret = syscall_get_return_value(current, regs);
+
 		scribe_queue_event_at(&scribe->syscall_ip, event);
 		scribe_commit_insert_point(&scribe->syscall_ip);
 
