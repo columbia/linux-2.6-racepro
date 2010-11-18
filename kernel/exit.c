@@ -1654,6 +1654,8 @@ static long do_wait(struct wait_opts *wo)
 	struct task_struct *tsk;
 	int retval;
 
+	scribe_data_non_det();
+
 	trace_sched_process_wait(wo->wo_pid);
 
 	init_waitqueue_func_entry(&wo->child_wait, child_wait_callback);
