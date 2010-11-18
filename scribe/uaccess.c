@@ -329,6 +329,11 @@ void scribe_data_push_flags(int flags)
 	scribe->data_flags = flags;
 }
 
+void scribe_data_det(void)
+{
+	scribe_data_push_flags(0);
+}
+
 void scribe_data_non_det(void)
 {
 	scribe_data_push_flags(SCRIBE_DATA_NON_DETERMINISTIC);

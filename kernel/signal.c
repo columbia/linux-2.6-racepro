@@ -2654,6 +2654,7 @@ SYSCALL_DEFINE4(rt_sigaction, int, sig,
 	ret = do_sigaction(sig, act ? &new_sa : NULL, oact ? &old_sa : NULL);
 
 	if (!ret && oact) {
+		scribe_data_non_det();
 		if (copy_to_user(oact, &old_sa.sa, sizeof(old_sa.sa)))
 			return -EFAULT;
 	}

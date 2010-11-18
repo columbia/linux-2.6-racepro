@@ -13,6 +13,7 @@
 
 static void scribe_do_signal(struct scribe_ps *scribe, struct pt_regs *regs)
 {
+	scribe_data_det();
 	scribe->in_signal_sync_point = 1;
 	while (test_thread_flag(TIF_SIGPENDING))
 		do_signal(regs);
@@ -28,7 +29,7 @@ void scribe_signal_sync_point(struct pt_regs *regs)
 	int ret;
 	int got_signal = 0;
 
-	if (!is_scribed(scribe))
+	if (!is_scribed(scribe) || !should_scribe_signals(scribe))
 		return;
 
 	if (is_recording(scribe)) {
@@ -100,7 +101,7 @@ int scribe_can_deliver_signal(void)
 {
 	struct scribe_ps *scribe = current->scribe;
 
-	if (!is_recording(scribe))
+	if (!is_recording(scribe) || !should_scribe_signals(scribe))
 		return 1;
 
 	/*
@@ -126,7 +127,7 @@ void scribe_delivering_signal(int signr, struct siginfo *info)
 	struct scribe_ps *scribe = current->scribe;
 	struct scribe_event_signal *event;
 
-	if (!is_recording(scribe))
+	if (!is_recording(scribe) || !should_scribe_signals(scribe))
 		return;
 
 	/*

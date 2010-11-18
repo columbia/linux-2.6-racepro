@@ -416,6 +416,10 @@ static inline int should_scribe_resources(struct scribe_ps *scribe)
 {
 	return scribe->flags & SCRIBE_PS_ENABLE_RESOURCE;
 }
+static inline int should_scribe_signals(struct scribe_ps *scribe)
+{
+	return scribe->flags & SCRIBE_PS_ENABLE_SIGNAL;
+}
 static inline int should_scribe_tsc(struct scribe_ps *scribe)
 {
 	return scribe->flags & SCRIBE_PS_ENABLE_TSC;
@@ -443,6 +447,7 @@ extern void scribe_prepare_data_event(size_t pre_alloc_size);
 extern void scribe_pre_schedule(void);
 extern void scribe_post_schedule(void);
 extern void scribe_data_push_flags(int flags);
+extern void scribe_data_det(void);
 extern void scribe_data_non_det(void);
 extern void scribe_data_dont_record(void);
 extern void scribe_data_ignore(void);
