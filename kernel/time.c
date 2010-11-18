@@ -37,6 +37,7 @@
 #include <linux/fs.h>
 #include <linux/math64.h>
 #include <linux/ptrace.h>
+#include <linux/scribe.h>
 
 #include <asm/uaccess.h>
 #include <asm/unistd.h>
@@ -61,7 +62,12 @@ EXPORT_SYMBOL(sys_tz);
  */
 SYSCALL_DEFINE1(time, time_t __user *, tloc)
 {
-	time_t i = get_seconds();
+	time_t i;
+
+	if (scribe_interpose_value(i, get_seconds())) {
+		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		return -ENOMEM;
+	}
 
 	if (tloc) {
 		if (put_user(i,tloc))
@@ -101,6 +107,7 @@ SYSCALL_DEFINE1(stime, time_t __user *, tptr)
 SYSCALL_DEFINE2(gettimeofday, struct timeval __user *, tv,
 		struct timezone __user *, tz)
 {
+	scribe_data_non_det();
 	if (likely(tv != NULL)) {
 		struct timeval ktv;
 		do_gettimeofday(&ktv);
@@ -215,6 +222,7 @@ SYSCALL_DEFINE1(adjtimex, struct timex __user *, txc_p)
 	if(copy_from_user(&txc, txc_p, sizeof(struct timex)))
 		return -EFAULT;
 	ret = do_adjtimex(&txc);
+	scribe_data_non_det();
 	return copy_to_user(txc_p, &txc, sizeof(struct timex)) ? -EFAULT : ret;
 }
 
