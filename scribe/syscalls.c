@@ -80,6 +80,7 @@ void scribe_exit_syscall(struct pt_regs *regs)
 	struct scribe_ps *scribe = current->scribe;
 	struct scribe_event_syscall *event;
 	struct scribe_event_syscall_end *event_end;
+	long ret;
 
 	if (!is_scribed(scribe))
 		return;
@@ -118,8 +119,11 @@ void scribe_exit_syscall(struct pt_regs *regs)
 		if (!IS_ERR(event_end))
 			scribe_free_event(event_end);
 
-		if (scribe->orig_ret != syscall_get_return_value(current, regs))
-			scribe_emergency_stop(scribe->ctx, ERR_PTR(-EDIVERGE));
+		ret = syscall_get_return_value(current, regs);
+		if (scribe->orig_ret != ret) {
+			scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_SYSCALL_RET,
+				       .ret = ret);
+		}
 	}
 
 	scribe->in_syscall = 0;
