@@ -477,7 +477,7 @@ pipe_write(struct kiocb *iocb, const struct iovec *_iov,
 	struct iovec *iov = (struct iovec *)_iov;
 	size_t total_len;
 	ssize_t chars;
-	int is_current_scribed;
+	int is_current_scribed, can_epipe;
 
 	total_len = iov_length(iov, nr_segs);
 	/* Null write succeeds. */
@@ -485,12 +485,26 @@ pipe_write(struct kiocb *iocb, const struct iovec *_iov,
 		return 0;
 
 	is_current_scribed = is_ps_scribed(current);
+
+	can_epipe = 1;
+	if (is_ps_replaying(current)) {
+		can_epipe = 0;
+		/*
+		 * If we failed during the recording, we have to fail during
+		 * the replay. But if we didn't, we must not fail.
+		 */
+		if (current->scribe->orig_ret == -EPIPE) {
+			send_sig(SIGPIPE, current, 0);
+			return -EPIPE;
+		}
+	}
+
 	do_wakeup = 0;
 	ret = 0;
 	mutex_lock(&inode->i_mutex);
 	pipe = inode->i_pipe;
 
-	if (!pipe->readers) {
+	if (!pipe->readers && can_epipe) {
 		send_sig(SIGPIPE, current, 0);
 		ret = -EPIPE;
 		goto out;
@@ -540,7 +554,7 @@ redo1:
 	for (;;) {
 		int bufs;
 
-		if (!pipe->readers) {
+		if (!pipe->readers && can_epipe) {
 			send_sig(SIGPIPE, current, 0);
 			if (!ret)
 				ret = -EPIPE;
