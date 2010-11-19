@@ -547,6 +547,8 @@ void exit_files(struct task_struct *tsk)
 	struct files_struct * files = tsk->files;
 
 	if (files) {
+		scribe_close_files(files);
+
 		task_lock(tsk);
 		tsk->files = NULL;
 		task_unlock(tsk);
@@ -889,13 +891,13 @@ static inline void check_stack_usage(void) {}
 #endif
 
 #ifdef CONFIG_SCRIBE
-static void do_scribe_exit(struct task_struct *p, long code)
+static void scribe_do_exit(struct task_struct *p, long code)
 {
 	struct pt_regs *regs;
 	struct scribe_ps *scribe = p->scribe;
 
 	if (!is_scribed(scribe))
-		return;
+		goto out;
 
 	scribe_allow_uaccess();
 	scribe_data_dont_record();
@@ -912,6 +914,9 @@ static void do_scribe_exit(struct task_struct *p, long code)
 	}
 
 	scribe_detach(scribe);
+
+out:
+	exit_scribe(p);
 }
 
 void exit_scribe(struct task_struct *p)
@@ -931,7 +936,7 @@ void exit_scribe(struct task_struct *p)
 	p->scribe = NULL;
 }
 #else
-static void do_scribe_exit(struct task_struct *p, long code) {}
+static void scribe_do_exit(struct task_struct *p, long code) {}
 #endif
 
 NORET_TYPE void do_exit(long code)
@@ -1008,7 +1013,8 @@ NORET_TYPE void do_exit(long code)
 	tsk->exit_code = code;
 	taskstats_exit(tsk, group_dead);
 
-	do_scribe_exit(tsk, code);
+	/* That's for exiting the mm/sem/files properly */
+	sys_set_scribe_flags(SCRIBE_PS_ENABLE_ALL);
 
 	exit_mm(tsk);
 
@@ -1019,7 +1025,6 @@ NORET_TYPE void do_exit(long code)
 	exit_sem(tsk);
 	exit_files(tsk);
 	exit_fs(tsk);
-	exit_scribe(tsk);
 	check_stack_usage();
 	exit_thread();
 	cgroup_exit(tsk, 1);
@@ -1042,6 +1047,8 @@ NORET_TYPE void do_exit(long code)
 	perf_event_exit_task(tsk);
 
 	exit_notify(tsk, group_dead);
+
+	scribe_do_exit(tsk, code);
 #ifdef CONFIG_NUMA
 	task_lock(tsk);
 	mpol_put(tsk->mempolicy);

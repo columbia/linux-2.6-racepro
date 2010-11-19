@@ -402,11 +402,9 @@ void scribe_detach(struct scribe_ps *scribe)
 	struct scribe_context *ctx = scribe->ctx;
 	BUG_ON(!is_scribed(scribe));
 
-	scribe->flags |= SCRIBE_PS_ENABLE_ALL;
+	/* scribe_close_files() should be done before (in exit_files()) */
 
 	scribe_detach_arch(scribe);
-
-	scribe_close_files(scribe->p->files);
 
 	if (scribe->prepared_data_event) {
 		WARN(1, "prepared_data_event present\n");
