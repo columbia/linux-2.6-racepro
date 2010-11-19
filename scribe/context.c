@@ -106,6 +106,9 @@ static int context_start(struct scribe_context *ctx, int state,
 
 	ctx->flags = state;
 
+	/* TODO reset only when context_start() is used multiple times */
+	scribe_reset_resource_context(ctx->res_ctx);
+
 	return 0;
 }
 

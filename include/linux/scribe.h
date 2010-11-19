@@ -309,6 +309,7 @@ struct scribe_resource_cache {
 };
 
 extern struct scribe_resource_context *scribe_alloc_resource_context(void);
+extern void scribe_reset_resource_context(struct scribe_resource_context *ctx);
 extern void scribe_free_resource_context(struct scribe_resource_context *);
 
 extern void scribe_resource_init_cache(struct scribe_resource_cache *cache);

@@ -86,6 +86,13 @@ struct scribe_resource_context *scribe_alloc_resource_context(void)
 	return ctx;
 }
 
+void scribe_reset_resource_context(struct scribe_resource_context *ctx)
+{
+	int i;
+	for (i = 0; i < INODE_HASH_SIZE; i++)
+		scribe_reset_resource(&ctx->registration_res_inode[i]);
+}
+
 void scribe_free_resource_context(struct scribe_resource_context *ctx)
 {
 	kfree(ctx);
@@ -127,9 +134,14 @@ void scribe_init_resource(struct scribe_resource *res, int type)
 {
 	atomic_set(&res->ref_cnt, 0);
 	res->type = type;
-	res->serial = 0;
 	mutex_init(&res->lock);
 	init_waitqueue_head(&res->wait);
+	scribe_reset_resource(res);
+}
+
+void scribe_reset_resource(struct scribe_resource *res)
+{
+	res->serial = 0;
 }
 
 static void init_resource_handle(struct scribe_resource_context *ctx,

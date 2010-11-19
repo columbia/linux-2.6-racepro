@@ -60,7 +60,7 @@ extern void scribe_init_resource_container(
 	((type) | SCRIBE_RES_TYPE_REGISTRATION_FLAG)
 
 void scribe_init_resource(struct scribe_resource *res, int type);
-
+void scribe_reset_resource(struct scribe_resource *res);
 
 #endif /* CONFIG_SCRIBE */
 
