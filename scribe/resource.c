@@ -904,13 +904,11 @@ void scribe_post_fget(struct files_struct *files, struct file *file,
 	if (!lock_flags)
 		return;
 
+	scribe_unlock(files);
 	if (file) {
-		scribe_unlock(files);
-
 		current->scribe->locked_file = file;
 		__scribe_lock_file(file, lock_flags);
-	} else
-		scribe_unlock_discard(files);
+	}
 }
 
 void scribe_pre_fput(struct file *file)

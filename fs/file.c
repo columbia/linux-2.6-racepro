@@ -454,7 +454,6 @@ int alloc_fd(unsigned start, unsigned flags)
 		return -ENOMEM;
 
 	scribe_lock_files_write(files);
-
 	spin_lock(&files->file_lock);
 repeat:
 	fdt = files_fdtable(files);
@@ -496,7 +495,7 @@ repeat:
 
 out:
 	spin_unlock(&files->file_lock);
-	scribe_unlock_err(files, error);
+	scribe_unlock(files);
 
 	/* We must refill the cache for the next fd_install() */
 	if (scribe_resource_prepare()) {

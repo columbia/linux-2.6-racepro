@@ -1025,7 +1025,7 @@ SYSCALL_DEFINE1(close, unsigned int, fd)
 out_unlock:
 	spin_unlock(&files->file_lock);
 	if (scribed)
-		scribe_unlock_discard(files);
+		scribe_unlock(files);
 	return -EBADF;
 }
 EXPORT_SYMBOL(sys_close);

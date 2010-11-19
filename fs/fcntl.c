@@ -126,8 +126,8 @@ SYSCALL_DEFINE3(dup3, unsigned int, oldfd, unsigned int, newfd, int, flags)
 Ebadf:
 	err = -EBADF;
 out_unlock:
-	scribe_unlock_discard(files);
 	spin_unlock(&files->file_lock);
+	scribe_unlock(files);
 	return err;
 }
 
@@ -474,8 +474,7 @@ cmd_with_lock_inode:
 	scribe_unlock(filp->f_path.dentry->d_inode);
 
 unlock:
-	/* F_GETOWN can return negative values on success */
-	scribe_unlock_err(filp, cmd == F_GETOWN ? 0 : err);
+	scribe_unlock(filp);
 	return err;
 }
 
