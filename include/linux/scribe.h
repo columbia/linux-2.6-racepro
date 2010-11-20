@@ -249,6 +249,7 @@ struct scribe_context {
 	struct scribe_backtrace *backtrace;
 
 	struct scribe_resource_context *res_ctx;
+	struct scribe_resource tasks_res;
 };
 
 static inline void scribe_get_context(struct scribe_context *ctx)
@@ -339,6 +340,9 @@ extern void scribe_open_files(struct files_struct *files);
 extern void scribe_close_files(struct files_struct *files);
 extern void scribe_lock_files_read(struct files_struct *files);
 extern void scribe_lock_files_write(struct files_struct *files);
+
+extern void scribe_lock_task_read(struct task_struct *task);
+extern void scribe_lock_task_write(struct task_struct *task);
 
 extern void scribe_unlock(void *object);
 extern void scribe_unlock_discard(void *object);

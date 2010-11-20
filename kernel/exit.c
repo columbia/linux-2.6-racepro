@@ -935,8 +935,46 @@ void exit_scribe(struct task_struct *p)
 	kfree(scribe);
 	p->scribe = NULL;
 }
+
+static void scribe_exit_notify(struct task_struct *tsk, int group_dead)
+{
+	if (!is_ps_scribed(tsk))
+		goto no_sync;
+
+	if (unlikely(task_active_pid_ns(tsk)->child_reaper == tsk))
+		goto no_sync;
+
+	if (scribe_resource_prepare()) {
+		/*
+		 * FIXME preallocate this lock region in scribe_init() so that
+		 * we cannot fail.
+		 */
+		scribe_emergency_stop(tsk->scribe->ctx, ERR_PTR(-ENOMEM));
+		goto no_sync;
+	}
+
+
+	/*
+	 * We should lock only the parent that will get the SIGCHLD
+	 * signal instead of locking all tasks.
+	 * It's tricky because in reparent_leader(), do_notify_parent() is
+	 * called, so we might have to lock two parents.
+	 * Also all those calls are done with the tasklist locked, and we need
+	 * to sleep to get the resource lock, so would get quite horrible to
+	 * go the "proper" way.
+	 * Instead we'll lock the whole tree (init_task) and be done with it.
+	 */
+	scribe_lock_task_write(&init_task);
+	exit_notify(tsk, group_dead);
+	scribe_unlock(&init_task);
+	return;
+
+no_sync:
+	exit_notify(tsk, group_dead);
+}
 #else
 static void scribe_do_exit(struct task_struct *p, long code) {}
+#define scribe_exit_notify exit_notify
 #endif
 
 NORET_TYPE void do_exit(long code)
@@ -1046,7 +1084,7 @@ NORET_TYPE void do_exit(long code)
 	 */
 	perf_event_exit_task(tsk);
 
-	exit_notify(tsk, group_dead);
+	scribe_exit_notify(tsk, group_dead);
 
 	scribe_do_exit(tsk, code);
 #ifdef CONFIG_NUMA
@@ -1661,7 +1699,14 @@ static long do_wait(struct wait_opts *wo)
 	struct task_struct *tsk;
 	int retval;
 
-	scribe_data_non_det();
+	if (scribe_resource_prepare()) {
+		/*
+		 * We're not really allowed to return -ENOMEM, so we'll do an
+		 * emergency stop :(
+		 */
+		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		return -ENOMEM;
+	}
 
 	trace_sched_process_wait(wo->wo_pid);
 
@@ -1669,6 +1714,7 @@ static long do_wait(struct wait_opts *wo)
 	wo->child_wait.private = current;
 	add_wait_queue(&current->signal->wait_chldexit, &wo->child_wait);
 repeat:
+	scribe_lock_task_write(&init_task);
 	/*
 	 * If there is nothing that can match our critiera just get out.
 	 * We will clear ->notask_error to zero if we see any child that
@@ -1702,11 +1748,13 @@ notask:
 	if (!retval && !(wo->wo_flags & WNOHANG)) {
 		retval = -ERESTARTSYS;
 		if (!signal_pending(current)) {
+			scribe_unlock_discard(&init_task);
 			schedule();
 			goto repeat;
 		}
 	}
 end:
+	scribe_unlock(&init_task);
 	__set_current_state(TASK_RUNNING);
 	remove_wait_queue(&current->signal->wait_chldexit, &wo->child_wait);
 	return retval;

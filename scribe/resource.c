@@ -1034,3 +1034,24 @@ void scribe_lock_files_write(struct files_struct *files)
 {
 	resource_lock_object(files, &files->scribe_resource, SCRIBE_WRITE);
 }
+
+static void lock_task(struct task_struct *task, int flags)
+{
+	struct scribe_ps *scribe = current->scribe;
+
+	if (!should_handle_resources(scribe))
+		return;
+
+	/* For now all the tasks are synchronized on the same resource */
+	__resource_lock_object(scribe, task, &scribe->ctx->tasks_res, flags);
+}
+
+void scribe_lock_task_read(struct task_struct *task)
+{
+	lock_task(task, SCRIBE_READ);
+}
+
+void scribe_lock_task_write(struct task_struct *task)
+{
+	lock_task(task, SCRIBE_WRITE);
+}

@@ -43,6 +43,8 @@ struct scribe_context *scribe_alloc_context(void)
 	if (!ctx->res_ctx)
 		goto err_ctx;
 
+	scribe_init_resource(&ctx->tasks_res, SCRIBE_RES_TYPE_TASK);
+
 	return ctx;
 
 err_ctx:
@@ -108,6 +110,7 @@ static int context_start(struct scribe_context *ctx, int state,
 
 	/* TODO reset only when context_start() is used multiple times */
 	scribe_reset_resource_context(ctx->res_ctx);
+	scribe_reset_resource(&ctx->tasks_res);
 
 	return 0;
 }
