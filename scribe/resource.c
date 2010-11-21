@@ -376,12 +376,24 @@ static struct scribe_resource_handle *find_resource_handle(
 	return NULL;
 }
 
-static int serial_match(struct scribe_resource *res, int serial)
+static int serial_match(struct scribe_ps *scribe,
+			struct scribe_resource *res, int serial)
 {
-	WARN(serial < res->serial,
-	     "Waiting for serial = %d, but the current one is %d\n",
-	     serial, res->serial);
-	return serial == res->serial;
+	if (serial == res->serial)
+		return 1;
+
+	if (serial < res->serial) {
+		WARN(1, "Waiting for serial = %d, but the current one is %d\n",
+		     serial, res->serial);
+		scribe_emergency_stop(scribe->ctx, ERR_PTR(-EDIVERGE));
+		return 1;
+	}
+
+	if (scribe->ctx->flags == SCRIBE_IDLE) {
+		/* emergency_stop() has been triggered, we need to leave */
+		return 1;
+	}
+	return 0;
 }
 
 static int get_lockdep_subclass(int type)
@@ -427,10 +439,7 @@ static void resource_lock(struct scribe_lock_region *lock_region)
 		scribe->waiting_for_serial = serial;
 		wmb();
 
-		if (wait_event_killable(res->wait, serial_match(res, serial))) {
-			scribe_emergency_stop(current->scribe->ctx,
-					      ERR_PTR(-EINTR));
-		}
+		wait_event(res->wait, serial_match(scribe, res, serial));
 	}
 
 	/*

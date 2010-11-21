@@ -244,8 +244,15 @@ void scribe_emergency_stop(struct scribe_context *ctx,
 	 * gone missing. We'll kill all the scribed tasks because we cannot
 	 * guarantee that they can continue properly.
 	 */
-	list_for_each_entry(scribe, &ctx->tasks, node)
+	list_for_each_entry(scribe, &ctx->tasks, node) {
 		force_sig(SIGKILL, scribe->p);
+		/*
+		 * wake_up_process() is necessary when p is in do_exit() and
+		 * PF_EXITED has already been set. resource_lock() will be
+		 * able to return.
+		 */
+		wake_up_process(scribe->p);
+	}
 
 out:
 	spin_unlock(&ctx->tasks_lock);

@@ -128,7 +128,12 @@ void scribe_exit_syscall(struct pt_regs *regs)
 
 	scribe->in_syscall = 0;
 
-	scribe_signal_sync_point(regs);
+	/*
+	 * scribe_exit_syscall() can be called from do_exit, but in that case
+	 * we must not trigger do_signal().
+	 */
+	if (likely(!(current->flags & PF_EXITING)))
+		scribe_signal_sync_point(regs);
 	return;
 
 bad:
