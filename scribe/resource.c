@@ -378,11 +378,9 @@ static struct scribe_resource_handle *find_resource_handle(
 
 static int serial_match(struct scribe_resource *res, int serial)
 {
-	if (serial < res->serial) {
-		printk(KERN_ERR "Waiting for serial = %d, "
-		       "but the current one is %d\n", serial, res->serial);
-		BUG();
-	}
+	WARN(serial < res->serial,
+	     "Waiting for serial = %d, but the current one is %d\n",
+	     serial, res->serial);
 	return serial == res->serial;
 }
 
