@@ -23,6 +23,7 @@
 #include <linux/wait.h>
 #include <linux/slab.h>
 #include <linux/fs.h>
+#include <linux/rcupdate.h>
 #include <asm/scribe.h>
 #include <asm/atomic.h>
 
@@ -352,13 +353,17 @@ extern void scribe_assert_locked(void *object);
 
 /* Process */
 
+/*
+ * A few rules:
+ * - Only the current process have a write access to the fields in scribe_ps.
+ * - To dereference task->scribe:
+ *   - The current process doesn't need extra precaution
+ *   - Other processes need to use rcu_read_lock()
+ */
 struct scribe_ps {
 	struct list_head node;
+	struct rcu_head rcu;
 
-	/*
-	 * The two next fields should only be accessed by
-	 * the current process.
-	 */
 	int flags;
 	struct scribe_context *ctx;
 
@@ -409,6 +414,25 @@ static inline int is_stopping(struct scribe_ps *scribe)
 		(scribe->ctx->flags & SCRIBE_STOP);
 }
 
+#define is_ps_scribed(t)	is_scribed(t->scribe)
+#define is_ps_recording(t)	is_recording(t->scribe)
+#define is_ps_replaying(t)	is_replaying(t->scribe)
+
+/* Use the rcu version when current != t */
+#define __call_scribe_safe(t, func)				\
+({								\
+	int __safe_ret;						\
+	rcu_read_lock();					\
+	__safe_ret = func(rcu_dereference((t)->scribe));	\
+	rcu_read_unlock();					\
+	__safe_ret;						\
+})
+
+#define is_ps_scribed_safe(t)	__call_scribe_safe(t, is_scribed)
+#define is_ps_recording_safe(t)	__call_scribe_safe(t, is_recording)
+#define is_ps_replaying_safe(t)	__call_scribe_safe(t, is_replaying)
+
+
 static inline int should_scribe_syscalls(struct scribe_ps *scribe)
 {
 	return scribe->flags & SCRIBE_PS_ENABLE_SYSCALL;
@@ -429,13 +453,6 @@ static inline int should_scribe_tsc(struct scribe_ps *scribe)
 {
 	return scribe->flags & SCRIBE_PS_ENABLE_TSC;
 }
-
-/* Using defines instead of inline functions so that we don't need
- * to include sched.h
- */
-#define is_ps_scribed(t)	is_scribed(t->scribe)
-#define is_ps_recording(t)	is_recording(t->scribe)
-#define is_ps_replaying(t)	is_replaying(t->scribe)
 
 extern int init_scribe(struct task_struct *p, struct scribe_context *ctx);
 extern void exit_scribe(struct task_struct *p);
@@ -520,9 +537,12 @@ extern void scribe_delivering_signal(int signr, struct siginfo *info);
 
 /* FIXME Make the kernel compile with !CONFIG_SCRIBE ... */
 
-#define is_ps_scribed(t)  0
-#define is_ps_recording(t) 0
-#define is_ps_replaying(t) 0
+#define is_ps_scribed(t)	0
+#define is_ps_recording(t)	0
+#define is_ps_replaying(t)	0
+#define is_ps_scribed_safe(t)	0
+#define is_ps_recording_safe(t)	0
+#define is_ps_replaying_safe(t)	0
 
 static inline int init_scribe(struct task_struct *p,
 			      struct scribe_context *ctx) { return 0; }

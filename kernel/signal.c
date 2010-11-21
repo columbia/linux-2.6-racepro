@@ -1512,8 +1512,7 @@ int do_notify_parent(struct task_struct *tsk, int sig)
 			sig = -1;
 	}
 
-	/* XXX FIXME Scribe: we cannot access another task's flags like this */
-	if (valid_signal(sig) && sig > 0 && !is_ps_replaying(tsk->parent))
+	if (valid_signal(sig) && sig > 0 && !is_ps_replaying_safe(tsk->parent))
 		__group_send_sig_info(sig, &info, tsk->parent);
 	__wake_up_parent(tsk, tsk->parent);
 	spin_unlock_irqrestore(&psig->siglock, flags);

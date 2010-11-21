@@ -919,6 +919,11 @@ out:
 	exit_scribe(p);
 }
 
+static void free_rcu_scribe(struct rcu_head *rcu)
+{
+	kfree(container_of(rcu, struct scribe_ps, rcu));
+}
+
 void exit_scribe(struct task_struct *p)
 {
 	struct scribe_ps *scribe = p->scribe;
@@ -932,8 +937,8 @@ void exit_scribe(struct task_struct *p)
 	scribe_put_context(scribe->ctx);
 	exit_scribe_arch(scribe);
 
-	kfree(scribe);
-	p->scribe = NULL;
+	rcu_assign_pointer(p->scribe, NULL);
+	call_rcu(&scribe->rcu, free_rcu_scribe);
 }
 
 static void scribe_exit_notify(struct task_struct *tsk, int group_dead)
