@@ -900,10 +900,17 @@ SYSCALL_DEFINE1(times, struct tms __user *, tbuf)
 		struct tms tmp;
 
 		do_sys_times(&tmp);
+		scribe_data_non_det();
 		if (copy_to_user(tbuf, &tmp, sizeof(struct tms)))
 			return -EFAULT;
 	}
 	force_successful_syscall_return();
+
+#ifdef CONFIG_SCRIBE
+	if (is_ps_replaying(current))
+		return current->scribe->orig_ret;
+#endif /* CONFIG_SCRIBE */
+
 	return (long) jiffies_64_to_clock_t(get_jiffies_64());
 }
 
@@ -1206,6 +1213,7 @@ SYSCALL_DEFINE2(gethostname, char __user *, name, int, len)
 	if (i > len)
 		i = len;
 	errno = 0;
+	scribe_data_non_det();
 	if (copy_to_user(name, u->nodename, i))
 		errno = -EFAULT;
 	up_read(&uts_sem);
@@ -1453,6 +1461,7 @@ int getrusage(struct task_struct *p, int who, struct rusage __user *ru)
 {
 	struct rusage r;
 	k_getrusage(p, who, &r);
+	scribe_data_non_det();
 	return copy_to_user(ru, &r, sizeof(r)) ? -EFAULT : 0;
 }
 
@@ -1630,6 +1639,7 @@ SYSCALL_DEFINE3(getcpu, unsigned __user *, cpup, unsigned __user *, nodep,
 {
 	int err = 0;
 	int cpu = raw_smp_processor_id();
+	scribe_data_non_det();
 	if (cpup)
 		err |= put_user(cpu, cpup);
 	if (nodep)
