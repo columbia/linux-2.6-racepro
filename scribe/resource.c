@@ -431,7 +431,6 @@ static void resource_lock(struct scribe_lock_region *lock_region)
 			scribe_diverge(scribe,
 				       SCRIBE_EVENT_DIVERGE_RESOURCE_TYPE,
 				       .type = res->type);
-			scribe_free_event(event);
 			goto out;
 		}
 

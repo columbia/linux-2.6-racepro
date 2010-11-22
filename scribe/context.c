@@ -228,8 +228,11 @@ void scribe_emergency_stop(struct scribe_context *ctx,
 
 	spin_lock(&ctx->tasks_lock);
 
-	if (ctx->flags == SCRIBE_IDLE)
+	if (ctx->flags == SCRIBE_IDLE) {
+		if (!IS_ERR(reason))
+			scribe_free_event(reason);
 		goto out;
+	}
 
 	/*
 	 * The SCRIBE_IDLE flag has to be set here to guard against race with
