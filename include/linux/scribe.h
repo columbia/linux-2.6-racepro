@@ -279,7 +279,6 @@ extern int scribe_stop(struct scribe_context *ctx);
 	if (__event) {							\
 		__event->h.type = _type;				\
 		__event->pid = (sp)->queue->pid;			\
-		WARN(1, "Replay diverged\n");				\
 	} else								\
 		__event = ERR_PTR(-EDIVERGE);				\
 	(struct_##_type *)__event;					\
