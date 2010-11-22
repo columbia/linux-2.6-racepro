@@ -396,6 +396,7 @@ static int serial_match(struct scribe_ps *scribe,
 	return 0;
 }
 
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
 static int get_lockdep_subclass(int type)
 {
 	/* MAX_LOCKDEP_SUBCLASSES is small, trying not to overflow it */
@@ -403,6 +404,7 @@ static int get_lockdep_subclass(int type)
 		return SCRIBE_RES_TYPE_RESERVED;
 	return type;
 }
+#endif
 
 static void resource_lock(struct scribe_lock_region *lock_region)
 {
