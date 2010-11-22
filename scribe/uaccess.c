@@ -126,9 +126,8 @@ static int __memcmp(const void *cs, const void *ct, size_t count)
 }
 
 static void ensure_data_correctness(struct scribe_ps *scribe,
-				   const void *recorded_data,
-				   const void *data,
-				   size_t count)
+				    const void *recorded_data, const void *data,
+				    size_t count)
 {
 	struct scribe_event_diverge_data_content *de;
 	int offset;
@@ -148,6 +147,88 @@ static void ensure_data_correctness(struct scribe_ps *scribe,
 	}
 	scribe_emergency_stop(scribe->ctx, (struct scribe_event *)de);
 }
+
+static void scribe_post_uaccess_record(struct scribe_ps *scribe,
+		struct scribe_event_data *event, const void *data,
+		void __user *user_ptr, size_t size, int data_flags)
+{
+	event->data_type = data_flags;
+	event->user_ptr = (__u32)user_ptr;
+
+	if (data_flags & SCRIBE_DATA_ZERO)
+		memset(event->data, 0, size);
+	else
+		memcpy(event->data, data, size);
+	scribe_queue_event(scribe->queue, event);
+}
+
+static void scribe_post_uaccess_replay(struct scribe_ps *scribe,
+		struct scribe_event_data *event, const void *data,
+		void __user *user_ptr, size_t size, int data_flags)
+{
+	if (event->data_type != data_flags) {
+		scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_DATA_TYPE,
+			       .type = data_flags);
+		return;
+	}
+
+	if (event->h.size != size) {
+		scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_EVENT_SIZE,
+			       .size = size);
+		return;
+	}
+
+	if ((void *)event->user_ptr != user_ptr) {
+		scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_DATA_PTR,
+			       .user_ptr = (u32)user_ptr);
+		return;
+	}
+
+	if (data_flags & SCRIBE_DATA_ZERO) {
+		/*
+		 * Avoiding the use of scribe_data_ignore so that we
+		 * don't pollute the data flags 'stack'.
+		 */
+		data_flags = scribe->data_flags;
+		scribe->data_flags = SCRIBE_DATA_IGNORE;
+		if (__clear_user(user_ptr, size)) {
+			scribe_emergency_stop(scribe->ctx,
+					      ERR_PTR(-EDIVERGE));
+		}
+		scribe->data_flags = data_flags;
+		return;
+	}
+
+	if (!(data_flags & SCRIBE_DATA_NON_DETERMINISTIC)) {
+		ensure_data_correctness(scribe, event->data, data, size);
+		return;
+	}
+
+	/*
+	 * FIXME Do the copying in pre_uaccess and skip the extra copy_to_user
+	 * that happened before.
+	 */
+	data_flags = scribe->data_flags;
+	scribe->data_flags = SCRIBE_DATA_IGNORE;
+	/*
+	 * We're using the inatomic version so that we don't get the
+	 * might_sleep(), but if we're not in an atomic context, it's
+	 * equivalent to __copy_to_user().
+	 */
+	if (__copy_to_user_inatomic(user_ptr, event->data, size)) {
+		/*
+		 * FIXME If we are in an atomic region, the copy may or may
+		 * not have happended. We need to make sure that the copy
+		 * happens anyway.
+		 */
+		WARN(in_atomic(), "Need to implement proper "
+				  "atomic copies in replay\n");
+		scribe_emergency_stop(scribe->ctx, ERR_PTR(-EDIVERGE));
+	}
+
+	scribe->data_flags = data_flags;
+}
+
 
 void scribe_post_uaccess(const void *data, const void __user *user_ptr,
 			 size_t size, int flags)
@@ -173,79 +254,25 @@ void scribe_post_uaccess(const void *data, const void __user *user_ptr,
 	WARN_ON((long)user_ptr > TASK_SIZE);
 
 	if (data_flags & SCRIBE_DATA_DONT_RECORD)
-		goto out_forbid;
+		goto skip;
 
 	event = get_data_event(scribe, size);
 	if (IS_ERR(event))
-		goto out_forbid;
+		goto skip;
 
 	if (is_recording(scribe)) {
-		event->data_type = data_flags;
-		event->user_ptr = (__u32)user_ptr;
-
-		if (data_flags & SCRIBE_DATA_ZERO)
-			memset(event->data, 0, size);
-		else
-			memcpy(event->data, data, size);
-		scribe_queue_event(scribe->queue, event);
+		scribe_post_uaccess_record(scribe, event, data,
+					   (void __user *)user_ptr, size,
+					   data_flags);
 	} else { /* replay */
-		if (event->data_type != data_flags)
-			scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_DATA_TYPE,
-				       .type = data_flags);
-		else if (event->h.size != size)
-			scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_EVENT_SIZE,
-				       .size = size);
-		else if ((void *)event->user_ptr != user_ptr)
-			scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_DATA_PTR,
-				       .user_ptr = (u32)user_ptr);
-		else if (data_flags & SCRIBE_DATA_ZERO) {
-			/*
-			 * Avoiding the use of scribe_data_ignore so that we
-			 * don't pollute the data flags 'stack'.
-			 */
-			data_flags = scribe->data_flags;
-			scribe->data_flags = SCRIBE_DATA_IGNORE;
-			if (__clear_user((void __user *)user_ptr, size)) {
-				scribe_emergency_stop(scribe->ctx,
-						      ERR_PTR(-EDIVERGE));
-			}
-			scribe->data_flags = data_flags;
-		} else if (data_flags & SCRIBE_DATA_NON_DETERMINISTIC) {
-			/*
-			 * FIXME Do the copying in pre_uaccess and skip the
-			 * extra copy_to_user that happened before.
-			 */
-			data_flags = scribe->data_flags;
-			scribe->data_flags = SCRIBE_DATA_IGNORE;
-			/*
-			 * We're using the inatomic version so that we don't
-			 * get the might_sleep(), but if we're not in an
-			 * atomic context, it's equivalent to
-			 * __copy_to_user().
-			 */
-			if (__copy_to_user_inatomic((void __user *)user_ptr,
-						    event->data, size)) {
-				/*
-				 * FIXME If we are in an atomic region, the
-				 * copy may or may not have happended. We need
-				 * to make sure that the copy happens anyway.
-				 */
-				WARN(in_atomic(), "Need to implement proper "
-				     "atomic copies in replay\n");
-				scribe_emergency_stop(scribe->ctx,
-						      ERR_PTR(-EDIVERGE));
-			}
-
-			scribe->data_flags = data_flags;
-		} else
-			ensure_data_correctness(scribe, event->data,
-						data, size);
+		scribe_post_uaccess_replay(scribe, event, data,
+					   (void __user *)user_ptr, size,
+					   data_flags);
 		scribe_free_event(event);
 	}
 
-out_forbid:
+skip:
 	__scribe_forbid_uaccess(scribe);
-
 	WARN(scribe->prepared_data_event,
 	     "pre-allocated data event not used\n");
 }
