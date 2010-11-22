@@ -20,6 +20,7 @@
 #include <linux/personality.h>
 #include <linux/uaccess.h>
 #include <linux/user-return-notifier.h>
+#include <linux/scribe.h>
 
 #include <asm/processor.h>
 #include <asm/ucontext.h>
@@ -781,6 +782,9 @@ void do_signal(struct pt_regs *regs)
 	 * here, so testing against kernel CS suffices.
 	 */
 	if (!user_mode(regs))
+		return;
+
+	if (!scribe_can_deliver_signal())
 		return;
 
 	if (current_thread_info()->status & TS_RESTORE_SIGMASK)

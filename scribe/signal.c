@@ -72,23 +72,27 @@ void scribe_signal_sync_point(struct pt_regs *regs)
 	(sigmask(SIGSEGV) | sigmask(SIGBUS) | sigmask(SIGILL) | \
 	 sigmask(SIGTRAP) | sigmask(SIGFPE))
 
-static int no_sync_point_needed(void)
+static int no_sync_point_needed(struct scribe_ps *scribe)
 {
 	int ret;
 	sigset_t mask;
 
 	/*
-	 * If we have a SIGKILL pending, we need to die, whether or not we are
-	 * in a sync point.
-	 * TODO: do this only for signals coming from outside the scribe
-	 * context or from emergency_stop().
-	 *
+	 * If the context state is set to SCRIBE_IDLE, it means that
+	 * emergency_stop() got called, and we have a SIGKILL to process ASAP,
+	 * synchronizing doesn't really matter here because something has
+	 * already went wrong.
+	 */
+	if (unlikely(scribe->ctx->flags == SCRIBE_IDLE))
+		return 1;
+
+	/*
 	 * Synchronous signals don't need a sync point by definition, and they
 	 * are picked first before any other signals (so we are fine if other
 	 * signals arrive between now and do_signal()).
 	 */
 
-	siginitset(&mask, SYNCHRONOUS_MASK | sigmask(SIGKILL));
+	siginitset(&mask, ~SYNCHRONOUS_MASK);
 	spin_lock_irq(&current->sighand->siglock);
 	ret = next_signal(&current->pending, &mask);
 	ret |= next_signal(&current->signal->shared_pending, &mask);
@@ -111,7 +115,7 @@ int scribe_can_deliver_signal(void)
 	 * - We don't care about being in a sync point because the signal to
 	 *   get delivered will not need a sync point.
 	 */
-	if (scribe->in_signal_sync_point || no_sync_point_needed())
+	if (scribe->in_signal_sync_point || no_sync_point_needed(scribe))
 		return 1;
 
 	/*
