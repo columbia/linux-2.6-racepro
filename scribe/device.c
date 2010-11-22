@@ -467,19 +467,17 @@ static void event_pump_replay(struct scribe_context *ctx, char *buf,
 		if (unlikely(is_interrupted(ret)))
 			continue;
 		if (!ret) {
-			if (!count) {
-				/* EOF reached, all done. */
-				break;
-			}
-
 			/*
-			 * We have a pending event in our buffer, and
-			 * we are reaching EOF. Something is wrong.
+			 * We might have a pending event in our buffer (count
+			 * is not 0), which means something is went wrong.
+			 * Otherwise, we've reached EOF.
 			 */
-			ret = -EPIPE;
+			if (count)
+				ret = -EPIPE;
+			break;
 		}
 		if (ret < 0)
-			goto err;
+			break;
 
 		old_f_pos = file->f_pos;
 
@@ -490,7 +488,7 @@ static void event_pump_replay(struct scribe_context *ctx, char *buf,
 					 &current_queue, &pre_alloc_queue,
 					 &pending_event, &pending_offset);
 		if (ret < 0)
-			goto err;
+			break;
 
 		BUG_ON(!ret);
 		count -= ret;
@@ -503,36 +501,27 @@ static void event_pump_replay(struct scribe_context *ctx, char *buf,
 		}
 	}
 
-	/*
-	 * If some queue were left open, that means that we didn't have the
-	 * entire event stream. Bailing out.
-	 */
-	ret = -EPIPE;
 	spin_lock(&ctx->queues_lock);
-	ctx->queues_wont_grow = 1;
 	list_for_each_entry(queue, &ctx->queues, node) {
-		if (!&queue->bare.wont_grow) {
-			spin_unlock(&ctx->queues_lock);
-			goto err;
-		}
+		/*
+		 * If some queue were left open, that means that we didn't
+		 * have the entire event stream, we need to kill the context.
+		 */
+		if (!ret && !queue->bare.wont_grow)
+			ret = -EPIPE;
+		if (ret)
+			scribe_set_queue_wont_grow(&queue->bare);
 	}
+	ctx->queues_wont_grow = 1;
 	spin_unlock(&ctx->queues_lock);
 
-free:
+	if (ret)
+		scribe_emergency_stop(ctx, ERR_PTR(ret));
+
 	if (current_queue)
 		scribe_put_queue(current_queue);
 	kfree(pre_alloc_queue);
 	scribe_free_event(pending_event);
-	return;
-err:
-	scribe_emergency_stop(ctx, ERR_PTR(ret));
-
-	spin_lock(&ctx->queues_lock);
-	list_for_each_entry(queue, &ctx->queues, node)
-		scribe_set_queue_wont_grow(&queue->bare);
-	spin_unlock(&ctx->queues_lock);
-
-	goto free;
 }
 
 /*
