@@ -352,6 +352,22 @@ void *__scribe_alloc_event(int type)
 
 int scribe_enter_fenced_region(int region)
 {
+	struct scribe_ps *scribe = current->scribe;
+	struct scribe_event_fence *event;
+
+	if (!is_scribed(scribe))
+		return 0;
+
+	if (is_recording(scribe)) {
+		return scribe_queue_new_event(scribe->queue,
+					      SCRIBE_EVENT_FENCE);
+	}
+	/* is_replaying == true */
+	event = scribe_dequeue_event_specific(scribe,
+					      SCRIBE_EVENT_FENCE);
+	if (IS_ERR(event))
+		return PTR_ERR(event);
+	scribe_free_event(event);
 	return 0;
 }
 

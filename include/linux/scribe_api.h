@@ -55,6 +55,7 @@ enum scribe_event_type {
 	SCRIBE_EVENT_RESOURCE_UNLOCK,
 	SCRIBE_EVENT_RDTSC,
 	SCRIBE_EVENT_SIGNAL,
+	SCRIBE_EVENT_FENCE,
 
 	/* userspace -> kernel commands */
 	SCRIBE_EVENT_ATTACH_ON_EXECVE = 128,
@@ -179,6 +180,11 @@ struct scribe_event_signal {
 	struct scribe_event_sized h;
 	__u8 nr;
 	__u8 info[0];
+} __attribute__((packed));
+
+#define struct_SCRIBE_EVENT_FENCE struct scribe_event_fence
+struct scribe_event_fence {
+	struct scribe_event h;
 } __attribute__((packed));
 
 /* Commands */
@@ -311,6 +317,7 @@ static __always_inline size_t sizeof_event_from_type(__u8 type)
 	__TYPE(SCRIBE_EVENT_RESOURCE_UNLOCK);
 	__TYPE(SCRIBE_EVENT_RDTSC);
 	__TYPE(SCRIBE_EVENT_SIGNAL);
+	__TYPE(SCRIBE_EVENT_FENCE);
 
 	__TYPE(SCRIBE_EVENT_ATTACH_ON_EXECVE);
 	__TYPE(SCRIBE_EVENT_RECORD);
