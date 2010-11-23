@@ -155,7 +155,7 @@ static void init_resource_handle(struct scribe_resource_context *ctx,
 
 struct scribe_lock_region {
 	struct list_head node;
-	struct scribe_insert_point ip;
+	scribe_insert_point_t ip;
 	struct scribe_event_resource_lock *lock_event;
 	struct scribe_event_resource_unlock *unlock_event;
 	struct scribe_resource *res;
@@ -417,8 +417,8 @@ static void resource_lock(struct scribe_lock_region *lock_region)
 	res = lock_region->res;
 
 	if (is_recording(scribe)) {
-		scribe_create_insert_point(&scribe->queue->bare,
-					   &lock_region->ip);
+		scribe_create_insert_point(&lock_region->ip,
+					   &scribe->queue->stream);
 	} else {
 		event = scribe_dequeue_event_specific(scribe,
 						SCRIBE_EVENT_RESOURCE_LOCK);

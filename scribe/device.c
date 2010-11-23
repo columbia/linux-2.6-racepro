@@ -59,7 +59,8 @@ static inline int is_interrupted(int ret)
 
 static inline int is_queue_active(struct scribe_queue *queue)
 {
-	return !scribe_is_queue_empty(&queue->bare) || queue->bare.wont_grow;
+	return !scribe_is_stream_empty(&queue->stream) ||
+		queue->stream.wont_grow;
 }
 
 /*
@@ -153,10 +154,10 @@ static int get_next_event(pid_t *last_pid, struct scribe_event **event,
 		*last_pid = queue->pid;
 
 		*event = (struct scribe_event *)event_pid;
-	} else if (likely(!scribe_is_queue_empty(&queue->bare))) {
+	} else if (likely(!scribe_is_stream_empty(&queue->stream))) {
 		*event = scribe_dequeue_event(queue, SCRIBE_NO_WAIT);
 	} else {
-		BUG_ON(!&queue->bare.wont_grow);
+		BUG_ON(!&queue->stream.wont_grow);
 
 		event_eof = scribe_alloc_event(SCRIBE_EVENT_QUEUE_EOF);
 		if (!event_eof)
@@ -423,7 +424,7 @@ static ssize_t deserialize_events(struct scribe_context *ctx, const char *buf,
 			if (err)
 				goto out;
 		} else if (event->type == SCRIBE_EVENT_QUEUE_EOF) {
-			scribe_set_queue_wont_grow(&(*current_queue)->bare);
+			scribe_set_stream_wont_grow(&(*current_queue)->stream);
 			scribe_free_event(event);
 		} else { /* generic event handling */
 			scribe_queue_event(*current_queue, event);
@@ -507,10 +508,10 @@ static void event_pump_replay(struct scribe_context *ctx, char *buf,
 		 * If some queue were left open, that means that we didn't
 		 * have the entire event stream, we need to kill the context.
 		 */
-		if (!ret && !queue->bare.wont_grow)
+		if (!ret && !queue->stream.wont_grow)
 			ret = -EPIPE;
 		if (ret)
-			scribe_set_queue_wont_grow(&queue->bare);
+			scribe_set_stream_wont_grow(&queue->stream);
 	}
 	ctx->queues_wont_grow = 1;
 	spin_unlock(&ctx->queues_lock);
@@ -684,8 +685,8 @@ static ssize_t dev_read(struct file *file,
 	mutex_lock(&dev->lock_read);
 	event = dev->pending_notification_event;
 	if (!event) {
-		event = scribe_dequeue_event_bare(&ctx->notification_queue,
-						  SCRIBE_WAIT_INTERRUPTIBLE);
+		event = scribe_dequeue_event_stream(&ctx->notifications,
+						    SCRIBE_WAIT_INTERRUPTIBLE);
 		if (IS_ERR(event)) {
 			err = PTR_ERR(event);
 			event = NULL;

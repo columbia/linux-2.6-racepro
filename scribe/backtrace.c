@@ -65,7 +65,7 @@ void scribe_backtrace_add(struct scribe_backtrace *bt,
 }
 
 void scribe_backtrace_dump(struct scribe_backtrace *bt,
-			   struct scribe_queue_bare *queue)
+			   struct scribe_stream *stream)
 {
 	struct list_head invalid_entries;
 	struct scribe_event_backtrace *last = bt->last;
@@ -75,7 +75,7 @@ void scribe_backtrace_dump(struct scribe_backtrace *bt,
 		list_cut_position(&invalid_entries, &bt->events, &last->h.node);
 	}
 
-	scribe_queue_events_bare(queue, &bt->events);
+	scribe_queue_events_stream(stream, &bt->events);
 
 	if (last->event_offset == -1) {
 		/* Putting back the invalid entries in the bt list */

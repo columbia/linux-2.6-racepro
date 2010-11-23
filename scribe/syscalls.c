@@ -44,8 +44,8 @@ void scribe_enter_syscall(struct pt_regs *regs)
 		return;
 
 	if (is_recording(scribe))
-		scribe_create_insert_point(&scribe->queue->bare,
-					   &scribe->syscall_ip);
+		scribe_create_insert_point(&scribe->syscall_ip,
+					   &scribe->queue->stream);
 	else {
 		event = scribe_dequeue_event_specific(scribe,
 						      SCRIBE_EVENT_SYSCALL);
@@ -129,8 +129,9 @@ void scribe_exit_syscall(struct pt_regs *regs)
 	scribe->in_syscall = 0;
 
 	/*
-	 * scribe_exit_syscall() can be called from do_exit, but in that case
-	 * we must not trigger do_signal().
+	 * scribe_exit_syscall() may be called from do_exit(), but in that
+	 * case, we must not trigger do_signal(). It would cause some
+	 * recursive madness.
 	 */
 	if (likely(!(current->flags & PF_EXITING)))
 		scribe_signal_sync_point(regs);
