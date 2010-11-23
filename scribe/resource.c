@@ -1002,7 +1002,7 @@ void scribe_open_files(struct files_struct *files)
 		 * - Or those inodes are already registered, so there is no
 		 *   race condition risk.
 		 */
-		scribe_open_file(file, SCRIBE_NOSYNC);
+		scribe_open_file(file, SCRIBE_NO_SYNC);
 	}
 
 	mutex_unlock(&files_res->lock);

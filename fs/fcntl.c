@@ -113,7 +113,7 @@ SYSCALL_DEFINE3(dup3, unsigned int, oldfd, unsigned int, newfd, int, flags)
 	spin_unlock(&files->file_lock);
 	scribe_unlock(files);
 
-	scribe_open_file(file, SCRIBE_NOSYNC);
+	scribe_open_file(file, SCRIBE_NO_SYNC);
 	fput(file);
 
 	if (tofree) {
@@ -380,7 +380,7 @@ static long do_fcntl(int fd, unsigned int cmd, unsigned long arg,
 			get_file(filp);
 			/*
 			 * FIXME fd_install() will perform with SCRIBE_SYNC,
-			 * we should have SCRIBE_NOSYNC because it's a dup
+			 * we should have SCRIBE_NO_SYNC because it's a dup
 			 * (so there is no risk of open/close races)
 			 */
 			fd_install(err, filp);
