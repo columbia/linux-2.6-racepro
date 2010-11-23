@@ -11,47 +11,33 @@
 #include <linux/signal.h>
 #include <linux/sched.h>
 
-static void scribe_do_signal(struct scribe_ps *scribe, struct pt_regs *regs)
+static void scribe_signal_sync_point_record(struct scribe_ps *scribe,
+					    struct pt_regs *regs)
 {
-	scribe_data_det();
-	scribe->in_signal_sync_point = 1;
+	/*
+	 * recalc_sigpending() because we reset the TIF_SIGPENDING
+	 * flag in scribe_can_deliver_signal().
+	 */
+	recalc_sigpending();
 	while (test_thread_flag(TIF_SIGPENDING))
 		do_signal(regs);
-	scribe->in_signal_sync_point = 0;
 }
 
-/* XXX scribe_signal_sync_point() may call do_exit() */
-void scribe_signal_sync_point(struct pt_regs *regs)
+static void scribe_signal_sync_point_replay(struct scribe_ps *scribe,
+					    struct pt_regs *regs)
 {
-	struct scribe_event *event;
-	struct scribe_event_signal *sig_event;
-	struct scribe_ps *scribe = current->scribe;
 	int ret;
-	int got_signal = 0;
-
-	if (!is_scribed(scribe) || !should_scribe_signals(scribe))
-		return;
-
-	if (is_recording(scribe)) {
-		/*
-		 * recalc_sigpending() because we reset the TIF_SIGPENDING
-		 * flag in scribe_can_deliver_signal().
-		 */
-		recalc_sigpending();
-		scribe_do_signal(scribe, regs);
-		return;
-	}
-
-	/* Replay */
+	struct scribe_event_signal *sig_event;
+	struct scribe_event *event;
 	for (;;) {
 		event = scribe_peek_event(scribe->queue, SCRIBE_WAIT);
 		if (IS_ERR(event) || event->type != SCRIBE_EVENT_SIGNAL)
-			break;
+			return;
 
 		sig_event = scribe_dequeue_event_sized(
 				scribe, SCRIBE_EVENT_SIGNAL, sizeof(siginfo_t));
 		if (IS_ERR(sig_event))
-			break;
+			return;
 
 		ret = force_sig_info(sig_event->nr,
 				     (siginfo_t *)sig_event->info, current);
@@ -60,11 +46,34 @@ void scribe_signal_sync_point(struct pt_regs *regs)
 			scribe_emergency_stop(scribe->ctx, ERR_PTR(ret));
 			return;
 		}
-		got_signal = 1;
+		do_signal(regs);
 	}
+}
 
-	if (got_signal)
-		scribe_do_signal(scribe, regs);
+/* XXX scribe_signal_sync_point() may call do_exit() */
+void scribe_signal_sync_point(struct pt_regs *regs)
+{
+	int ret;
+	struct scribe_ps *scribe = current->scribe;
+
+	if (!is_scribed(scribe) || !should_scribe_signals(scribe))
+		return;
+
+	ret = scribe_enter_fenced_region(SCRIBE_REGION_SIGNAL);
+	if (ret) {
+		scribe_emergency_stop(scribe->ctx, ERR_PTR(ret));
+		return;
+	}
+	scribe->in_signal_sync_point = 1;
+
+	scribe_data_det();
+	if (is_recording(scribe))
+		scribe_signal_sync_point_record(scribe, regs);
+	else
+		scribe_signal_sync_point_replay(scribe, regs);
+
+	scribe->in_signal_sync_point = 0;
+	scribe_leave_fenced_region(SCRIBE_REGION_SIGNAL);
 }
 
 /* copy/pasted from kernel/signal.c */
@@ -72,30 +81,20 @@ void scribe_signal_sync_point(struct pt_regs *regs)
 	(sigmask(SIGSEGV) | sigmask(SIGBUS) | sigmask(SIGILL) | \
 	 sigmask(SIGTRAP) | sigmask(SIGFPE))
 
-static int no_sync_point_needed(struct scribe_ps *scribe)
+static int has_synchronous_sig(struct scribe_ps *scribe)
 {
 	int ret;
-	sigset_t mask;
-
-	/*
-	 * If the context state is set to SCRIBE_IDLE, it means that
-	 * emergency_stop() got called, and we have a SIGKILL to process ASAP,
-	 * synchronizing doesn't really matter here because something has
-	 * already went wrong.
-	 */
-	if (unlikely(scribe->ctx->flags == SCRIBE_IDLE))
-		return 1;
+	sigset_t sync_mask;
 
 	/*
 	 * Synchronous signals don't need a sync point by definition, and they
 	 * are picked first before any other signals (so we are fine if other
 	 * signals arrive between now and do_signal()).
 	 */
-
-	siginitset(&mask, ~SYNCHRONOUS_MASK);
+	siginitsetinv(&sync_mask, SYNCHRONOUS_MASK);
 	spin_lock_irq(&current->sighand->siglock);
-	ret = next_signal(&current->pending, &mask);
-	ret |= next_signal(&current->signal->shared_pending, &mask);
+	ret = next_signal(&current->pending, &sync_mask);
+	ret |= next_signal(&current->signal->shared_pending, &sync_mask);
 	spin_unlock_irq(&current->sighand->siglock);
 
 	return ret;
@@ -109,13 +108,20 @@ int scribe_can_deliver_signal(void)
 		return 1;
 
 	/*
-	 * Two options:
+	 * Three options:
 	 * - We are at a sync point, so we will be able to replay the signal
 	 *   at the exact same location.
 	 * - We don't care about being in a sync point because the signal to
-	 *   get delivered will not need a sync point.
+	 *   get delivered will not need a sync point (but fences are still
+	 *   needed).
+	 * - If the context state is set to SCRIBE_IDLE, it means that
+	 *   emergency_stop() got called, and we have a SIGKILL to process ASAP,
+	 *   synchronizing doesn't really matter here because something has
+	 *   already went wrong.
 	 */
-	if (scribe->in_signal_sync_point || no_sync_point_needed(scribe))
+	if (scribe->in_signal_sync_point ||
+	    has_synchronous_sig(scribe) ||
+	    unlikely(scribe->ctx->flags == SCRIBE_IDLE))
 		return 1;
 
 	/*
@@ -130,15 +136,24 @@ void scribe_delivering_signal(int signr, struct siginfo *info)
 {
 	struct scribe_ps *scribe = current->scribe;
 	struct scribe_event_signal *event;
+	sigset_t sync_set;
 
 	if (!is_recording(scribe) || !should_scribe_signals(scribe))
+		return;
+
+	/*
+	 * We don't record synchronous signals because:
+	 * - We would have to wrap them around a fencing region
+	 * - We would have to replay them properly
+	 */
+	siginitset(&sync_set, SYNCHRONOUS_MASK);
+	if (sigismember(&sync_set, signr))
 		return;
 
 	/*
 	 * We cannot really fail gracefully here: sys_kill() cannot fail with
 	 * a -ENOMEM, so even preallocation won't do it.
 	 */
-
 	event = scribe_alloc_event_sized(SCRIBE_EVENT_SIGNAL, sizeof(*info));
 	if (!event) {
 		scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));

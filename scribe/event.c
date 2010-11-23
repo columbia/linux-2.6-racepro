@@ -359,3 +359,12 @@ void *__scribe_alloc_event(int type)
 {
 	return __scribe_alloc_event_const(type);
 }
+
+int scribe_enter_fenced_region(int region)
+{
+	return 0;
+}
+
+void scribe_leave_fenced_region(int region)
+{
+}

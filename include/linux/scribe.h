@@ -224,6 +224,10 @@ static inline void scribe_free_event(void *event)
 	kfree(event);
 }
 
+#define SCRIBE_REGION_SIGNAL	(1 << 0)
+extern int scribe_enter_fenced_region(int region);
+extern void scribe_leave_fenced_region(int region);
+
 /* Context */
 
 struct scribe_context {
