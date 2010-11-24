@@ -31,8 +31,8 @@ void scribe_enter_syscall(struct pt_regs *regs)
 	if (is_scribe_syscall(scribe->nr_syscall))
 		return;
 
-	__scribe_forbid_uaccess(scribe);
 	scribe_signal_sync_point(regs);
+	__scribe_forbid_uaccess(scribe);
 
 	if (is_stopping(scribe)) {
 		scribe_detach(scribe);
@@ -126,8 +126,8 @@ void scribe_exit_syscall(struct pt_regs *regs)
 		scribe_commit_syscall(scribe, regs, ret_value);
 	}
 
-	scribe_signal_sync_point(regs);
 	__scribe_allow_uaccess(scribe);
+	scribe_signal_sync_point(regs);
 }
 
 asmlinkage long sys_get_scribe_flags(void)

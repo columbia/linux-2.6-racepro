@@ -1972,6 +1972,7 @@ relock:
 		spin_unlock_irq(&sighand->siglock);
 
 		scribe_delivering_signal(signr, info);
+		scribe_forbid_uaccess();
 		/*
 		 * Anything else is fatal, maybe with a core dump.
 		 */

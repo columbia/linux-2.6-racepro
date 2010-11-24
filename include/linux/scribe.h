@@ -231,6 +231,7 @@ static inline void scribe_free_event(void *event)
 }
 
 #define SCRIBE_REGION_SIGNAL	(1 << 0)
+#define SCRIBE_REGION_MEM	(2 << 0)
 extern int scribe_enter_fenced_region(int region);
 extern void scribe_leave_fenced_region(int region);
 
@@ -261,6 +262,13 @@ struct scribe_context {
 
 	struct scribe_resource_context *res_ctx;
 	struct scribe_resource tasks_res;
+
+	/* memory page hash table */
+	spinlock_t		mem_hash_lock;
+	struct hlist_head	*mem_hash;
+	/* memory objects ref cnt */
+	spinlock_t		mem_list_lock;
+	struct list_head	mem_list;
 };
 
 static inline void scribe_get_context(struct scribe_context *ctx)
@@ -398,6 +406,8 @@ struct scribe_ps {
 	struct scribe_ps_arch arch;
 
 	int in_signal_sync_point;
+
+	struct scribe_mm *mm;
 };
 
 static inline int may_be_scribed(struct scribe_ps *scribe)
@@ -461,6 +471,10 @@ static inline int should_scribe_signals(struct scribe_ps *scribe)
 static inline int should_scribe_tsc(struct scribe_ps *scribe)
 {
 	return scribe->flags & SCRIBE_PS_ENABLE_TSC;
+}
+static inline int should_scribe_mm(struct scribe_ps *scribe)
+{
+	return scribe->flags & SCRIBE_PS_ENABLE_MM;
 }
 
 extern int init_scribe(struct task_struct *p, struct scribe_context *ctx);
@@ -539,11 +553,41 @@ extern void scribe_commit_syscall(struct scribe_ps *scribe,
 extern void scribe_exit_syscall(struct pt_regs *regs);
 extern int is_kernel_copy(void);
 
+/* Signals */
 struct siginfo;
 extern void scribe_signal_sync_point(struct pt_regs *regs);
 extern int scribe_can_deliver_signal(void);
 extern void scribe_delivering_signal(int signr, struct siginfo *info);
 
+
+/* Memory */
+#define MEM_SYNC_IN		1
+#define MEM_SYNC_OUT		2
+#define MEM_SYNC_SLEEP		4
+extern struct hlist_head *scribe_alloc_mem_hash(void);
+extern void scribe_free_mem_hash(struct hlist_head *hash);
+extern int scribe_mem_init_st(struct scribe_ps *scribe);
+extern void scribe_mem_exit_st(struct scribe_ps *scribe);
+extern void scribe_mem_sync_point(struct scribe_ps *scribe, int mode);
+extern void authorize_page_access(struct scribe_ps *scribe,
+				  unsigned long address);
+extern pgd_t *scribe_get_pgd(struct mm_struct *next, struct task_struct *tsk);
+
+extern int do_scribe_page(struct scribe_ps *scribe, struct mm_struct *mm,
+			  struct vm_area_struct *vma, unsigned long address,
+			  pte_t *pte, pmd_t *pmd, unsigned int flags);
+extern void scribe_do_cow(struct mm_struct *mm, struct vm_area_struct *vma,
+			  unsigned long address);
+extern void scribe_split_vma(struct vm_area_struct *vma);
+extern void scribe_vma_link(struct vm_area_struct *vma);
+extern void scribe_change_protection(struct vm_area_struct *vma,
+		unsigned long addr, unsigned long end, pgprot_t newprot,
+		int dirty_accountable);
+extern void scribe_unmap_vmas(struct mm_struct *mm, struct vm_area_struct *vma,
+		unsigned long start_addr, unsigned long end_addr);
+
+extern void scribe_mem_schedule_in(struct scribe_ps *scribe);
+extern void scribe_mem_schedule_out(struct scribe_ps *scribe);
 #else /* CONFIG_SCRIBE */
 
 /* FIXME Make the kernel compile with !CONFIG_SCRIBE ... */

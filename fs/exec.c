@@ -775,9 +775,11 @@ static int exec_mmap(struct mm_struct *mm)
 {
 	struct task_struct *tsk;
 	struct mm_struct * old_mm, *active_mm;
+	struct scribe_ps *scribe;
 
 	/* Notify parent that we're no longer interested in the old VM */
 	tsk = current;
+	scribe = tsk->scribe;
 	old_mm = current->mm;
 	sync_mm_rss(tsk, old_mm);
 	mm_release(tsk, old_mm);
@@ -792,6 +794,8 @@ static int exec_mmap(struct mm_struct *mm)
 		down_read(&old_mm->mmap_sem);
 		if (unlikely(old_mm->core_state)) {
 			up_read(&old_mm->mmap_sem);
+			if (is_scribed(scribe))
+				scribe_mem_init_st(scribe);
 			return -EINTR;
 		}
 	}
@@ -807,6 +811,8 @@ static int exec_mmap(struct mm_struct *mm)
 		BUG_ON(active_mm != old_mm);
 		mm_update_next_owner(old_mm);
 		mmput(old_mm);
+		if (is_scribed(scribe))
+			scribe_mem_init_st(scribe);
 		return 0;
 	}
 	mmdrop(active_mm);

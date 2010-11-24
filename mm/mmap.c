@@ -28,6 +28,7 @@
 #include <linux/rmap.h>
 #include <linux/mmu_notifier.h>
 #include <linux/perf_event.h>
+#include <linux/scribe.h>
 
 #include <asm/uaccess.h>
 #include <asm/cacheflush.h>
@@ -463,6 +464,8 @@ static void vma_link(struct mm_struct *mm, struct vm_area_struct *vma,
 
 	mm->map_count++;
 	validate_mm(mm);
+
+	scribe_vma_link(vma);
 }
 
 /*
@@ -1973,8 +1976,10 @@ static int __split_vma(struct mm_struct * mm, struct vm_area_struct * vma,
 		err = vma_adjust(vma, vma->vm_start, addr, vma->vm_pgoff, new);
 
 	/* Success. */
-	if (!err)
+	if (!err) {
+		scribe_split_vma(vma);
 		return 0;
+	}
 
 	/* Clean everything up if vma_adjust failed. */
 	if (new->vm_ops && new->vm_ops->close)

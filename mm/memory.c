@@ -1109,6 +1109,7 @@ unsigned long unmap_vmas(struct mmu_gather **tlbp,
 	int fullmm = (*tlbp)->fullmm;
 	struct mm_struct *mm = vma->vm_mm;
 
+	scribe_unmap_vmas(mm, vma, start_addr, end_addr);
 	mmu_notifier_invalidate_range_start(mm, start_addr, end_addr);
 	for ( ; vma && vma->vm_start < end_addr; vma = vma->vm_next) {
 		unsigned long end;
@@ -2300,6 +2301,7 @@ gotten:
 		 */
 		ptep_clear_flush(vma, address, page_table);
 		page_add_new_anon_rmap(new_page, vma, address);
+		scribe_do_cow(mm, vma, address);
 		/*
 		 * We call the notify macro here because, when using secondary
 		 * mmu page tables (such as kvm shadow page tables), we want the
@@ -3077,7 +3079,8 @@ static int do_nonlinear_fault(struct mm_struct *mm, struct vm_area_struct *vma,
  * but allow concurrent faults), and pte mapped but not yet locked.
  * We return with mmap_sem still held, but pte unmapped and unlocked.
  */
-static inline int handle_pte_fault(struct mm_struct *mm,
+static inline int handle_pte_fault(struct scribe_ps *scribe,
+		struct mm_struct *mm,
 		struct vm_area_struct *vma, unsigned long address,
 		pte_t *pte, pmd_t *pmd, unsigned int flags)
 {
@@ -3102,10 +3105,18 @@ static inline int handle_pte_fault(struct mm_struct *mm,
 					pte, pmd, flags, entry);
 	}
 
+	/* if page is marked as COW, we don't want to call do_scribe_page() */
+	if (!(flags & FAULT_FLAG_WRITE) || pte_write(entry)) {
+		if (may_be_scribed(scribe))
+			return do_scribe_page(scribe, mm, vma, address,
+					      pte, pmd, flags);
+	}
+
 	ptl = pte_lockptr(mm, pmd);
 	spin_lock(ptl);
 	if (unlikely(!pte_same(*pte, entry)))
 		goto unlock;
+
 	if (flags & FAULT_FLAG_WRITE) {
 		if (!pte_write(entry))
 			return do_wp_page(mm, vma, address,
@@ -3136,6 +3147,8 @@ unlock:
 int handle_mm_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 		unsigned long address, unsigned int flags)
 {
+	struct scribe_ps *scribe = current->scribe;
+	int ret;
 	pgd_t *pgd;
 	pud_t *pud;
 	pmd_t *pmd;
@@ -3158,11 +3171,19 @@ int handle_mm_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 	pmd = pmd_alloc(mm, pud, address);
 	if (!pmd)
 		return VM_FAULT_OOM;
+scribe_retry:
 	pte = pte_alloc_map(mm, pmd, address);
 	if (!pte)
 		return VM_FAULT_OOM;
 
-	return handle_pte_fault(mm, vma, address, pte, pmd, flags);
+	ret = handle_pte_fault(scribe, mm, vma, address, pte, pmd, flags);
+	if (may_be_scribed(scribe) && scribe->mm &&
+	    ret != VM_FAULT_SCRIBE && ret != VM_FAULT_OOM)
+		goto scribe_retry;
+
+	if (ret == VM_FAULT_SCRIBE)
+		ret = VM_FAULT_MAJOR;
+	return ret;
 }
 
 #ifndef __PAGETABLE_PUD_FOLDED

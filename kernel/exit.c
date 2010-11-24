@@ -654,9 +654,6 @@ static void exit_mm(struct task_struct * tsk)
 	if (!mm)
 		return;
 
-	if (is_ps_scribed(tsk))
-		scribe_mem_exit_st(tsk->scribe);
-
 	/*
 	 * Serialize with any possible pending coredump.
 	 * We must hold mmap_sem around checking core_state

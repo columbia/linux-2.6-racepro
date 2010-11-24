@@ -257,7 +257,8 @@ pgd_t *pgd_alloc(struct mm_struct *mm)
 	if (pgd == NULL)
 		goto out;
 
-	mm->pgd = pgd;
+	/* FIXME Scribe cannot work with this... */
+	/* mm->pgd = pgd; */
 
 	if (preallocate_pmds(pmds) != 0)
 		goto out_free_pgd;

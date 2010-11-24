@@ -6,6 +6,7 @@
 #include <asm/pgalloc.h>
 #include <asm/tlbflush.h>
 #include <asm/paravirt.h>
+#include <linux/scribe.h>
 #ifndef CONFIG_PARAVIRT
 #include <asm-generic/mm_hooks.h>
 
@@ -34,8 +35,11 @@ static inline void switch_mm(struct mm_struct *prev, struct mm_struct *next,
 			     struct task_struct *tsk)
 {
 	unsigned cpu = smp_processor_id();
+	struct scribe_ps *scribe = NULL;
+	if (likely(tsk))
+		scribe = tsk->scribe;
 
-	if (likely(prev != next)) {
+	if (likely(prev != next) || may_be_scribed(scribe)) {
 		/* stop flush ipis for the previous mm */
 		cpumask_clear_cpu(cpu, mm_cpumask(prev));
 #ifdef CONFIG_SMP
@@ -45,7 +49,10 @@ static inline void switch_mm(struct mm_struct *prev, struct mm_struct *next,
 		cpumask_set_cpu(cpu, mm_cpumask(next));
 
 		/* Re-load page tables */
-		load_cr3(next->pgd);
+		if (may_be_scribed(scribe))
+			load_cr3(scribe_get_pgd(next, tsk));
+		else
+			load_cr3(next->pgd);
 
 		/*
 		 * load the LDT, if the LDT is different:

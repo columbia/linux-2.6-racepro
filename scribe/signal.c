@@ -104,6 +104,9 @@ int scribe_can_deliver_signal(void)
 {
 	struct scribe_ps *scribe = current->scribe;
 
+	if (is_scribed(scribe))
+		WARN_ON(!scribe->can_uaccess);
+
 	if (!is_recording(scribe) || !should_scribe_signals(scribe))
 		return 1;
 

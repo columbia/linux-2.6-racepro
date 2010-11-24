@@ -597,6 +597,7 @@ EXPORT_SYMBOL_GPL(get_task_mm);
 void mm_release(struct task_struct *tsk, struct mm_struct *mm)
 {
 	struct completion *vfork_done = tsk->vfork_done;
+	struct scribe_ps *scribe = tsk->scribe;
 
 	/* Get rid of any futexes when releasing the mm */
 #ifdef CONFIG_FUTEX
@@ -635,7 +636,7 @@ void mm_release(struct task_struct *tsk, struct mm_struct *mm)
 		 * deterministically.
 		 */
 		if ((!(tsk->flags & PF_SIGNALED) &&
-		    atomic_read(&mm->mm_users) > 1) || is_ps_scribed(tsk)) {
+		    atomic_read(&mm->mm_users) > 1) || is_scribed(scribe)) {
 			/*
 			 * We don't check the error code - if userspace has
 			 * not set up a proper pointer then tough luck.
@@ -647,6 +648,9 @@ void mm_release(struct task_struct *tsk, struct mm_struct *mm)
 		}
 		tsk->clear_child_tid = NULL;
 	}
+
+	if (is_scribed(scribe))
+		scribe_mem_exit_st(scribe);
 }
 
 /*
@@ -994,6 +998,7 @@ int init_scribe(struct task_struct *p, struct scribe_context *ctx)
 	scribe->flags = 0;
 	scribe->ctx = ctx;
 	scribe->p = p;
+	scribe->mm = NULL;
 
 	p->scribe = scribe;
 

@@ -43,10 +43,19 @@ struct scribe_context *scribe_alloc_context(void)
 	if (!ctx->res_ctx)
 		goto err_ctx;
 
+	spin_lock_init(&ctx->mem_hash_lock);
+	ctx->mem_hash = scribe_alloc_mem_hash();
+	if (!ctx->mem_hash)
+		goto err_res_ctx;
+	spin_lock_init(&ctx->mem_list_lock);
+	INIT_LIST_HEAD(&ctx->mem_list);
+
 	scribe_init_resource(&ctx->tasks_res, SCRIBE_RES_TYPE_TASK);
 
 	return ctx;
 
+err_res_ctx:
+	scribe_free_resource_context(ctx->res_ctx);
 err_ctx:
 	kfree(ctx);
 	return NULL;
@@ -73,6 +82,7 @@ void scribe_exit_context(struct scribe_context *ctx)
 	BUG_ON(ctx->idle_event);
 	BUG_ON(ctx->backtrace);
 
+	scribe_free_mem_hash(ctx->mem_hash);
 	scribe_free_resource_context(ctx->res_ctx);
 
 	scribe_put_context(ctx);
@@ -410,6 +420,7 @@ void scribe_attach(struct scribe_ps *scribe)
 	scribe_attach_arch(scribe);
 
 	scribe_open_files(scribe->p->files);
+	BUG_ON(scribe_mem_init_st(scribe));
 }
 
 void scribe_detach(struct scribe_ps *scribe)
@@ -417,8 +428,9 @@ void scribe_detach(struct scribe_ps *scribe)
 	struct scribe_context *ctx = scribe->ctx;
 	BUG_ON(!is_scribed(scribe));
 
-	/* scribe_close_files() should be done before (in exit_files()) */
+	WARN_ON(scribe->can_uaccess);
 
+	/* scribe_close_files() should be done before (in exit_files()) */
 	scribe_detach_arch(scribe);
 
 	if (scribe->prepared_data_event) {

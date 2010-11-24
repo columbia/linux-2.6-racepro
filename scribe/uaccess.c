@@ -18,7 +18,10 @@ void __scribe_allow_uaccess(struct scribe_ps *scribe)
 	WARN(scribe->can_uaccess > 3,
 	     "scribe->can_uaccess == %d\n", scribe->can_uaccess);
 
-	scribe->can_uaccess++;
+	if (scribe->can_uaccess++)
+		return;
+
+	scribe_mem_sync_point(scribe, MEM_SYNC_OUT);
 }
 
 void __scribe_forbid_uaccess(struct scribe_ps *scribe)
@@ -30,6 +33,7 @@ void __scribe_forbid_uaccess(struct scribe_ps *scribe)
 		return;
 
 	WARN_ON(in_atomic());
+	scribe_mem_sync_point(scribe, MEM_SYNC_IN);
 }
 
 static struct scribe_event_data *get_data_event(struct scribe_ps *scribe,
@@ -104,7 +108,8 @@ void scribe_pre_uaccess(const void *data, const void __user *user_ptr,
 	if (!is_scribed(scribe))
 		return;
 
-	__scribe_allow_uaccess(scribe);
+	if (!is_kernel_copy())
+		__scribe_allow_uaccess(scribe);
 }
 
 /*
@@ -269,7 +274,8 @@ void scribe_post_uaccess(const void *data, const void __user *user_ptr,
 	}
 
 skip:
-	__scribe_forbid_uaccess(scribe);
+	if (!is_kernel_copy())
+		__scribe_forbid_uaccess(scribe);
 	WARN(scribe->prepared_data_event,
 	     "pre-allocated data event not used\n");
 }
@@ -299,6 +305,9 @@ void scribe_pre_schedule(void)
 		return;
 
 	WARN_ON(scribe->can_uaccess && current->state == TASK_INTERRUPTIBLE);
+
+
+	scribe_mem_schedule_in(scribe);
 }
 
 void scribe_post_schedule(void)
@@ -306,6 +315,8 @@ void scribe_post_schedule(void)
 	struct scribe_ps *scribe = current->scribe;
 	if (!is_scribed(scribe))
 		return;
+
+	scribe_mem_schedule_out(scribe);
 }
 
 int fault_in_pages_writeable(char __user *uaddr, int size)
