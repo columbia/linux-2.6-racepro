@@ -653,6 +653,10 @@ static void exit_mm(struct task_struct * tsk)
 	mm_release(tsk, mm);
 	if (!mm)
 		return;
+
+	if (is_ps_scribed(tsk))
+		scribe_mem_exit_st(tsk->scribe);
+
 	/*
 	 * Serialize with any possible pending coredump.
 	 * We must hold mmap_sem around checking core_state
@@ -898,10 +902,6 @@ static void scribe_do_exit(struct task_struct *p, long code)
 	if (!is_scribed(scribe))
 		goto out;
 
-	scribe_allow_uaccess();
-	scribe_data_dont_record();
-	mm_clear_child_tid(p, p->mm, 1);
-
 	if (scribe->in_syscall) {
 		/*
 		 * If we are in a syscall, we need to record the end of the
@@ -1055,7 +1055,6 @@ NORET_TYPE void do_exit(long code)
 
 	/* That's for exiting the mm/sem/files properly */
 	sys_set_scribe_flags(SCRIBE_PS_ENABLE_ALL);
-
 	exit_mm(tsk);
 
 	if (group_dead)
