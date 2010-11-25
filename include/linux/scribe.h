@@ -534,6 +534,8 @@ extern void scribe_backtrace_dump(struct scribe_backtrace *bt,
 				  struct scribe_stream *stream);
 
 extern void scribe_enter_syscall(struct pt_regs *regs);
+extern void scribe_commit_syscall(struct scribe_ps *scribe,
+				  struct pt_regs *regs, long ret_value);
 extern void scribe_exit_syscall(struct pt_regs *regs);
 extern int is_kernel_copy(void);
 

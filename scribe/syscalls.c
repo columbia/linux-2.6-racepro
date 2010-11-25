@@ -31,9 +31,8 @@ void scribe_enter_syscall(struct pt_regs *regs)
 	if (is_scribe_syscall(scribe->nr_syscall))
 		return;
 
-	scribe_signal_sync_point(regs);
-
 	__scribe_forbid_uaccess(scribe);
+	scribe_signal_sync_point(regs);
 
 	if (is_stopping(scribe)) {
 		scribe_detach(scribe);
@@ -72,15 +71,49 @@ void scribe_enter_syscall(struct pt_regs *regs)
 		 */
 	}
 	scribe->in_syscall = 1;
-	scribe_data_push_flags(0);
+	scribe_data_det();
+}
+
+void scribe_commit_syscall(struct scribe_ps *scribe, struct pt_regs *regs,
+			   long ret_value)
+{
+	struct scribe_event_syscall *event;
+	struct scribe_event_syscall_end *event_end;
+
+	if (is_recording(scribe)) {
+		event = scribe_alloc_event(SCRIBE_EVENT_SYSCALL);
+		if (!event)
+			goto err;
+		event->nr = scribe->nr_syscall;
+		event->ret = ret_value;
+
+		scribe_queue_event_at(&scribe->syscall_ip, event);
+		scribe_commit_insert_point(&scribe->syscall_ip);
+
+		if (scribe_queue_new_event(scribe->queue,
+					   SCRIBE_EVENT_SYSCALL_END))
+			goto err;
+	} else {
+		event_end = scribe_dequeue_event_specific(scribe,
+						  SCRIBE_EVENT_SYSCALL_END);
+		if (!IS_ERR(event_end))
+			scribe_free_event(event_end);
+
+		if (scribe->orig_ret != ret_value) {
+			scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_SYSCALL_RET,
+				       .ret = ret_value);
+		}
+	}
+	scribe->in_syscall = 0;
+	return;
+err:
+	scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
 }
 
 void scribe_exit_syscall(struct pt_regs *regs)
 {
+	long ret_value;
 	struct scribe_ps *scribe = current->scribe;
-	struct scribe_event_syscall *event;
-	struct scribe_event_syscall_end *event_end;
-	long ret;
 
 	if (!is_scribed(scribe))
 		return;
@@ -88,59 +121,14 @@ void scribe_exit_syscall(struct pt_regs *regs)
 	if (is_scribe_syscall(scribe->nr_syscall))
 		return;
 
+	if (scribe->in_syscall) {
+		ret_value = syscall_get_return_value(current, regs);
+		scribe_commit_syscall(scribe, regs, ret_value);
+	}
+
+	scribe_signal_sync_point(regs);
 	__scribe_allow_uaccess(scribe);
-
-	if (!scribe->in_syscall) {
-		/*
-		 * Two cases:
-		 * - The current process was freshly attached. This syscall
-		 * doesn't count, we don't want a half recorded syscall.
-		 * - should_scribe_syscalls() == 0
-		 */
-		return;
-	}
-
-	if (is_recording(scribe)) {
-		event = scribe_alloc_event(SCRIBE_EVENT_SYSCALL);
-		if (!event)
-			goto bad;
-		event->nr = scribe->nr_syscall;
-		event->ret = syscall_get_return_value(current, regs);
-
-		scribe_queue_event_at(&scribe->syscall_ip, event);
-		scribe_commit_insert_point(&scribe->syscall_ip);
-
-		if (scribe_queue_new_event(scribe->queue,
-					   SCRIBE_EVENT_SYSCALL_END))
-			goto bad;
-	} else {
-		event_end = scribe_dequeue_event_specific(scribe,
-						  SCRIBE_EVENT_SYSCALL_END);
-		if (!IS_ERR(event_end))
-			scribe_free_event(event_end);
-
-		ret = syscall_get_return_value(current, regs);
-		if (scribe->orig_ret != ret) {
-			scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_SYSCALL_RET,
-				       .ret = ret);
-		}
-	}
-
-	scribe->in_syscall = 0;
-
-	/*
-	 * scribe_exit_syscall() may be called from do_exit(), but in that
-	 * case, we must not trigger do_signal(). It would cause some
-	 * recursive madness.
-	 */
-	if (likely(!(current->flags & PF_EXITING)))
-		scribe_signal_sync_point(regs);
-	return;
-
-bad:
-	scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
 }
-
 
 asmlinkage long sys_get_scribe_flags(void)
 {

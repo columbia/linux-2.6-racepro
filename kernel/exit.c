@@ -893,7 +893,6 @@ static inline void check_stack_usage(void) {}
 #ifdef CONFIG_SCRIBE
 static void scribe_do_exit(struct task_struct *p, long code)
 {
-	struct pt_regs *regs;
 	struct scribe_ps *scribe = p->scribe;
 
 	if (!is_scribed(scribe))
@@ -906,11 +905,9 @@ static void scribe_do_exit(struct task_struct *p, long code)
 	if (scribe->in_syscall) {
 		/*
 		 * If we are in a syscall, we need to record the end of the
-		 * syscall properly.
+		 * syscall properly (it's going to be sys_exit_group()).
 		 */
-		regs = task_pt_regs(p);
-		syscall_set_return_value(p, regs, 0, code);
-		scribe_exit_syscall(regs);
+		scribe_commit_syscall(scribe, task_pt_regs(p), code);
 	}
 
 	scribe_detach(scribe);
