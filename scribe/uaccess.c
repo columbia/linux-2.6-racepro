@@ -104,9 +104,6 @@ void scribe_pre_uaccess(const void *data, const void __user *user_ptr,
 	if (!is_scribed(scribe))
 		return;
 
-	if (!should_handle_data(scribe))
-		return;
-
 	__scribe_allow_uaccess(scribe);
 }
 
@@ -240,7 +237,7 @@ void scribe_post_uaccess(const void *data, const void __user *user_ptr,
 		return;
 
 	if (!should_handle_data(scribe))
-		return;
+		goto skip;
 
 	/*
 	 * @size is the number of bytes that have been copied from/to
