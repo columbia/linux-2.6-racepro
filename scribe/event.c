@@ -40,6 +40,7 @@ static void init_queue(struct scribe_queue *queue,
 	queue->ctx = ctx;
 	INIT_LIST_HEAD(&queue->node);
 	queue->pid = pid;
+	queue->fence_serial = 0;
 }
 
 static struct scribe_queue *find_queue(struct scribe_context *ctx, pid_t pid)
@@ -360,21 +361,37 @@ int scribe_enter_fenced_region(int region)
 {
 	struct scribe_ps *scribe = current->scribe;
 	struct scribe_event_fence *event;
+	int serial;
+	int ret;
 
 	if (!is_scribed(scribe))
 		return 0;
 
+	/*
+	 * TODO This is a trivial and very inefficient implementation of fences.
+	 * We record a serial number just for extra safety while we're at it.
+	 */
+
+	serial = scribe->queue->fence_serial++;
+
 	if (is_recording(scribe)) {
-		return scribe_queue_new_event(scribe->queue,
-					      SCRIBE_EVENT_FENCE);
+		return scribe_queue_new_event(scribe->queue, SCRIBE_EVENT_FENCE,
+					      .serial = serial);
 	}
 	/* is_replaying == true */
-	event = scribe_dequeue_event_specific(scribe,
-					      SCRIBE_EVENT_FENCE);
+	event = scribe_dequeue_event_specific(scribe, SCRIBE_EVENT_FENCE);
 	if (IS_ERR(event))
 		return PTR_ERR(event);
+
+	ret = 0;
+	if (serial != event->serial) {
+		scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_FENCE_SERIAL,
+			       .serial = serial);
+		ret = -EDIVERGE;
+	}
+
 	scribe_free_event(event);
-	return 0;
+	return ret;
 }
 
 void scribe_leave_fenced_region(int region)

@@ -84,6 +84,8 @@ struct scribe_queue {
 	struct scribe_context *ctx;
 	struct list_head node;
 	pid_t pid;
+
+	int fence_serial;
 };
 
 extern void scribe_init_stream(struct scribe_stream *stream);

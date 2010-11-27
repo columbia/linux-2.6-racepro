@@ -79,6 +79,7 @@ enum scribe_event_type {
 	SCRIBE_EVENT_DIVERGE_DATA_CONTENT,
 	SCRIBE_EVENT_DIVERGE_RESOURCE_TYPE,
 	SCRIBE_EVENT_DIVERGE_SYSCALL_RET,
+	SCRIBE_EVENT_DIVERGE_FENCE_SERIAL,
 };
 
 struct scribe_event {
@@ -191,6 +192,7 @@ struct scribe_event_signal {
 #define struct_SCRIBE_EVENT_FENCE struct scribe_event_fence
 struct scribe_event_fence {
 	struct scribe_event h;
+	__u32 serial;
 } __attribute__((packed));
 
 #define struct_SCRIBE_EVENT_MEM_OWNED_READ struct scribe_event_mem_owned_read
@@ -319,6 +321,14 @@ struct scribe_event_diverge_syscall_ret {
 	__u32 ret;
 } __attribute__((packed));
 
+#define struct_SCRIBE_EVENT_DIVERGE_FENCE_SERIAL \
+	struct scribe_event_diverge_fence_serial
+struct scribe_event_diverge_fence_serial {
+	struct scribe_event_diverge h;
+	__u32 serial;
+} __attribute__((packed));
+
+
 static __always_inline int is_sized_type(int type)
 {
 	return  type == SCRIBE_EVENT_INIT ||
@@ -334,7 +344,8 @@ static __always_inline int is_diverge_type(int type)
 		type == SCRIBE_EVENT_DIVERGE_DATA_PTR ||
 		type == SCRIBE_EVENT_DIVERGE_DATA_CONTENT ||
 		type == SCRIBE_EVENT_DIVERGE_RESOURCE_TYPE ||
-		type == SCRIBE_EVENT_DIVERGE_SYSCALL_RET;
+		type == SCRIBE_EVENT_DIVERGE_SYSCALL_RET ||
+		type == SCRIBE_EVENT_DIVERGE_FENCE_SERIAL;
 }
 
 void __you_are_using_an_unknown_scribe_type(void);
@@ -376,6 +387,7 @@ static __always_inline size_t sizeof_event_from_type(__u8 type)
 	__TYPE(SCRIBE_EVENT_DIVERGE_DATA_CONTENT);
 	__TYPE(SCRIBE_EVENT_DIVERGE_RESOURCE_TYPE);
 	__TYPE(SCRIBE_EVENT_DIVERGE_SYSCALL_RET);
+	__TYPE(SCRIBE_EVENT_DIVERGE_FENCE_SERIAL);
 #undef  __TYPE
 
 	if (__builtin_constant_p(type))
