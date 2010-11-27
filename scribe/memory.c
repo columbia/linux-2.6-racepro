@@ -1684,8 +1684,16 @@ static int scribe_page_access_record(struct scribe_ps *scribe,
 		return 0;
 	}
 
-	read_write_accounting(page, scribe, &write_access);
+	/*
+	 * The sync point must be entered before writing any public events in
+	 * our queue (we might send ourselves some public events in
+	 * try_make_public() to go from a readonly access to a write access.
+	 */
+	spin_unlock(&page->owners_lock);
+	scribe_mem_sync_point(scribe, MEM_SYNC_IN);
+	spin_lock(&page->owners_lock);
 
+	read_write_accounting(page, scribe, &write_access);
 	/*
 	 * We have to increment the waiter counter before trying to make
 	 * public: during make_public, allocation may be needed, and the owner
@@ -1699,7 +1707,6 @@ static int scribe_page_access_record(struct scribe_ps *scribe,
 	spin_unlock(&page->owners_lock);
 
 	up_read(&mm->mmap_sem);
-	scribe_mem_sync_point(scribe, MEM_SYNC_IN);
 
 	print_page_no_lock(scribe, "getting", page);
 	page_down(page, write_access);
