@@ -222,16 +222,20 @@ static int resource_pre_alloc(struct scribe_resource_cache *cache,
 	struct scribe_lock_region *lock_region;
 	int i;
 
-	cache->hres = kmalloc(sizeof(*cache->hres), GFP_KERNEL);
-	if (!cache->hres)
-		return -ENOMEM;
+	if (!cache->hres) {
+		cache->hres = kmalloc(sizeof(*cache->hres), GFP_KERNEL);
+		if (!cache->hres)
+			return -ENOMEM;
+	}
 
 	for (i = 0; i < ARRAY_SIZE(cache->lock_regions); i++) {
 		lock_region = cache->lock_regions[i];
 
-		if (lock_region && !lock_region->object) {
-			if (reinit_lock_region(lock_region, doing_recording))
-				return -ENOMEM;
+		if (lock_region) {
+			if (!lock_region->object)
+				if (reinit_lock_region(lock_region,
+						       doing_recording))
+					return -ENOMEM;
 			continue;
 		}
 
@@ -520,8 +524,7 @@ static void resource_unlock_discard(struct scribe_lock_region *lock_region)
 		exit_lock_region(lock_region);
 	}
 
-	lock_region->res = NULL;
-	lock_region->object = NULL;
+	kfree(lock_region);
 }
 
 static inline struct scribe_lock_region **find_lock_region_ptr(
