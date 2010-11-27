@@ -1923,8 +1923,10 @@ retry:
 			MEM_DEBUG(scribe, "retrying (are we alone ?)");
 			goto retry;
 		}
-		MEM_DEBUG(scribe, "something went bad: VM_FAULT_OOM !");
-		return VM_FAULT_OOM;
+		if (ret == -ENOMEM)
+			return VM_FAULT_OOM;
+		MEM_DEBUG(scribe, "something went bad (%d)", ret);
+		page = NULL;
 	}
 
 set_pte:
