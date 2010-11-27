@@ -1745,6 +1745,20 @@ static int scribe_page_access_record(struct scribe_ps *scribe,
 	return scribe_make_page_owned_log(scribe, page, address, write_access);
 }
 
+static int serial_match(struct scribe_ps *scribe,
+			struct scribe_page *page, int serial)
+{
+	if (atomic_read(&page->serial) >= serial)
+		return 1;
+
+	if (scribe->ctx->flags == SCRIBE_IDLE) {
+		/* emergency_stop() has been triggered, we need to leave */
+		return 1;
+	}
+
+	return 0;
+}
+
 static int scribe_page_access_replay(struct scribe_ps *scribe,
 		struct mm_struct *mm, struct vm_area_struct *vma,
 		struct scribe_page *page, unsigned long address,
@@ -1769,10 +1783,10 @@ static int scribe_page_access_replay(struct scribe_ps *scribe,
 	scribe_mem_sync_point(scribe, MEM_SYNC_IN);
 	scribe_mem_sync_point(scribe, MEM_SYNC_OUT);
 
-	/* pop the event, will die if not the right event */
 	event = scribe_dequeue_event(scribe->queue, SCRIBE_WAIT);
 	if (IS_ERR(event)) {
 		scribe_emergency_stop(scribe->ctx, event);
+		down_read(&mm->mmap_sem);
 		return PTR_ERR(event);
 	}
 
@@ -1798,11 +1812,9 @@ static int scribe_page_access_replay(struct scribe_ps *scribe,
 			/* need to wait ! */
 			MEM_DEBUG(scribe, "waiting on page %p (%d vs %d)",
 				page, atomic_read(&page->serial), serial);
-		wait_event(page->serial_wait, atomic_read(&page->serial) >= serial);
-
+		wait_event(page->serial_wait,
+			   serial_match(scribe, page, serial));
 		down_read(&mm->mmap_sem);
-
-		BUG_ON(atomic_read(&page->serial) < serial);
 
 		spin_lock(&page->owners_lock);
 		scribe_make_page_owned_replay(scribe, page, address, rw_flag);
@@ -1826,6 +1838,7 @@ static int scribe_page_access_replay(struct scribe_ps *scribe,
 	scribe_free_event(event);
 	scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_EVENT_TYPE,
 		       .type = SCRIBE_EVENT_MEM_OWNED_READ);
+	down_read(&mm->mmap_sem);
 	return -EDIVERGE;
 }
 
