@@ -155,6 +155,8 @@ struct scribe_mm {
 	int			weak_owner;
 
 	scribe_insert_point_t	weak_owner_events_ip;
+
+	int disable_sync_sleep;
 };
 
 /* lock order:
@@ -982,6 +984,7 @@ int scribe_mem_init_st(struct scribe_ps *scribe)
 	spin_lock_init(&mm->req_lock);
 	INIT_LIST_HEAD(&mm->shared_req);
 	mm->weak_owner = 0;
+	mm->disable_sync_sleep = 0;
 
 	down_write(&tsk->mm->mmap_sem);
 	scribe->mm = mm;
@@ -1041,6 +1044,9 @@ void scribe_mem_exit_st(struct scribe_ps *scribe)
 
 	/* take care of the pending shared memory requests */
 	scribe_mem_sync_point(scribe, MEM_SYNC_IN | MEM_SYNC_SLEEP);
+
+	/* we don't want any schedule() to call mem_sync_point() again */
+	mm->disable_sync_sleep = 1;
 
 	down_write(&tsk->mm->mmap_sem);
 
@@ -1395,17 +1401,18 @@ void scribe_mem_schedule_in(struct scribe_ps *scribe)
 		return;
 
 	if (scribe->p->state != TASK_INTERRUPTIBLE &&
-		scribe->p->state != TASK_UNINTERRUPTIBLE)
+	    scribe->p->state != TASK_UNINTERRUPTIBLE)
 		return;
 
 	if (!scribe->mm->weak_owner) {
-		if (scribe->p->state == TASK_INTERRUPTIBLE) {
-			dump_stack();
-			MEM_DEBUG(scribe,
-				  "warning: sleeping while not in a sync point");
-		}
+		WARN(scribe->p->state == TASK_INTERRUPTIBLE &&
+		     !(preempt_count() & PREEMPT_ACTIVE),
+		     "warning: sleeping while not in a sync point");
 		return;
 	}
+
+	if (scribe->mm->disable_sync_sleep)
+		return;
 
 	scribe_mem_sync_point(scribe, MEM_SYNC_IN | MEM_SYNC_SLEEP);
 }
@@ -1416,6 +1423,9 @@ void scribe_mem_schedule_out(struct scribe_ps *scribe)
 		return;
 
 	if (!scribe->mm)
+		return;
+
+	if (scribe->mm->disable_sync_sleep)
 		return;
 
 	if (scribe->mm->weak_owner & MEM_SYNC_SLEEP)
