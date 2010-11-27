@@ -186,12 +186,13 @@ static struct scribe_substream *get_head_substream(scribe_insert_point_t *ip)
 
 void scribe_commit_insert_point(scribe_insert_point_t *ip)
 {
-	struct scribe_substream *substream = get_tail_substream(ip);
-	struct scribe_stream *stream = substream->stream;
+	struct scribe_stream *stream = ip->stream;
+	struct scribe_substream *substream;
 
 	spin_lock(&stream->lock);
+	substream = get_tail_substream(ip);
 	list_splice_tail(&ip->events, &substream->events);
-	list_del_init(&ip->node);
+	list_del(&ip->node);
 	spin_unlock(&stream->lock);
 
 	if (substream == &stream->master)
@@ -211,9 +212,11 @@ static inline void __scribe_queue_events_at(struct scribe_stream *stream,
 					    struct scribe_event *event,
 					    struct list_head *events)
 {
-	struct scribe_substream *substream = get_tail_substream(ip);
+	struct scribe_substream *substream;
 
 	spin_lock(&stream->lock);
+	substream = get_tail_substream(ip);
+
 	/*
 	 * When queuing events, we want to put them in the next
 	 * insert point event list because the current insert point is
@@ -256,8 +259,9 @@ void scribe_queue_events_stream(struct scribe_stream *stream,
 static struct scribe_event *__scribe_peek_event(struct scribe_stream *stream,
 						int wait, int remove)
 {
+	scribe_insert_point_t *ip = &stream->master;
+	struct scribe_substream *substream;
 	struct scribe_event *event;
-	struct list_head *events = &get_head_substream(&stream->master)->events;
 
 retry:
 	if (wait == SCRIBE_WAIT_INTERRUPTIBLE &&
@@ -272,7 +276,8 @@ retry:
 		       stream->wont_grow);
 
 	spin_lock(&stream->lock);
-	if (list_empty(events)) {
+	substream = get_head_substream(ip);
+	if (list_empty(&substream->events)) {
 		spin_unlock(&stream->lock);
 		/*
 		 * If the queue will never grow, the queue is officially dead.
@@ -284,7 +289,7 @@ retry:
 			goto retry;
 		return ERR_PTR(-EAGAIN);
 	}
-	event = list_first_entry(events, typeof(*event), node);
+	event = list_first_entry(&substream->events, typeof(*event), node);
 	if (likely(remove))
 		list_del(&event->node);
 	spin_unlock(&stream->lock);
@@ -319,9 +324,10 @@ struct scribe_event *scribe_dequeue_event_stream(struct scribe_stream *stream,
 
 /*
  * scribe_peek_event() returns the first event (like dequeue), but doesn't
- * remove it from the queue.
- * XXX BE CAREFUL: do not free the event, do not access the event list node.
- * If you want to consume the event, dequeue it.
+ * remove it from the queue. If you want to consume the event, dequeue it.
+ * XXX BE CAREFUL: do not free the event, do not access the event list node,
+ * forbit another process dequeing the event while your are accessing that
+ * event.
  */
 struct scribe_event *scribe_peek_event(struct scribe_queue *queue, int wait)
 {
