@@ -201,6 +201,7 @@ static void print_page(struct scribe_ps *scribe, const char *msg, struct scribe_
 	char buf[500];
 	char rw_buf[16] = "";
 
+	assert_spin_locked(&page->owners_lock);
 	sprintf(rw_buf, "dbl_rw=%d", page->read_then_write);
 
 	i = snprintf(buf+i, sizeof(buf)-i, "page=%p(%p,%p) s=%d %s %s -- Owners: ",
@@ -325,6 +326,7 @@ static void rm_page_ownership(struct scribe_ownership *os)
 {
 #ifdef CONFIG_SCRIBE_MEM_DBG
 	struct scribe_page *page = os->page;
+	struct scribe_ps *owner = os->owner;
 	assert_spin_locked(&page->owners_lock);
 	BUG_ON(!list_empty(&os->req_node));
 #endif
@@ -333,7 +335,7 @@ static void rm_page_ownership(struct scribe_ownership *os)
 	__free_ownership_struct(os);
 
 #ifdef CONFIG_SCRIBE_MEM_DBG
-	print_page(os->owner, "rm owner", page);
+	print_page(owner, "rm owner", page);
 #endif
 }
 
@@ -1165,7 +1167,14 @@ static int scribe_make_page_owned_log(struct scribe_ps *scribe,
 	int ret;
 	int serial;
 
+#ifdef CONFIG_SCRIBE_MEM_DBG
+	/* To make print_page() happy */
+	spin_lock(&page->owners_lock);
+#endif
 	serial = increment_serial(page);
+#ifdef CONFIG_SCRIBE_MEM_DBG
+	spin_unlock(&page->owners_lock);
+#endif
 	if (write_access)
 		ret = scribe_queue_new_event(scribe->queue,
 					     SCRIBE_EVENT_MEM_OWNED_WRITE,
