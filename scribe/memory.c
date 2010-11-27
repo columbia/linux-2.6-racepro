@@ -1461,6 +1461,7 @@ static int scribe_handle_public_event(struct scribe_ps *scribe,
 	struct scribe_event_mem_public_write *public_write_event;
 	unsigned long page_addr;
 	int rw_flag;
+	int ret;
 
 	if (event->type == SCRIBE_EVENT_MEM_PUBLIC_WRITE) {
 		public_write_event = (void *)event;
@@ -1493,11 +1494,17 @@ static int scribe_handle_public_event(struct scribe_ps *scribe,
 
 	spin_lock(&page->owners_lock);
 	os = find_ownership(page, scribe);
-	scribe_make_page_public(os, rw_flag);
+	if (likely(os)) {
+		scribe_make_page_public(os, rw_flag);
+		ret = 0;
+	} else {
+		scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_MEM_NOT_OWNED);
+		ret = -EDIVERGE;
+	}
 	spin_unlock(&page->owners_lock);
 
 	up_read(&mm->mmap_sem);
-	return 0;
+	return ret;
 }
 
 static inline int is_vma_scribed(struct scribe_ps *scribe, struct vm_area_struct *vma)
@@ -1816,9 +1823,11 @@ static int scribe_page_access_replay(struct scribe_ps *scribe,
 		}
 		scribe_free_event(event);
 
-		if (unlikely(page_addr != (address & PAGE_MASK))) {
-			scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_MEM_ADDRESS,
-				       .address = address & PAGE_MASK);
+		if (unlikely(page_addr != (address & PAGE_MASK) ||
+			     (!rw_flag && write_access))) {
+			scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_MEM_OWNED,
+				       .address = address & PAGE_MASK,
+				       .write_access = write_access);
 		}
 
 		if (atomic_read(&page->serial) < serial)
@@ -1849,8 +1858,9 @@ static int scribe_page_access_replay(struct scribe_ps *scribe,
 	}
 
 	scribe_free_event(event);
-	scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_EVENT_TYPE,
-		       .type = SCRIBE_EVENT_MEM_OWNED_READ);
+	scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_MEM_OWNED,
+		       .address = address & PAGE_MASK,
+		       .write_access = write_access);
 	down_read(&mm->mmap_sem);
 	return -EDIVERGE;
 }
