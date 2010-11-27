@@ -300,7 +300,6 @@ add_page_ownership(struct scribe_page *page, struct scribe_ps *owner,
 	struct scribe_ownership *os = NULL;
 
 #ifdef CONFIG_SCRIBE_MEM_DBG
-	might_sleep();
 	assert_spin_locked(&page->owners_lock);
 	BUG_ON(is_owned_by(page, owner));
 #endif
@@ -412,7 +411,6 @@ static void scribe_remove_page(struct scribe_context *ctx, struct scribe_page_ke
  */
 static void put_obj_ref(struct scribe_context *ctx, struct scribe_obj_ref *ref)
 {
-	might_sleep();
 	XMEM_DEBUG(current->scribe, "put_obj_ref(), object=%p, cnt=%d",
 		    ref->object, atomic_read(&ref->counter)-1);
 
@@ -598,8 +596,6 @@ static struct scribe_page *get_scribe_page(struct scribe_context *ctx,
 	struct scribe_page	*page;
 	struct scribe_page	*page_alloc;
 
-	might_sleep();
-
 	page = find_scribe_page(ctx, key);
 	if (page)
 		return page;
@@ -692,8 +688,6 @@ static void scribe_page_release_ownership(struct scribe_ps *scribe,
 
 	mm = scribe->p->mm;
 
-	might_sleep();
-
 	__scribe_page_release_ownership(scribe, mm);
 
 	if (only_anonymous_pages == ONLY_ANONYMOUS_PAGES)
@@ -719,8 +713,6 @@ static void scribe_remove_page(struct scribe_context *ctx,
 	struct scribe_page	*page;
 	struct hlist_node	*node, *safe;
 	int i;
-
-	might_sleep();
 
 	if (key->offset != OFFSET_ALL) {
 		page = find_scribe_page(ctx, key);
