@@ -20,7 +20,7 @@
 #include "../mm/internal.h"
 #include <asm/tlb.h>
 
-#if 1
+#if 0
 #define CONFIG_SCRIBE_MEM_DBG
 #define MEM_DEBUG(scribe, msg, args... ) do {		\
 	printk(KERN_DEBUG "[%04d] " msg "\n",		\
@@ -1344,6 +1344,7 @@ static int scribe_mem_sync_point_replay(struct scribe_ps *scribe, int mode)
 	return ret;
 }
 
+#ifdef CONFIG_SCRIBE_MEM_DBG
 static const char* get_sync_mode_str(int mode)
 {
 	switch(mode) {
@@ -1363,17 +1364,19 @@ static void assert_sync_mode(struct scribe_ps *scribe, int expected_mode)
 	     "Current mode is %s, but the expected one is %s\n",
 	     get_sync_mode_str(mode), get_sync_mode_str(expected_mode));
 }
+#else
+static void assert_sync_mode(struct scribe_ps *scribe, int expected_mode) {}
+#endif
 
 void scribe_mem_sync_point(struct scribe_ps *scribe, int mode)
 {
 	int need_fence;
-	int ret, fence_ret;
+	int ret, fence_ret = 0;
 	if (!should_handle_mm(scribe))
 		return;
 
 	MEM_DEBUG(scribe, "mem sync point(%s)", get_sync_mode_str(mode));
 
-#ifdef CONFIG_SCRIBE_MEM_DBG
 	if (mode & MEM_SYNC_IN) {
 		if (mode & MEM_SYNC_SLEEP)
 			assert_sync_mode(scribe, MEM_SYNC_IN);
@@ -1385,7 +1388,6 @@ void scribe_mem_sync_point(struct scribe_ps *scribe, int mode)
 		else
 			assert_sync_mode(scribe, MEM_SYNC_IN);
 	}
-#endif
 
 	need_fence = current->scribe == scribe && mode == MEM_SYNC_IN;
 
@@ -1813,7 +1815,10 @@ static int scribe_page_access_replay(struct scribe_ps *scribe,
 		}
 		scribe_free_event(event);
 
-		BUG_ON(page_addr != (address & PAGE_MASK));
+		if (unlikely(page_addr != (address & PAGE_MASK))) {
+			scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_MEM_ADDRESS,
+				       .address = address & PAGE_MASK);
+		}
 
 		if (atomic_read(&page->serial) < serial)
 			/* need to wait ! */
