@@ -1222,7 +1222,7 @@ static inline int has_ownership_expired(struct scribe_ownership *os, struct time
 
 static int serve_shared_req(struct scribe_ps *scribe, int mode)
 {
-	struct scribe_event *public_event;
+	struct scribe_event *public_event = NULL;
 	struct scribe_ownership *os;
 	struct scribe_page *page;
 	struct timeval now = {0, 0};
@@ -1237,22 +1237,35 @@ retry:
 		spin_unlock(&scribe->mm->req_lock);
 		print_page_no_lock(scribe, "serve shrd req", page);
 
-		public_event = scribe_alloc_event(SCRIBE_EVENT_MEM_PUBLIC_READ);
 		if (!public_event) {
-			spin_lock(&scribe->mm->req_lock);
-			return -ENOMEM;
+			public_event = scribe_alloc_event(SCRIBE_EVENT_MEM_PUBLIC_READ);
+			if (!public_event) {
+				spin_lock(&scribe->mm->req_lock);
+				return -ENOMEM;
+			}
 		}
 
 		spin_lock(&page->owners_lock);
 		spin_lock(&scribe->mm->req_lock);
+
+		if (!is_owned_by(page, scribe) || list_empty(&os->req_node)) {
+			print_page(scribe, "shared req cancelled", page);
+			spin_unlock(&page->owners_lock);
+			goto retry;
+		}
+
 		list_del_init(&os->req_node);
 
 		if (page->read_waiters || page->write_waiters)
 			scribe_make_page_public_log(os, public_event,
 						    page->write_waiters ? 1 : 0);
 		spin_unlock(&page->owners_lock);
+		public_event = NULL;
 		goto retry;
 	}
+
+	if (public_event)
+		scribe_free_event(public_event);
 
 	return 0;
 }
