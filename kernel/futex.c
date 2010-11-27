@@ -131,6 +131,7 @@ struct futex_q {
 struct futex_hash_bucket {
 	spinlock_t lock;
 	struct plist_head chain;
+	struct scribe_resource_container scribe_resource;
 };
 
 static struct futex_hash_bucket futex_queues[1<<FUTEX_HASHBITS];
@@ -867,6 +868,46 @@ double_unlock_hb(struct futex_hash_bucket *hb1, struct futex_hash_bucket *hb2)
 		spin_unlock(&hb2->lock);
 }
 
+static inline void scribe_lock_hb(struct futex_hash_bucket *hb)
+{
+	scribe_lock_object_handle(hb, &hb->scribe_resource, SCRIBE_WRITE);
+}
+
+static inline void scribe_lock_hb_nested(struct futex_hash_bucket *hb)
+{
+	scribe_lock_object_handle(hb, &hb->scribe_resource,
+				  SCRIBE_WRITE | SCRIBE_NESTED);
+}
+
+static inline void scribe_double_lock_hb(struct futex_hash_bucket *hb1,
+					 struct futex_hash_bucket *hb2)
+{
+	if (hb1 <= hb2) {
+		scribe_lock_hb(hb1);
+		if (hb1 < hb2)
+			scribe_lock_hb_nested(hb2);
+	} else { /* hb1 > hb2 */
+		scribe_lock_hb(hb2);
+		scribe_lock_hb_nested(hb1);
+	}
+}
+
+static inline void scribe_double_unlock_hb(struct futex_hash_bucket *hb1,
+					   struct futex_hash_bucket *hb2)
+{
+	scribe_unlock(hb1);
+	if (hb1 != hb2)
+		scribe_unlock(&hb2);
+}
+
+static inline void scribe_double_unlock_hb_discard(
+		struct futex_hash_bucket *hb1, struct futex_hash_bucket *hb2)
+{
+	scribe_unlock_discard(hb1);
+	if (hb1 != hb2)
+		scribe_unlock_discard(&hb2);
+}
+
 /*
  * Wake up waiters matching bitset queued on this futex (uaddr).
  */
@@ -886,6 +927,7 @@ static int futex_wake(u32 __user *uaddr, int fshared, int nr_wake, u32 bitset)
 		goto out;
 
 	hb = hash_futex(&key);
+	scribe_lock_hb(hb);
 	spin_lock(&hb->lock);
 	head = &hb->chain;
 
@@ -907,7 +949,9 @@ static int futex_wake(u32 __user *uaddr, int fshared, int nr_wake, u32 bitset)
 	}
 
 	spin_unlock(&hb->lock);
+	scribe_unlock(hb);
 	put_futex_key(fshared, &key);
+
 out:
 	return ret;
 }
@@ -925,6 +969,16 @@ futex_wake_op(u32 __user *uaddr1, int fshared, u32 __user *uaddr2,
 	struct plist_head *head;
 	struct futex_q *this, *next;
 	int ret, op_ret;
+	struct scribe_ps *scribe = current->scribe;
+
+	if (is_scribed(scribe)) {
+		/*
+		 * We are in user space accessible region (not a weak-owner).
+		 * Thus by faulting here (and not in futex_atomic_op_inuser()
+		 * since it's atomic), we'll get the page ownership.
+		 */
+		fault_in_user_writeable(uaddr2);
+	}
 
 retry:
 	ret = get_futex_key(uaddr1, fshared, &key1);
@@ -938,6 +992,7 @@ retry:
 	hb2 = hash_futex(&key2);
 
 retry_private:
+	scribe_double_lock_hb(hb1, hb2);
 	double_lock_hb(hb1, hb2);
 	op_ret = futex_atomic_op_inuser(op, uaddr2);
 	if (unlikely(op_ret < 0)) {
@@ -961,6 +1016,10 @@ retry_private:
 		ret = fault_in_user_writeable(uaddr2);
 		if (ret)
 			goto out_put_keys;
+
+		scribe_double_unlock_hb_discard(hb1, hb2);
+		WARN(1, "Scribe: Not handling memory accesses replay "
+		     "in the retry loop");
 
 		if (!fshared)
 			goto retry_private;
@@ -996,6 +1055,7 @@ retry_private:
 
 	double_unlock_hb(hb1, hb2);
 out_put_keys:
+	scribe_double_unlock_hb(hb1, hb2);
 	put_futex_key(fshared, &key2);
 out_put_key1:
 	put_futex_key(fshared, &key1);
@@ -1158,6 +1218,13 @@ static int futex_requeue(u32 __user *uaddr1, int fshared, u32 __user *uaddr2,
 	struct futex_q *this, *next;
 	u32 curval2;
 
+	if (is_ps_scribed(current)) {
+		/* same reasoning as in futex_wake_op() */
+		get_user(curval2, uaddr1);
+		if (requeue_pi)
+			fault_in_user_writeable(uaddr2);
+	}
+
 	if (requeue_pi) {
 		/*
 		 * requeue_pi requires a pi_state, try to allocate it now
@@ -1200,6 +1267,7 @@ retry:
 	hb2 = hash_futex(&key2);
 
 retry_private:
+	scribe_double_lock_hb(hb1, hb2);
 	double_lock_hb(hb1, hb2);
 
 	if (likely(cmpval != NULL)) {
@@ -1213,6 +1281,10 @@ retry_private:
 			ret = get_user(curval, uaddr1);
 			if (ret)
 				goto out_put_keys;
+
+			scribe_double_unlock_hb_discard(hb1, hb2);
+			WARN(1, "Scribe: Not handling memory accesses replay "
+			     "in the retry loop");
 
 			if (!fshared)
 				goto retry_private;
@@ -1261,8 +1333,11 @@ retry_private:
 			put_futex_key(fshared, &key2);
 			put_futex_key(fshared, &key1);
 			ret = fault_in_user_writeable(uaddr2);
-			if (!ret)
+			if (!ret) {
+				scribe_double_unlock_hb_discard(hb1, hb2);
 				goto retry;
+			}
+			scribe_double_unlock_hb(hb1, hb2);
 			goto out;
 		case -EAGAIN:
 			/* The owner was exiting, try again. */
@@ -1270,6 +1345,7 @@ retry_private:
 			put_futex_key(fshared, &key2);
 			put_futex_key(fshared, &key1);
 			cond_resched();
+			scribe_double_unlock_hb_discard(hb1, hb2);
 			goto retry;
 		default:
 			goto out_unlock;
@@ -1350,6 +1426,7 @@ out_unlock:
 		drop_futex_key_refs(&key1);
 
 out_put_keys:
+	scribe_double_unlock_hb(hb1, hb2);
 	put_futex_key(fshared, &key2);
 out_put_key1:
 	put_futex_key(fshared, &key1);
@@ -1368,6 +1445,7 @@ static inline struct futex_hash_bucket *queue_lock(struct futex_q *q)
 	hb = hash_futex(&q->key);
 	q->lock_ptr = &hb->lock;
 
+	scribe_lock_hb(hb);
 	spin_lock(&hb->lock);
 	return hb;
 }
@@ -1412,11 +1490,13 @@ static inline void queue_me(struct futex_q *q, struct futex_hash_bucket *hb)
 	plist_add(&q->list, &hb->chain);
 	q->task = current;
 	spin_unlock(&hb->lock);
+	scribe_unlock(hb);
 }
 
 /**
  * unqueue_me() - Remove the futex_q from its futex_hash_bucket
  * @q:	The futex_q to unqueue
+ * @hb:	The original hash bucket
  *
  * The q->lock_ptr must not be held by the caller. A call to unqueue_me() must
  * be paired with exactly one earlier call to queue_me().
@@ -1425,10 +1505,12 @@ static inline void queue_me(struct futex_q *q, struct futex_hash_bucket *hb)
  *   1 - if the futex_q was still queued (and we removed unqueued it)
  *   0 - if the futex_q was already removed by the waking thread
  */
-static int unqueue_me(struct futex_q *q)
+static int unqueue_me(struct futex_q *q, struct futex_hash_bucket *hb)
 {
 	spinlock_t *lock_ptr;
 	int ret = 0;
+
+	scribe_lock_hb(hb);
 
 	/* In the common case we don't take the spinlock, which is nice. */
 retry:
@@ -1461,6 +1543,8 @@ retry:
 		spin_unlock(lock_ptr);
 		ret = 1;
 	}
+
+	scribe_unlock(hb);
 
 	drop_futex_key_refs(&q->key);
 	return ret;
@@ -1677,6 +1761,7 @@ out:
 static void futex_wait_queue_me(struct futex_hash_bucket *hb, struct futex_q *q,
 				struct hrtimer_sleeper *timeout)
 {
+	int skip_schedule;
 	/*
 	 * The task state is guaranteed to be set before another task can
 	 * wake it. set_current_state() is implemented using set_mb() and
@@ -1697,17 +1782,19 @@ static void futex_wait_queue_me(struct futex_hash_bucket *hb, struct futex_q *q,
 	 * If we have been removed from the hash list, then another task
 	 * has tried to wake us, and we can skip the call to schedule().
 	 */
+	scribe_forbid_uaccess();
 	if (likely(!plist_node_empty(&q->list))) {
-		scribe_forbid_uaccess();
+		skip_schedule = is_ps_replaying(current) &&
+				current->scribe->orig_ret == -ETIMEDOUT;
 		/*
 		 * If the timer has already expired, current will already be
 		 * flagged for rescheduling. Only call schedule if there
 		 * is no timeout, or if it has yet to expire.
 		 */
-		if (!timeout || timeout->task)
+		if ((!timeout || timeout->task) && !skip_schedule)
 			schedule();
-		scribe_allow_uaccess();
 	}
+	scribe_allow_uaccess();
 	__set_current_state(TASK_RUNNING);
 }
 
@@ -1734,6 +1821,11 @@ static int futex_wait_setup(u32 __user *uaddr, u32 val, int fshared,
 	u32 uval;
 	int ret;
 
+	if (is_ps_scribed(current)) {
+		/* same reasoning as in futex_wake_op() */
+		get_user(uval, uaddr);
+	}
+
 	/*
 	 * Access the page AFTER the hash-bucket is locked.
 	 * Order is important:
@@ -1758,6 +1850,10 @@ retry:
 		return ret;
 
 retry_private:
+	/*
+	 * XXX scribe_lock_hb() gets called in queue_lock, but not in
+	 * queue_unlock().
+	 */
 	*hb = queue_lock(q);
 
 	ret = get_futex_value_locked(&uval, uaddr);
@@ -1766,8 +1862,14 @@ retry_private:
 		queue_unlock(q, *hb);
 
 		ret = get_user(uval, uaddr);
-		if (ret)
+		if (ret) {
+			scribe_unlock(*hb);
 			goto out;
+		}
+
+		scribe_unlock_discard(*hb);
+		WARN(1, "Scribe: Not handling memory accesses replay "
+		     "in the retry loop");
 
 		if (!fshared)
 			goto retry_private;
@@ -1778,6 +1880,7 @@ retry_private:
 
 	if (uval != val) {
 		queue_unlock(q, *hb);
+		scribe_unlock(*hb);
 		ret = -EWOULDBLOCK;
 	}
 
@@ -1790,6 +1893,7 @@ out:
 static int futex_wait(u32 __user *uaddr, int fshared,
 		      u32 val, ktime_t *abs_time, u32 bitset, int clockrt)
 {
+	struct scribe_ps *scribe = current->scribe;
 	struct hrtimer_sleeper timeout, *to = NULL;
 	struct restart_block *restart;
 	struct futex_hash_bucket *hb;
@@ -1823,9 +1927,15 @@ retry:
 	/* queue_me and wait for wakeup, timeout, or a signal. */
 	futex_wait_queue_me(hb, &q, to);
 
+	if (is_replaying(scribe)) {
+		ret = scribe->orig_ret;
+		WARN_ON(unqueue_me(&q, hb) && !ret);
+		goto out_put_key;
+	}
+
 	/* If we were woken (and unqueued), we succeeded, whatever. */
 	ret = 0;
-	if (!unqueue_me(&q))
+	if (!unqueue_me(&q, hb))
 		goto out_put_key;
 	ret = -ETIMEDOUT;
 	if (to && !to->task)
@@ -1837,6 +1947,8 @@ retry:
 	 */
 	if (!signal_pending(current)) {
 		put_futex_key(fshared, &q.key);
+		/* FIXME Scribe: we dont handle that path yet */
+		WARN_ON(is_scribed(scribe));
 		goto retry;
 	}
 
@@ -2557,7 +2669,17 @@ long do_futex(u32 __user *uaddr, int op, u32 val, ktime_t *timeout,
 	if (clockrt && cmd != FUTEX_WAIT_BITSET && cmd != FUTEX_WAIT_REQUEUE_PI)
 		return -ENOSYS;
 
-	if (scribe) {
+	if (may_be_scribed(scribe)) {
+		if (scribe_resource_prepare()) {
+			/*
+			 * We can't really return -ENOMEM, userspace might not
+			 * handle it, better kill the whole thing.
+			 */
+			scribe_emergency_stop(current->scribe->ctx,
+					      ERR_PTR(-ENOMEM));
+			return -ENOMEM;
+		}
+
 		scribe_allow_uaccess();
 		scribe_data_dont_record();
 	}
@@ -2608,7 +2730,7 @@ long do_futex(u32 __user *uaddr, int op, u32 val, ktime_t *timeout,
 		ret = -ENOSYS;
 	}
 
-	if (scribe)
+	if (may_be_scribed(scribe))
 		scribe_forbid_uaccess();
 
 	return ret;
@@ -2648,6 +2770,45 @@ SYSCALL_DEFINE6(futex, u32 __user *, uaddr, int, op, u32, val,
 	return do_futex(uaddr, op, val, tp, uaddr2, val2, val3);
 }
 
+#ifdef CONFIG_SCRIBE
+int scribe_open_futexes(struct scribe_resource_context *ctx)
+{
+	int ret = 0;
+	int i;
+	struct scribe_resource_cache cache;
+
+	scribe_resource_init_cache(&cache);
+	for (i = 0; i < ARRAY_SIZE(futex_queues); i++) {
+		if (scribe_resource_pre_alloc(&cache, 0)) {
+			ret = -ENOMEM;
+			break;
+		}
+
+		scribe_open_resource(ctx, &futex_queues[i].scribe_resource,
+				     SCRIBE_RES_TYPE_FUTEX, NULL,
+				     SCRIBE_NO_SYNC, SCRIBE_NO_SYNC, &cache);
+	}
+	scribe_resource_exit_cache(&cache);
+	if (ret) {
+		for (i--; i >= 0; i--) {
+			scribe_close_resource(ctx,
+					      &futex_queues[i].scribe_resource,
+					      SCRIBE_NO_SYNC);
+		}
+	}
+	return ret;
+}
+
+void scribe_close_futexes(struct scribe_resource_context *ctx)
+{
+	int i;
+	for (i = 0; i < ARRAY_SIZE(futex_queues); i++) {
+		scribe_close_resource(ctx, &futex_queues[i].scribe_resource,
+				      SCRIBE_NO_SYNC);
+	}
+}
+#endif
+
 static int __init futex_init(void)
 {
 	u32 curval;
@@ -2670,6 +2831,7 @@ static int __init futex_init(void)
 	for (i = 0; i < ARRAY_SIZE(futex_queues); i++) {
 		plist_head_init(&futex_queues[i].chain, &futex_queues[i].lock);
 		spin_lock_init(&futex_queues[i].lock);
+		scribe_init_resource_container(&futex_queues[i].scribe_resource);
 	}
 
 	return 0;

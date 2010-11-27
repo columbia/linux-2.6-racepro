@@ -10,6 +10,7 @@
 #include <linux/sched.h>
 #include <linux/seq_file.h>
 #include <linux/scribe.h>
+#include <linux/futex.h>
 
 struct scribe_context *scribe_alloc_context(void)
 {
@@ -43,17 +44,22 @@ struct scribe_context *scribe_alloc_context(void)
 	if (!ctx->res_ctx)
 		goto err_ctx;
 
-	spin_lock_init(&ctx->mem_hash_lock);
-	ctx->mem_hash = scribe_alloc_mem_hash();
-	if (!ctx->mem_hash)
+	if (scribe_open_futexes(ctx->res_ctx))
 		goto err_res_ctx;
-	spin_lock_init(&ctx->mem_list_lock);
-	INIT_LIST_HEAD(&ctx->mem_list);
 
 	scribe_init_resource(&ctx->tasks_res, SCRIBE_RES_TYPE_TASK);
 
+	spin_lock_init(&ctx->mem_hash_lock);
+	ctx->mem_hash = scribe_alloc_mem_hash();
+	if (!ctx->mem_hash)
+		goto err_futex;
+	spin_lock_init(&ctx->mem_list_lock);
+	INIT_LIST_HEAD(&ctx->mem_list);
+
 	return ctx;
 
+err_futex:
+	scribe_close_futexes(ctx->res_ctx);
 err_res_ctx:
 	scribe_free_resource_context(ctx->res_ctx);
 err_ctx:
@@ -83,6 +89,7 @@ void scribe_exit_context(struct scribe_context *ctx)
 	BUG_ON(ctx->backtrace);
 
 	scribe_free_mem_hash(ctx->mem_hash);
+	scribe_close_futexes(ctx->res_ctx);
 	scribe_free_resource_context(ctx->res_ctx);
 
 	scribe_put_context(ctx);
