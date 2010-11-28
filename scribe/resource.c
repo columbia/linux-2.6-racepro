@@ -75,7 +75,8 @@ struct scribe_resource_context *scribe_alloc_resource_context(void)
 	for (i = 0; i < INODE_HASH_SIZE; i++) {
 		scribe_init_resource(&ctx->registration_res_inode[i],
 				     SCRIBE_RES_TYPE_REGISTRATION |
-				     SCRIBE_RES_TYPE_INODE);
+				     SCRIBE_RES_TYPE_INODE |
+				     SCRIBE_RES_TYPE_SPINLOCK);
 	}
 
 	return ctx;
