@@ -141,9 +141,36 @@ static struct futex_hash_bucket futex_queues[1<<FUTEX_HASHBITS];
  */
 static struct futex_hash_bucket *hash_futex(union futex_key *key)
 {
-	u32 hash = jhash2((u32*)&key->both.word,
-			  (sizeof(key->both.word)+sizeof(key->both.ptr))/4,
-			  key->both.offset);
+	struct scribe_ps *scribe = current->scribe;
+	struct task_struct *owner;
+	union futex_key skey;
+	u32 hash;
+
+	if (is_scribed(scribe)) {
+		/*
+		 * Because we are synchronizing on a resource in the hash
+		 * bucket, we need to keep things consistant across
+		 * record/replay. We cannot get our resource based on a kernel
+		 * pointer that changes.
+		 * Note: it removes any hopes of sharing a futex between a
+		 * scribe context and the external world (but that's a good
+		 * thing).
+		 */
+
+		skey.both.word = key->both.word;
+		if (key->both.offset & FUT_OFF_INODE)
+			skey.both.ptr = (void *)key->shared.inode->i_ino;
+		else {
+			owner = key->private.mm->owner;
+			skey.both.ptr = (void *)task_tgid_vnr(owner);
+		}
+		skey.both.offset = key->both.offset;
+		key = &skey;
+	}
+
+	hash = jhash2((u32*)&key->both.word,
+		      (sizeof(key->both.word)+sizeof(key->both.ptr))/4,
+		      key->both.offset);
 	return &futex_queues[hash & ((1 << FUTEX_HASHBITS)-1)];
 }
 
