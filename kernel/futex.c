@@ -873,39 +873,22 @@ static inline void scribe_lock_hb(struct futex_hash_bucket *hb)
 	scribe_lock_object_handle(hb, &hb->scribe_resource, SCRIBE_WRITE);
 }
 
-static inline void scribe_lock_hb_nested(struct futex_hash_bucket *hb)
-{
-	scribe_lock_object_handle(hb, &hb->scribe_resource,
-				  SCRIBE_WRITE | SCRIBE_NESTED);
-}
-
 static inline void scribe_double_lock_hb(struct futex_hash_bucket *hb1,
 					 struct futex_hash_bucket *hb2)
 {
-	if (hb1 <= hb2) {
-		scribe_lock_hb(hb1);
-		if (hb1 < hb2)
-			scribe_lock_hb_nested(hb2);
-	} else { /* hb1 > hb2 */
-		scribe_lock_hb(hb2);
-		scribe_lock_hb_nested(hb1);
-	}
+	/* FIXME */
 }
 
 static inline void scribe_double_unlock_hb(struct futex_hash_bucket *hb1,
 					   struct futex_hash_bucket *hb2)
 {
-	scribe_unlock(hb1);
-	if (hb1 != hb2)
-		scribe_unlock(&hb2);
+	/* FIXME */
 }
 
 static inline void scribe_double_unlock_hb_discard(
 		struct futex_hash_bucket *hb1, struct futex_hash_bucket *hb2)
 {
-	scribe_unlock_discard(hb1);
-	if (hb1 != hb2)
-		scribe_unlock_discard(&hb2);
+	/* FIXME */
 }
 
 /*
@@ -1762,6 +1745,8 @@ static void futex_wait_queue_me(struct futex_hash_bucket *hb, struct futex_q *q,
 				struct hrtimer_sleeper *timeout)
 {
 	int skip_schedule;
+
+	scribe_disable_sync_sleep();
 	/*
 	 * The task state is guaranteed to be set before another task can
 	 * wake it. set_current_state() is implemented using set_mb() and
@@ -1783,6 +1768,7 @@ static void futex_wait_queue_me(struct futex_hash_bucket *hb, struct futex_q *q,
 	 * has tried to wake us, and we can skip the call to schedule().
 	 */
 	scribe_forbid_uaccess();
+	scribe_enable_sync_sleep();
 	if (likely(!plist_node_empty(&q->list))) {
 		skip_schedule = is_ps_replaying(current) &&
 				current->scribe->orig_ret == -ETIMEDOUT;
@@ -1794,8 +1780,8 @@ static void futex_wait_queue_me(struct futex_hash_bucket *hb, struct futex_q *q,
 		if ((!timeout || timeout->task) && !skip_schedule)
 			schedule();
 	}
-	scribe_allow_uaccess();
 	__set_current_state(TASK_RUNNING);
+	scribe_allow_uaccess();
 }
 
 /**
@@ -1926,12 +1912,6 @@ retry:
 
 	/* queue_me and wait for wakeup, timeout, or a signal. */
 	futex_wait_queue_me(hb, &q, to);
-
-	if (is_replaying(scribe)) {
-		ret = scribe->orig_ret;
-		WARN_ON(unqueue_me(&q, hb) && !ret);
-		goto out_put_key;
-	}
 
 	/* If we were woken (and unqueued), we succeeded, whatever. */
 	ret = 0;
@@ -2785,7 +2765,8 @@ int scribe_open_futexes(struct scribe_resource_context *ctx)
 		}
 
 		scribe_open_resource(ctx, &futex_queues[i].scribe_resource,
-				     SCRIBE_RES_TYPE_FUTEX, NULL,
+				     SCRIBE_RES_TYPE_FUTEX |
+				     SCRIBE_RES_TYPE_SPINLOCK, NULL,
 				     SCRIBE_NO_SYNC, SCRIBE_NO_SYNC, &cache);
 	}
 	scribe_resource_exit_cache(&cache);
