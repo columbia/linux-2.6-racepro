@@ -47,11 +47,6 @@
 #define INODE_HASH_BITS 8
 #define INODE_HASH_SIZE (1 << INODE_HASH_BITS)
 
-#define SCRIBE_READ		0x01
-#define SCRIBE_WRITE		0x02
-#define SCRIBE_INODE_READ	0x04
-#define SCRIBE_INODE_WRITE	0x08
-
 static inline int should_handle_resources(struct scribe_ps *scribe)
 {
 	if (!is_scribed(scribe))
@@ -216,7 +211,7 @@ void scribe_resource_init_cache(struct scribe_resource_cache *cache)
 	memset(cache, 0, sizeof(*cache));
 }
 
-static int resource_pre_alloc(struct scribe_resource_cache *cache,
+int scribe_resource_pre_alloc(struct scribe_resource_cache *cache,
 			      int doing_recording)
 {
 	struct scribe_lock_region *lock_region;
@@ -252,11 +247,11 @@ static int resource_pre_alloc(struct scribe_resource_cache *cache,
 	return 0;
 }
 
-static int __scribe_resource_prepare(struct scribe_ps *scribe)
+static int __resource_prepare(struct scribe_ps *scribe)
 {
 	might_sleep();
 
-	if (resource_pre_alloc(&scribe->res_cache, is_recording(scribe)))
+	if (scribe_resource_pre_alloc(&scribe->res_cache, is_recording(scribe)))
 		return -ENOMEM;
 
 	return 0;
@@ -269,7 +264,7 @@ int scribe_resource_prepare(void)
 	if (!should_handle_resources(scribe))
 		return 0;
 
-	return __scribe_resource_prepare(scribe);
+	return __resource_prepare(scribe);
 }
 
 void scribe_resource_exit_cache(struct scribe_resource_cache *cache)
@@ -410,7 +405,7 @@ static int get_lockdep_subclass(int type)
 }
 #endif
 
-static void resource_lock(struct scribe_lock_region *lock_region)
+static void lock(struct scribe_lock_region *lock_region)
 {
 	struct scribe_resource *res;
 	struct scribe_event_resource_lock *event;
@@ -471,7 +466,7 @@ static void wake_up_for_serial(struct scribe_resource *res)
 	spin_unlock(&q->lock);
 }
 
-static void resource_unlock(struct scribe_lock_region *lock_region)
+static void unlock(struct scribe_lock_region *lock_region)
 {
 	struct scribe_resource *res;
 	struct scribe_event_resource_unlock *res_event;
@@ -511,7 +506,7 @@ static void resource_unlock(struct scribe_lock_region *lock_region)
 	kfree(lock_region);
 }
 
-static void resource_unlock_discard(struct scribe_lock_region *lock_region)
+static void unlock_discard(struct scribe_lock_region *lock_region)
 {
 	struct scribe_ps *scribe = current->scribe;
 	struct scribe_resource *res;
@@ -569,8 +564,8 @@ static inline struct scribe_lock_region *get_lock_region(
 	return lock_region;
 }
 
-static void __resource_lock_object(struct scribe_ps *scribe, void *object,
-				   struct scribe_resource *res, int flags)
+static void __lock_object(struct scribe_ps *scribe, void *object,
+			  struct scribe_resource *res, int flags)
 {
 	struct scribe_lock_region *lock_region;
 
@@ -581,30 +576,40 @@ static void __resource_lock_object(struct scribe_ps *scribe, void *object,
 	lock_region->object = object;
 	lock_region->flags = flags;
 
-	resource_lock(lock_region);
+	lock(lock_region);
 }
 
-static void resource_lock_object(void *object, struct scribe_resource *res,
-				 int flags)
+void scribe_lock_object(void *object, struct scribe_resource *res, int flags)
 {
 	struct scribe_ps *scribe = current->scribe;
 
 	if (!should_handle_resources(scribe))
 		return;
 
-	__resource_lock_object(scribe, object, res, flags);
+	__lock_object(scribe, object, res, flags);
 }
 
-static void __resource_lock_object_handle(struct scribe_ps *scribe,
-		void *object, struct scribe_resource_container *container,
-		int flags)
+static void __lock_object_handle(struct scribe_ps *scribe, void *object,
+				 struct scribe_resource_container *container,
+				 int flags)
 {
 	struct scribe_resource_handle *hres;
 
 	hres = find_resource_handle(scribe->ctx->res_ctx, container);
 	BUG_ON(!hres);
 
-	__resource_lock_object(scribe, object, &hres->res, flags);
+	__lock_object(scribe, object, &hres->res, flags);
+}
+
+void scribe_lock_object_handle(void *object,
+		struct scribe_resource_container *container, int flags)
+{
+	struct scribe_ps *scribe = current->scribe;
+
+	if (!should_handle_resources(scribe))
+		return;
+
+	__lock_object_handle(scribe, object, container, flags);
 }
 
 static inline struct inode *file_inode(struct file *file)
@@ -630,9 +635,9 @@ void scribe_unlock_err(void *object, int err)
 	}
 
 	if (likely(err >= 0))
-		resource_unlock(lock_region);
+		unlock(lock_region);
 	else
-		resource_unlock_discard(lock_region);
+		unlock_discard(lock_region);
 }
 
 void scribe_unlock(void *object)
@@ -671,7 +676,7 @@ void scribe_assert_locked(void *object)
  * 2) Task B opens the resource, bumps its reference counter. Then task A
  *    closes the resource. The serial number is not re-initialized to 0.
  */
-static void resource_open(struct scribe_resource_context *ctx,
+void scribe_open_resource(struct scribe_resource_context *ctx,
 			  struct scribe_resource_container *container,
 			  int type, struct scribe_resource *sync_res,
 			  int do_sync_open, int do_sync_close,
@@ -688,13 +693,13 @@ static void resource_open(struct scribe_resource_context *ctx,
 		open_lock_region->res = sync_res;
 		open_lock_region->object = sync_res;
 
-		resource_lock(open_lock_region);
+		lock(open_lock_region);
 	}
 
 	hres = get_resource_handle(ctx, container, type, &cache->hres);
 
 	if (do_sync_open)
-		resource_unlock(open_lock_region);
+		unlock(open_lock_region);
 
 	if (do_sync_close) {
 		close_lock_region = get_lock_region(cache, NULL);
@@ -709,11 +714,11 @@ static void resource_open(struct scribe_resource_context *ctx,
 	}
 }
 
-static void resource_close(struct scribe_resource_context *ctx,
+void scribe_close_resource(struct scribe_resource_context *ctx,
 			   struct scribe_resource_container *container,
 			   int do_close_sync)
 {
-	struct scribe_lock_region *close_lock_region;
+	struct scribe_lock_region *close_lock_region = NULL;
 	struct scribe_resource_handle *hres;
 
 	hres = find_resource_handle(ctx, container);
@@ -728,13 +733,13 @@ static void resource_close(struct scribe_resource_context *ctx,
 		list_del(&close_lock_region->node);
 		spin_unlock(&hres->lock);
 
-		resource_lock(close_lock_region);
+		lock(close_lock_region);
 	}
 
 	put_resource_handle(ctx, container, hres);
 
 	if (do_close_sync)
-		resource_unlock(close_lock_region);
+		unlock(close_lock_region);
 }
 
 static inline int inode_need_reg_sync(struct inode *inode)
@@ -786,9 +791,9 @@ void scribe_open_file(struct file *file, int do_sync)
 	sync_res = find_registration_res_inode(current_ctx, inode);
 	do_sync_open = do_sync && inode_need_reg_sync(inode);
 	do_sync_close = inode_need_reg_sync(inode);
-	resource_open(current_ctx, &inode->i_scribe_resource,
-		      SCRIBE_RES_TYPE_INODE, sync_res,
-		      do_sync_open, do_sync_close, &scribe->res_cache);
+	scribe_open_resource(current_ctx, &inode->i_scribe_resource,
+			     SCRIBE_RES_TYPE_INODE, sync_res,
+			     do_sync_open, do_sync_close, &scribe->res_cache);
 }
 
 void scribe_close_file(struct file *file)
@@ -804,13 +809,13 @@ void scribe_close_file(struct file *file)
 	current_ctx = scribe->ctx->res_ctx;
 	inode = file_inode(file);
 	do_sync = inode_need_reg_sync(inode);
-	resource_close(current_ctx, &inode->i_scribe_resource, do_sync);
+	scribe_close_resource(current_ctx, &inode->i_scribe_resource, do_sync);
 
 	if (atomic_dec_and_test(&file->scribe_resource.ref_cnt))
 		file->scribe_context = NULL;
 }
 
-static void __scribe_lock_file(struct file *file, int flags)
+static void __lock_file(struct file *file, int flags)
 {
 	struct scribe_ps *scribe = current->scribe;
 	struct inode *inode;
@@ -822,7 +827,7 @@ static void __scribe_lock_file(struct file *file, int flags)
 	if (inode_need_explicit_locking(inode))
 		flags &= ~(SCRIBE_INODE_READ | SCRIBE_INODE_WRITE);
 
-	__resource_lock_object(scribe, file, &file->scribe_resource, flags);
+	__lock_object(scribe, file, &file->scribe_resource, flags);
 
 	if (flags & SCRIBE_INODE_READ)
 		flags = SCRIBE_READ;
@@ -831,54 +836,52 @@ static void __scribe_lock_file(struct file *file, int flags)
 	else
 		return;
 
-	__resource_lock_object_handle(scribe, inode,
-				      &inode->i_scribe_resource, flags);
+	__lock_object_handle(scribe, inode, &inode->i_scribe_resource, flags);
 }
 
 void scribe_lock_file_no_inode(struct file *file)
 {
-	__scribe_lock_file(file, SCRIBE_WRITE);
+	__lock_file(file, SCRIBE_WRITE);
 }
 
 void scribe_lock_file_read(struct file *file)
 {
-	__scribe_lock_file(file, SCRIBE_WRITE | SCRIBE_INODE_READ);
+	__lock_file(file, SCRIBE_WRITE | SCRIBE_INODE_READ);
 }
 
 void scribe_lock_file_write(struct file *file)
 {
-	__scribe_lock_file(file, SCRIBE_WRITE | SCRIBE_INODE_WRITE);
+	__lock_file(file, SCRIBE_WRITE | SCRIBE_INODE_WRITE);
 }
 
-static void __scribe_lock_inode(struct inode *inode, int flags)
+static void __lock_inode(struct inode *inode, int flags)
 {
 	struct scribe_ps *scribe = current->scribe;
 
 	if (!should_handle_resources(scribe))
 		return;
 
-	__resource_lock_object_handle(scribe, inode,
-				      &inode->i_scribe_resource, flags);
+	__lock_object_handle(scribe, inode, &inode->i_scribe_resource, flags);
 }
 
 void scribe_lock_inode_read(struct inode *inode)
 {
-	__scribe_lock_inode(inode, SCRIBE_READ);
+	__lock_inode(inode, SCRIBE_READ);
 }
 
 void scribe_lock_inode_write(struct inode *inode)
 {
-	__scribe_lock_inode(inode, SCRIBE_WRITE);
+	__lock_inode(inode, SCRIBE_WRITE);
 }
 
-static int __scribe_track_next_file(int flags)
+static int __track_next_file(int flags)
 {
 	struct scribe_ps *scribe = current->scribe;
 
 	if (!should_handle_resources(scribe))
 		return 0;
 
-	if (__scribe_resource_prepare(scribe))
+	if (__resource_prepare(scribe))
 		return -ENOMEM;
 
 	scribe->lock_next_file = flags;
@@ -887,17 +890,17 @@ static int __scribe_track_next_file(int flags)
 
 int scribe_track_next_file_no_inode(void)
 {
-	return __scribe_track_next_file(SCRIBE_WRITE);
+	return __track_next_file(SCRIBE_WRITE);
 }
 
 int scribe_track_next_file_read(void)
 {
-	return __scribe_track_next_file(SCRIBE_WRITE | SCRIBE_INODE_READ);
+	return __track_next_file(SCRIBE_WRITE | SCRIBE_INODE_READ);
 }
 
 int scribe_track_next_file_write(void)
 {
-	return __scribe_track_next_file(SCRIBE_WRITE | SCRIBE_INODE_WRITE);
+	return __track_next_file(SCRIBE_WRITE | SCRIBE_INODE_WRITE);
 }
 
 void scribe_pre_fget(struct files_struct *files, int *lock_flags)
@@ -930,7 +933,7 @@ void scribe_post_fget(struct files_struct *files, struct file *file,
 	scribe_unlock(files);
 	if (file) {
 		current->scribe->locked_file = file;
-		__scribe_lock_file(file, lock_flags);
+		__lock_file(file, lock_flags);
 	}
 }
 
@@ -1038,12 +1041,12 @@ void scribe_close_files(struct files_struct *files)
 
 void scribe_lock_files_read(struct files_struct *files)
 {
-	resource_lock_object(files, &files->scribe_resource, SCRIBE_READ);
+	scribe_lock_object(files, &files->scribe_resource, SCRIBE_READ);
 }
 
 void scribe_lock_files_write(struct files_struct *files)
 {
-	resource_lock_object(files, &files->scribe_resource, SCRIBE_WRITE);
+	scribe_lock_object(files, &files->scribe_resource, SCRIBE_WRITE);
 }
 
 static void lock_task(struct task_struct *task, int flags)
@@ -1054,7 +1057,7 @@ static void lock_task(struct task_struct *task, int flags)
 		return;
 
 	/* For now all the tasks are synchronized on the same resource */
-	__resource_lock_object(scribe, task, &scribe->ctx->tasks_res, flags);
+	__lock_object(scribe, task, &scribe->ctx->tasks_res, flags);
 }
 
 void scribe_lock_task_read(struct task_struct *task)

@@ -335,10 +335,31 @@ extern void scribe_free_resource_context(struct scribe_resource_context *);
 
 extern void scribe_resource_init_cache(struct scribe_resource_cache *cache);
 extern void scribe_resource_exit_cache(struct scribe_resource_cache *cache);
+extern int scribe_resource_pre_alloc(struct scribe_resource_cache *cache,
+				     int doing_recording);
 extern int scribe_resource_prepare(void);
 
 #define SCRIBE_NO_SYNC	0
 #define SCRIBE_SYNC	1
+extern void scribe_open_resource(struct scribe_resource_context *ctx,
+				 struct scribe_resource_container *container,
+				 int type, struct scribe_resource *sync_res,
+				 int do_sync_open, int do_sync_close,
+				 struct scribe_resource_cache *cache);
+extern void scribe_close_resource(struct scribe_resource_context *ctx,
+				  struct scribe_resource_container *container,
+				  int do_close_sync);
+
+#define SCRIBE_READ		0x01
+#define SCRIBE_WRITE		0x02
+#define SCRIBE_INODE_READ	0x04
+#define SCRIBE_INODE_WRITE	0x08
+#define SCRIBE_NESTED		0x10
+extern void scribe_lock_object(void *object, struct scribe_resource *res,
+			       int flags);
+extern void scribe_lock_object_handle(void *object,
+		struct scribe_resource_container *container, int flags);
+
 extern void scribe_open_file(struct file *file, int do_sync);
 extern void scribe_close_file(struct file *file);
 extern void scribe_lock_file_no_inode(struct file *file);
