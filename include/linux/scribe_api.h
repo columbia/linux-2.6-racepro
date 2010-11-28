@@ -163,9 +163,8 @@ struct scribe_event_queue_eof {
 #define SCRIBE_RES_TYPE_FILES_STRUCT	3
 #define SCRIBE_RES_TYPE_TASK		4
 #define SCRIBE_RES_TYPE_FUTEX		5
-#define SCRIBE_RES_TYPE_REGISTRATION_FLAG 0x80
-#define SCRIBE_RES_TYPE_REGISTRATION(type) \
-	((type) | SCRIBE_RES_TYPE_REGISTRATION_FLAG)
+#define SCRIBE_RES_TYPE_SPINLOCK	0x40
+#define SCRIBE_RES_TYPE_REGISTRATION	0x80
 
 #define struct_SCRIBE_EVENT_RESOURCE_LOCK struct scribe_event_resource_lock
 struct scribe_event_resource_lock {

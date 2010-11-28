@@ -354,7 +354,6 @@ extern void scribe_close_resource(struct scribe_resource_context *ctx,
 #define SCRIBE_WRITE		0x02
 #define SCRIBE_INODE_READ	0x04
 #define SCRIBE_INODE_WRITE	0x08
-#define SCRIBE_NESTED		0x10
 extern void scribe_lock_object(void *object, struct scribe_resource *res,
 			       int flags);
 extern void scribe_lock_object_handle(void *object,

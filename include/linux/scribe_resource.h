@@ -43,6 +43,7 @@ struct scribe_resource {
 	int type;
 	u32 serial;
 	struct mutex lock;
+	spinlock_t slock;
 	wait_queue_head_t wait;
 };
 
@@ -57,9 +58,8 @@ extern void scribe_init_resource_container(
 #define SCRIBE_RES_TYPE_FILES_STRUCT	3
 #define SCRIBE_RES_TYPE_TASK		4
 #define SCRIBE_RES_TYPE_FUTEX		5
-#define SCRIBE_RES_TYPE_REGISTRATION_FLAG 0x80
-#define SCRIBE_RES_TYPE_REGISTRATION(type) \
-	((type) | SCRIBE_RES_TYPE_REGISTRATION_FLAG)
+#define SCRIBE_RES_TYPE_SPINLOCK	0x40
+#define SCRIBE_RES_TYPE_REGISTRATION	0x80
 
 void scribe_init_resource(struct scribe_resource *res, int type);
 void scribe_reset_resource(struct scribe_resource *res);

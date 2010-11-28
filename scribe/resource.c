@@ -74,8 +74,8 @@ struct scribe_resource_context *scribe_alloc_resource_context(void)
 
 	for (i = 0; i < INODE_HASH_SIZE; i++) {
 		scribe_init_resource(&ctx->registration_res_inode[i],
-				     SCRIBE_RES_TYPE_REGISTRATION(
-					      SCRIBE_RES_TYPE_INODE));
+				     SCRIBE_RES_TYPE_REGISTRATION |
+				     SCRIBE_RES_TYPE_INODE);
 	}
 
 	return ctx;
@@ -130,6 +130,7 @@ void scribe_init_resource(struct scribe_resource *res, int type)
 	atomic_set(&res->ref_cnt, 0);
 	res->type = type;
 	mutex_init(&res->lock);
+	spin_lock_init(&res->slock);
 	init_waitqueue_head(&res->wait);
 	scribe_reset_resource(res);
 }
@@ -399,11 +400,16 @@ static int serial_match(struct scribe_ps *scribe,
 static int get_lockdep_subclass(int type)
 {
 	/* MAX_LOCKDEP_SUBCLASSES is small, trying not to overflow it */
-	if (type & SCRIBE_RES_TYPE_REGISTRATION_FLAG)
+	if (type & SCRIBE_RES_TYPE_REGISTRATION)
 		return SCRIBE_RES_TYPE_RESERVED;
-	return type;
+	return type & 0x07;
 }
 #endif
+
+static inline int use_spinlock(struct scribe_resource *res)
+{
+	return res->type & SCRIBE_RES_TYPE_SPINLOCK;
+}
 
 static void lock(struct scribe_lock_region *lock_region)
 {
@@ -447,7 +453,10 @@ static void lock(struct scribe_lock_region *lock_region)
 	 * stay consistent.
 	 */
 out:
-	mutex_lock_nested(&res->lock, get_lockdep_subclass(res->type));
+	if (use_spinlock(res))
+		spin_lock_nested(&res->slock, get_lockdep_subclass(res->type));
+	else
+		mutex_lock_nested(&res->lock, get_lockdep_subclass(res->type));
 }
 
 static void wake_up_for_serial(struct scribe_resource *res)
@@ -473,11 +482,15 @@ static void unlock(struct scribe_lock_region *lock_region)
 	struct scribe_ps *scribe = current->scribe;
 	int serial;
 
-	might_sleep();
-
 	res = lock_region->res;
 	serial = res->serial++;
-	mutex_unlock(&res->lock);
+
+	if (use_spinlock(res))
+		spin_unlock(&res->slock);
+	else
+		mutex_unlock(&res->lock);
+
+	might_sleep();
 
 	if (is_recording(scribe)) {
 		lock_region->lock_event->type = res->type;
@@ -512,7 +525,10 @@ static void unlock_discard(struct scribe_lock_region *lock_region)
 	struct scribe_resource *res;
 
 	res = lock_region->res;
-	mutex_unlock(&res->lock);
+	if (use_spinlock(res))
+		spin_unlock(&res->slock);
+	else
+		mutex_unlock(&res->lock);
 
 	if (is_recording(scribe)) {
 		scribe_commit_insert_point(&lock_region->ip);
