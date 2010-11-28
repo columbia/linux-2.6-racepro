@@ -81,7 +81,7 @@ void scribe_exit_context(struct scribe_context *ctx)
 		scribe_unset_persistent(queue);
 	spin_unlock(&ctx->queues_lock);
 
-	BUG_ON(!list_empty(&ctx->queues));
+	wait_event(ctx->tasks_wait, list_empty(&ctx->queues));
 
 	scribe_free_all_events(&ctx->notifications);
 
@@ -452,7 +452,6 @@ void scribe_detach(struct scribe_ps *scribe)
 	if (list_empty(&ctx->tasks) && ctx->flags != SCRIBE_IDLE)
 		context_idle(ctx, NULL);
 	spin_unlock(&ctx->tasks_lock);
-	wake_up(&ctx->tasks_wait);
 
 	/*
 	 * We want to set the wont_grow flag and put the queue in an atomic
@@ -463,6 +462,8 @@ void scribe_detach(struct scribe_ps *scribe)
 		scribe_set_stream_wont_grow(&scribe->queue->stream);
 	scribe_put_queue_locked(scribe->queue);
 	spin_unlock(&ctx->queues_lock);
+
+	wake_up(&ctx->tasks_wait);
 
 	scribe->queue = NULL;
 
