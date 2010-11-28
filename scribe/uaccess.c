@@ -32,7 +32,6 @@ void __scribe_forbid_uaccess(struct scribe_ps *scribe)
 	if (--scribe->can_uaccess)
 		return;
 
-	WARN_ON(in_atomic());
 	scribe_mem_sync_point(scribe, MEM_SYNC_IN);
 }
 
@@ -303,9 +302,6 @@ void scribe_pre_schedule(void)
 	struct scribe_ps *scribe = current->scribe;
 	if (!is_scribed(scribe))
 		return;
-
-	WARN_ON(scribe->can_uaccess && current->state == TASK_INTERRUPTIBLE);
-
 
 	scribe_mem_schedule_in(scribe);
 }

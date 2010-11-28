@@ -1036,11 +1036,15 @@ void scribe_mem_exit_st(struct scribe_ps *scribe)
 	MEM_DEBUG(scribe, "scribe_mem_exit_st()");
 	BUG_ON (!mm);
 
+	/*
+	 * we don't want any schedule() to call mem_sync_point() while we are
+	 * in MEM_SYNC_SLEEP
+	 */
+	mm->disable_sync_sleep = 1;
+
 	/* take care of the pending shared memory requests */
 	scribe_mem_sync_point(scribe, MEM_SYNC_IN | MEM_SYNC_SLEEP);
 
-	/* we don't want any schedule() to call mem_sync_point() again */
-	mm->disable_sync_sleep = 1;
 
 	down_write(&tsk->mm->mmap_sem);
 
@@ -1379,6 +1383,7 @@ void scribe_mem_sync_point(struct scribe_ps *scribe, int mode)
 	MEM_DEBUG(scribe, "mem sync point(%s)", get_sync_mode_str(mode));
 
 	if (mode & MEM_SYNC_IN) {
+		might_sleep();
 		if (mode & MEM_SYNC_SLEEP)
 			assert_sync_mode(scribe, MEM_SYNC_IN);
 		else
@@ -1408,6 +1413,20 @@ void scribe_mem_sync_point(struct scribe_ps *scribe, int mode)
 		scribe_emergency_stop(scribe->ctx, ERR_PTR(ret));
 }
 
+void scribe_disable_sync_sleep(void)
+{
+	struct scribe_ps *scribe = current->scribe;
+	if (may_be_scribed(scribe) && scribe->mm)
+		scribe->mm->disable_sync_sleep = 1;
+}
+
+void scribe_enable_sync_sleep(void)
+{
+	struct scribe_ps *scribe = current->scribe;
+	if (may_be_scribed(scribe) && scribe->mm)
+		scribe->mm->disable_sync_sleep = 0;
+}
+
 void scribe_mem_schedule_in(struct scribe_ps *scribe)
 {
 	if (!is_recording(scribe))
@@ -1420,15 +1439,15 @@ void scribe_mem_schedule_in(struct scribe_ps *scribe)
 	    scribe->p->state != TASK_UNINTERRUPTIBLE)
 		return;
 
+	if (scribe->mm->disable_sync_sleep)
+		return;
+
 	if (!scribe->mm->weak_owner) {
 		WARN(scribe->p->state == TASK_INTERRUPTIBLE &&
 		     !(preempt_count() & PREEMPT_ACTIVE),
 		     "warning: sleeping while not in a sync point");
 		return;
 	}
-
-	if (scribe->mm->disable_sync_sleep)
-		return;
 
 	scribe_mem_sync_point(scribe, MEM_SYNC_IN | MEM_SYNC_SLEEP);
 }

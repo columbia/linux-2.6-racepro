@@ -589,10 +589,12 @@ extern void scribe_delivering_signal(int signr, struct siginfo *info);
 extern struct hlist_head *scribe_alloc_mem_hash(void);
 extern void scribe_free_mem_hash(struct hlist_head *hash);
 extern int scribe_mem_init_st(struct scribe_ps *scribe);
+
 extern void scribe_mem_exit_st(struct scribe_ps *scribe);
 extern void scribe_mem_sync_point(struct scribe_ps *scribe, int mode);
-extern void authorize_page_access(struct scribe_ps *scribe,
-				  unsigned long address);
+extern void scribe_disable_sync_sleep(void);
+extern void scribe_enable_sync_sleep(void);
+
 extern pgd_t *scribe_get_pgd(struct mm_struct *next, struct task_struct *tsk);
 
 extern int do_scribe_page(struct scribe_ps *scribe, struct mm_struct *mm,
