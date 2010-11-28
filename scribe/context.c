@@ -263,15 +263,19 @@ void scribe_emergency_stop(struct scribe_context *ctx,
 	 * gone missing. We'll kill all the scribed tasks because we cannot
 	 * guarantee that they can continue properly.
 	 */
+	rcu_read_lock();
 	list_for_each_entry(scribe, &ctx->tasks, node) {
-		force_sig(SIGKILL, scribe->p);
+		do_send_sig_info(SIGKILL, SEND_SIG_PRIV, scribe->p, 1);
 		/*
-		 * wake_up_process() is necessary when p is in do_exit() and
-		 * PF_EXITED has already been set. resource_lock() will be
-		 * able to return.
+		 * wake_up_process() is necessary when the task is being
+		 * replayed and waiting on a serial number.
+		 * It might also be the case where do_send_sig_info() fails
+		 * because the signal handler is gone, and the task is waiting
+		 * on a resource in do_exit().
 		 */
 		wake_up_process(scribe->p);
 	}
+	rcu_read_unlock();
 
 out:
 	spin_unlock(&ctx->tasks_lock);
