@@ -752,6 +752,12 @@ extern void scribe_free_all_shadow_pgd_range(struct mmu_gather *tlb,
 
 extern void scribe_mem_schedule_in(struct scribe_ps *scribe);
 extern void scribe_mem_schedule_out(struct scribe_ps *scribe);
+
+
+/* Sockets */
+struct socket;
+extern int scribe_interpose_socket(struct socket *sock);
+
 #else /* CONFIG_SCRIBE */
 
 /* FIXME Make the kernel compile with !CONFIG_SCRIBE ... */

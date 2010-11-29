@@ -147,6 +147,9 @@ struct socket {
 	struct file		*file;
 	struct sock		*sk;
 	const struct proto_ops	*ops;
+#ifdef CONFIG_SCRIBE
+	const struct proto_ops	*real_ops;
+#endif
 };
 
 struct vm_area_struct;
