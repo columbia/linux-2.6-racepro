@@ -507,6 +507,8 @@ extern int scribe_set_attach_on_exec(struct scribe_context *ctx, int enable);
 extern void scribe_attach(struct scribe_ps *scribe);
 extern void scribe_detach(struct scribe_ps *scribe);
 
+extern void scribe_copy_to_user_recorded(void __user *to, long n,
+					 struct scribe_event_data **event);
 extern void __scribe_allow_uaccess(struct scribe_ps *scribe);
 extern void __scribe_forbid_uaccess(struct scribe_ps *scribe);
 extern void scribe_allow_uaccess(void);

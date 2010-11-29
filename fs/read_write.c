@@ -325,16 +325,16 @@ static int is_deterministic(struct file *file)
 
 /*
  * If scribe_do_read():
- * returns < 0: error occured
  * return 0: continue the normal path
- * return > 0: pread contains the number of bytes read, and the normal path
- * sould be bypassed.
+ * return != 0: pread contains the number of bytes read, and the normal path
+ * should be bypassed.
  */
 static int scribe_do_read(struct file *file, char __user *buf, ssize_t *read)
 {
-	struct scribe_event *event;
-	struct scribe_event_data *data_event;
 	struct scribe_ps *scribe = current->scribe;
+	struct scribe_event_data *data_event;
+	struct scribe_event *event;
+	size_t data_size;
 
 	if (!is_scribed(scribe))
 		return 0;
@@ -345,48 +345,28 @@ static int scribe_do_read(struct file *file, char __user *buf, ssize_t *read)
 	if (is_deterministic(file) || !should_scribe_data(scribe))
 		return 0;
 
-	if (is_recording(scribe)) {
-		scribe_data_non_det();
+	scribe_data_non_det();
+
+	if (is_recording(scribe))
 		return 0;
-	}
 
 	/* Replaying on a non-deterministic stream */
-
-	/*
-	 * We're doing the copying manually by looking what's coming in terms
-	 * of data events.
-	 */
-	scribe_data_dont_record();
 	*read = 0;
 	for (;;) {
 		/* Replaying on a non-deterministic stream */
 		event = scribe_peek_event(scribe->queue, SCRIBE_WAIT);
-		if (IS_ERR(event)) {
-			scribe_emergency_stop(scribe->ctx, event);
-			return PTR_ERR(event);
-		}
+		if (IS_ERR(event))
+			break;
 
 		if (event->type != SCRIBE_EVENT_DATA)
 			break;
 
-		data_event = scribe_dequeue_event_specific(
-						scribe, SCRIBE_EVENT_DATA);
-		data_event->data_type &= ~SCRIBE_DATA_ZERO;
-		if (data_event->data_type != SCRIBE_DATA_NON_DETERMINISTIC) {
-			scribe_free_event(data_event);
-			scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_DATA_TYPE,
-				       .type = SCRIBE_DATA_NON_DETERMINISTIC);
-			return -EDIVERGE;
-		}
+		data_event = (struct scribe_event_data *)event;
+		data_size = data_event->h.size;
 
-		if (__copy_to_user(buf, data_event->data, data_event->h.size)) {
-			scribe_free_event(data_event);
-			scribe_emergency_stop(scribe->ctx, ERR_PTR(-EFAULT));
-			return -EFAULT;
-		}
-		*read += data_event->h.size;
-		buf += data_event->h.size;
-		scribe_free_event(data_event);
+		scribe_copy_to_user_recorded(buf, data_size, NULL);
+		*read += data_size;
+		buf += data_size;
 	}
 	return 1;
 }
@@ -401,7 +381,6 @@ static inline int scribe_do_read(struct file *file, char __user *buf,
 ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
 {
 	ssize_t ret;
-	int bypass;
 
 	if (!(file->f_mode & FMODE_READ))
 		return -EBADF;
@@ -414,15 +393,12 @@ ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
 	if (ret >= 0) {
 		count = ret;
 
-		bypass = scribe_do_read(file, buf, &ret);
-		if (!bypass) {
+		if (!scribe_do_read(file, buf, &ret)) {
 			if (file->f_op->read)
 				ret = file->f_op->read(file, buf, count, pos);
 			else
 				ret = do_sync_read(file, buf, count, pos);
 		}
-		if (bypass < 0)
-			ret = bypass;
 
 		if (ret > 0) {
 			fsnotify_access(file->f_path.dentry);

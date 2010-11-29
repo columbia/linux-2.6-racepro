@@ -167,11 +167,13 @@ static void scribe_post_uaccess_replay(struct scribe_ps *scribe,
 		struct scribe_event_data *event, const void *data,
 		void __user *user_ptr, size_t size, int data_flags)
 {
-	if (event->data_type != data_flags) {
+	if ((event->data_type & ~SCRIBE_DATA_ZERO) !=
+	    (data_flags & ~SCRIBE_DATA_ZERO)) {
 		scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_DATA_TYPE,
 			       .type = data_flags);
 		return;
 	}
+	data_flags = event->data_type;
 
 	if (event->h.size != size) {
 		scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_EVENT_SIZE,
@@ -201,7 +203,13 @@ static void scribe_post_uaccess_replay(struct scribe_ps *scribe,
 	}
 
 	if (!(data_flags & SCRIBE_DATA_NON_DETERMINISTIC)) {
-		ensure_data_correctness(scribe, event->data, data, size);
+		if (data)
+			ensure_data_correctness(scribe, event->data,
+						data, size);
+		else
+			scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_DATA_TYPE,
+				       .type = SCRIBE_DATA_NON_DETERMINISTIC);
+
 		return;
 	}
 
@@ -231,14 +239,18 @@ static void scribe_post_uaccess_replay(struct scribe_ps *scribe,
 }
 
 
-void scribe_post_uaccess(const void *data, const void __user *user_ptr,
-			 size_t size, int flags)
+static void __scribe_post_uaccess(const void *data, const void __user *user_ptr,
+				  size_t size, int flags,
+				  struct scribe_event_data **eventp)
 {
 	int data_flags;
 	struct scribe_event_data *event;
 	struct scribe_ps *scribe = current->scribe;
 	if (!is_scribed(scribe))
 		return;
+
+	if (eventp)
+		*eventp = NULL;
 
 	if (!should_handle_data(scribe))
 		goto skip;
@@ -269,7 +281,10 @@ void scribe_post_uaccess(const void *data, const void __user *user_ptr,
 		scribe_post_uaccess_replay(scribe, event, data,
 					   (void __user *)user_ptr, size,
 					   data_flags);
-		scribe_free_event(event);
+		if (eventp)
+			*eventp = event;
+		else
+			scribe_free_event(event);
 	}
 
 skip:
@@ -277,6 +292,22 @@ skip:
 		__scribe_forbid_uaccess(scribe);
 	WARN(scribe->prepared_data_event,
 	     "pre-allocated data event not used\n");
+}
+
+void scribe_post_uaccess(const void *data, const void __user *user_ptr,
+			 size_t size, int flags)
+{
+	__scribe_post_uaccess(data, user_ptr, size, flags, NULL);
+}
+
+void scribe_copy_to_user_recorded(void __user *to, long n,
+				  struct scribe_event_data **event)
+{
+	struct scribe_ps *scribe = current->scribe;
+	BUG_ON(!is_replaying(scribe));
+
+	scribe_pre_uaccess(NULL, to, n, scribe->data_flags);
+	__scribe_post_uaccess(NULL, to, n, scribe->data_flags, event);
 }
 
 void scribe_allow_uaccess(void)
@@ -353,7 +384,7 @@ int fault_in_pages_readable(char __user *uaddr, int size)
 void scribe_data_push_flags(int flags)
 {
 	struct scribe_ps *scribe = current->scribe;
-	if (!is_scribed(scribe))
+	if (!may_be_scribed(scribe))
 		return;
 
 	scribe->old_data_flags = scribe->data_flags;
