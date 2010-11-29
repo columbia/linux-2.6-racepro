@@ -206,7 +206,18 @@ static int expand_fdtable(struct files_struct *files, int nr)
 	struct fdtable *new_fdt, *cur_fdt;
 
 	spin_unlock(&files->file_lock);
-	new_fdt = alloc_fdtable(nr);
+	scribe_unlock(files);
+
+	if (scribe_resource_prepare()) {
+		/*
+		 * We still can lock the files because the cache isn't empty,
+		 * but ENOMEM will be returned.
+		 */
+		new_fdt = NULL;
+	} else
+		new_fdt = alloc_fdtable(nr);
+
+	scribe_lock_files_write(files);
 	spin_lock(&files->file_lock);
 	if (!new_fdt)
 		return -ENOMEM;
