@@ -308,7 +308,8 @@ struct files_struct *dup_fd(struct files_struct *oldf, int *errorp)
 
 #ifdef CONFIG_SCRIBE
 	scribe_init_resource(&newf->scribe_resource,
-			     SCRIBE_RES_TYPE_FILES_STRUCT);
+			     SCRIBE_RES_TYPE_FILES_STRUCT |
+			     SCRIBE_RES_TYPE_SPINLOCK);
 #endif
 	spin_lock_init(&newf->file_lock);
 	newf->next_fd = 0;
