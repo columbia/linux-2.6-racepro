@@ -88,6 +88,7 @@
 #include <linux/nsproxy.h>
 #include <linux/magic.h>
 #include <linux/slab.h>
+#include <linux/scribe.h>
 
 #include <asm/uaccess.h>
 #include <asm/unistd.h>
@@ -455,6 +456,16 @@ static struct socket *sockfd_lookup_light(int fd, int *err, int *fput_needed)
 {
 	struct file *file;
 	struct socket *sock;
+
+	/*
+	 * FIXME Maybe we cannot return -ENOMEM, and we should abort
+	 * the whole thing.
+	 * TODO We want to distinguish read/write.
+	 */
+	if (scribe_track_next_file_write()) {
+		*err = -ENOMEM;
+		return NULL;
+	}
 
 	*err = -EBADF;
 	file = fget_light(fd, fput_needed);
@@ -1463,6 +1474,8 @@ SYSCALL_DEFINE4(accept4, int, fd, struct sockaddr __user *, upeer_sockaddr,
 	int err, len, newfd, fput_needed;
 	struct sockaddr_storage address;
 
+	scribe_data_non_det();
+
 	if (flags & ~(SOCK_CLOEXEC | SOCK_NONBLOCK))
 		return -EINVAL;
 
@@ -1585,6 +1598,8 @@ SYSCALL_DEFINE3(getsockname, int, fd, struct sockaddr __user *, usockaddr,
 	struct sockaddr_storage address;
 	int len, err, fput_needed;
 
+	scribe_data_non_det();
+
 	sock = sockfd_lookup_light(fd, &err, &fput_needed);
 	if (!sock)
 		goto out;
@@ -1615,6 +1630,8 @@ SYSCALL_DEFINE3(getpeername, int, fd, struct sockaddr __user *, usockaddr,
 	struct socket *sock;
 	struct sockaddr_storage address;
 	int len, err, fput_needed;
+
+	scribe_data_non_det();
 
 	sock = sockfd_lookup_light(fd, &err, &fput_needed);
 	if (sock != NULL) {
@@ -1709,6 +1726,8 @@ SYSCALL_DEFINE6(recvfrom, int, fd, void __user *, ubuf, size_t, size,
 	int err, err2;
 	int fput_needed;
 
+	scribe_data_non_det();
+
 	sock = sockfd_lookup_light(fd, &err, &fput_needed);
 	if (!sock)
 		goto out;
@@ -1791,6 +1810,8 @@ SYSCALL_DEFINE5(getsockopt, int, fd, int, level, int, optname,
 {
 	int err, fput_needed;
 	struct socket *sock;
+
+	scribe_data_non_det();
 
 	sock = sockfd_lookup_light(fd, &err, &fput_needed);
 	if (sock != NULL) {
@@ -1960,6 +1981,8 @@ static int __sys_recvmsg(struct socket *sock, struct msghdr __user *msg,
 	/* user mode address pointers */
 	struct sockaddr __user *uaddr;
 	int __user *uaddr_len;
+
+	scribe_data_non_det();
 
 	if (MSG_CMSG_COMPAT & flags) {
 		if (get_compat_msghdr(msg_sys, msg_compat))
@@ -2221,9 +2244,17 @@ SYSCALL_DEFINE2(socketcall, int, call, unsigned long __user *, args)
 	if (len > sizeof(a))
 		return -EINVAL;
 
+	/*
+	 * The next copy to user doesn't need to be checked, besides,
+	 * sys_socketcall() is arch dependent.
+	 */
+	scribe_data_dont_record();
+
 	/* copy_from_user should be SMP safe. */
 	if (copy_from_user(a, args, len))
 		return -EFAULT;
+
+	scribe_data_det();
 
 	audit_socketcall(nargs[call] / sizeof(unsigned long), a);
 
