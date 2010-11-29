@@ -2794,14 +2794,15 @@ int scribe_open_futexes(struct scribe_resource_context *ctx)
 		scribe_open_resource(ctx, &futex_queues[i].scribe_resource,
 				     SCRIBE_RES_TYPE_FUTEX |
 				     SCRIBE_RES_TYPE_SPINLOCK, NULL,
-				     SCRIBE_NO_SYNC, SCRIBE_NO_SYNC, &cache);
+				     SCRIBE_NO_SYNC, SCRIBE_NO_SYNC,
+				     NULL, &cache);
 	}
 	scribe_resource_exit_cache(&cache);
 	if (ret) {
 		for (i--; i >= 0; i--) {
 			scribe_close_resource(ctx,
 					      &futex_queues[i].scribe_resource,
-					      SCRIBE_NO_SYNC);
+					      SCRIBE_NO_SYNC, NULL);
 		}
 	}
 	return ret;
@@ -2812,7 +2813,7 @@ void scribe_close_futexes(struct scribe_resource_context *ctx)
 	int i;
 	for (i = 0; i < ARRAY_SIZE(futex_queues); i++) {
 		scribe_close_resource(ctx, &futex_queues[i].scribe_resource,
-				      SCRIBE_NO_SYNC);
+				      SCRIBE_NO_SYNC, NULL);
 	}
 }
 #endif

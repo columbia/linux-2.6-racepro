@@ -443,6 +443,7 @@ cmd_with_lock_no_inode:
 	goto unlock;
 
 cmd_with_lock_inode:
+	/* Scribe: Doing explicit locking to synchronize pipe_fcntl().  */
 	scribe_lock_inode_write(filp->f_path.dentry->d_inode);
 
 	switch (cmd) {

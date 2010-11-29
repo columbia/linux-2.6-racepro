@@ -955,6 +955,7 @@ struct file {
 #endif
 #ifdef CONFIG_SCRIBE
 	struct scribe_resource scribe_resource;
+	atomic_t scribe_ref_cnt;
 	struct scribe_resource_context *scribe_context;
 #endif
 };

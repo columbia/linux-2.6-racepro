@@ -134,6 +134,7 @@ struct file *get_empty_filp(void)
 	spin_lock_init(&f->f_lock);
 	eventpoll_init_file(f);
 #ifdef CONFIG_SCRIBE
+	atomic_set(&f->scribe_ref_cnt, 0);
 	f->scribe_context = NULL;
 #endif
 	/* f->f_version: 0 */

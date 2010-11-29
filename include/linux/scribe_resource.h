@@ -39,7 +39,6 @@ struct scribe_resource_container {
 };
 
 struct scribe_resource {
-	atomic_t ref_cnt;
 	int type;
 	u32 serial;
 	struct mutex lock;
@@ -47,6 +46,10 @@ struct scribe_resource {
 	wait_queue_head_t wait;
 };
 
+/*
+ * We would want to provide the resource type here, but it would waste some
+ * precious bytes (struct scribe_resource_container is in each inode)
+ */
 extern void scribe_init_resource_container(
 				struct scribe_resource_container *container);
 

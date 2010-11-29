@@ -345,10 +345,11 @@ extern void scribe_open_resource(struct scribe_resource_context *ctx,
 				 struct scribe_resource_container *container,
 				 int type, struct scribe_resource *sync_res,
 				 int do_sync_open, int do_sync_close,
+				 int *created,
 				 struct scribe_resource_cache *cache);
 extern void scribe_close_resource(struct scribe_resource_context *ctx,
 				  struct scribe_resource_container *container,
-				  int do_close_sync);
+				  int do_close_sync, int *destroyed);
 
 #define SCRIBE_READ		0x01
 #define SCRIBE_WRITE		0x02

@@ -48,6 +48,16 @@ struct files_struct {
 	atomic_t count;
 	struct fdtable *fdt;
 	struct fdtable fdtab;
+#ifdef CONFIG_SCRIBE
+	/*
+	 * Event though a files_struct cannot be shared among scribe
+	 * contexts, we want the synchronization facilities provided by
+	 * resource_close().
+	 */
+	struct mutex scribe_open_lock;
+	struct scribe_resource_container scribe_resource;
+#endif
+
   /*
    * written part on a separate cache line in SMP
    */
@@ -56,9 +66,6 @@ struct files_struct {
 	struct embedded_fd_set close_on_exec_init;
 	struct embedded_fd_set open_fds_init;
 	struct file * fd_array[NR_OPEN_DEFAULT];
-#ifdef CONFIG_SCRIBE
-	struct scribe_resource scribe_resource;
-#endif
 };
 
 #define rcu_dereference_check_fdtable(files, fdtfd) \

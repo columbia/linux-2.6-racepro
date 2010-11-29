@@ -112,8 +112,9 @@ static struct scribe_resource *find_registration_res_inode(
 }
 
 struct scribe_resource_handle {
-	struct scribe_resource_context *ctx;
+	atomic_t ref_cnt;
 	struct list_head container_node;
+	struct scribe_resource_context *ctx;
 	struct rcu_head rcu;
 
 	struct scribe_resource res;
@@ -128,7 +129,6 @@ struct scribe_resource_handle {
 
 void scribe_init_resource(struct scribe_resource *res, int type)
 {
-	atomic_set(&res->ref_cnt, 0);
 	res->type = type;
 	mutex_init(&res->lock);
 	spin_lock_init(&res->slock);
@@ -144,6 +144,7 @@ void scribe_reset_resource(struct scribe_resource *res)
 static void init_resource_handle(struct scribe_resource_context *ctx,
 				 struct scribe_resource_handle *hres, int type)
 {
+	atomic_set(&hres->ref_cnt, 1);
 	hres->ctx = ctx;
 	scribe_init_resource(&hres->res, type);
 	spin_lock_init(&hres->lock);
@@ -300,7 +301,7 @@ static struct scribe_resource_handle *__get_resource_handle(
 		if (hres->ctx != ctx)
 			continue;
 
-		if (likely(atomic_inc_not_zero(&hres->res.ref_cnt)))
+		if (likely(atomic_inc_not_zero(&hres->ref_cnt)))
 			return hres;
 	}
 
@@ -310,10 +311,12 @@ static struct scribe_resource_handle *__get_resource_handle(
 static struct scribe_resource_handle *get_resource_handle(
 				struct scribe_resource_context *ctx,
 				struct scribe_resource_container *container,
-				int type,
+				int type, int *created,
 				struct scribe_resource_handle **pre_alloc_hres)
 {
 	struct scribe_resource_handle *hres;
+
+	*created = 0;
 
 	rcu_read_lock();
 	hres = __get_resource_handle(ctx, container);
@@ -333,31 +336,16 @@ static struct scribe_resource_handle *get_resource_handle(
 	BUG_ON(!hres);
 
 	init_resource_handle(ctx, hres, type);
-	atomic_set(&hres->res.ref_cnt, 1);
 
 	list_add_rcu(&hres->container_node, &container->handles);
 
 	spin_unlock(&container->lock);
 
+	*created = 1;
 	return hres;
 }
 
-static void free_rcu_hres(struct rcu_head *rcu)
-{
-	kfree(container_of(rcu, struct scribe_resource_handle, rcu));
-}
-
-static void put_resource_handle(struct scribe_resource_context *ctx,
-				struct scribe_resource_container *container,
-				struct scribe_resource_handle *hres)
-{
-	if (atomic_dec_and_test(&hres->res.ref_cnt)) {
-		spin_lock(&container->lock);
-		list_del_rcu(&hres->container_node);
-		spin_unlock(&container->lock);
-		call_rcu(&hres->rcu, free_rcu_hres);
-	}
-}
+/* put_resource_handle() is somewhat hidden in scribe_close_resource() */
 
 static struct scribe_resource_handle *find_resource_handle(
 				struct scribe_resource_context *ctx,
@@ -419,6 +407,8 @@ static void lock(struct scribe_lock_region *lock_region)
 	struct scribe_ps *scribe = current->scribe;
 	int type;
 	int serial;
+
+	might_sleep();
 
 	res = lock_region->res;
 
@@ -698,11 +688,15 @@ void scribe_open_resource(struct scribe_resource_context *ctx,
 			  struct scribe_resource_container *container,
 			  int type, struct scribe_resource *sync_res,
 			  int do_sync_open, int do_sync_close,
-			  struct scribe_resource_cache *cache)
+			  int *created, struct scribe_resource_cache *cache)
 {
 	struct scribe_resource_handle *hres;
 	struct scribe_lock_region *open_lock_region = NULL;
 	struct scribe_lock_region *close_lock_region;
+	int _created;
+
+	if (!created)
+		created = &_created;
 
 	if (do_sync_open) {
 		open_lock_region = get_lock_region(cache, NULL);
@@ -714,7 +708,7 @@ void scribe_open_resource(struct scribe_resource_context *ctx,
 		lock(open_lock_region);
 	}
 
-	hres = get_resource_handle(ctx, container, type, &cache->hres);
+	hres = get_resource_handle(ctx, container, type, created, &cache->hres);
 
 	if (do_sync_open)
 		unlock(open_lock_region);
@@ -722,6 +716,13 @@ void scribe_open_resource(struct scribe_resource_context *ctx,
 	if (do_sync_close) {
 		close_lock_region = get_lock_region(cache, NULL);
 		BUG_ON(!close_lock_region);
+
+		/*
+		 * Close synchronization can be performed on the resource
+		 * itself. sync_res == NULL would indicate that.
+		 */
+		if (!sync_res)
+			sync_res = &hres->res;
 
 		close_lock_region->res = sync_res;
 		close_lock_region->object = sync_res;
@@ -732,12 +733,21 @@ void scribe_open_resource(struct scribe_resource_context *ctx,
 	}
 }
 
+static void free_rcu_hres(struct rcu_head *rcu)
+{
+	kfree(container_of(rcu, struct scribe_resource_handle, rcu));
+}
+
 void scribe_close_resource(struct scribe_resource_context *ctx,
 			   struct scribe_resource_container *container,
-			   int do_close_sync)
+			   int do_close_sync, int *destroyed)
 {
 	struct scribe_lock_region *close_lock_region = NULL;
 	struct scribe_resource_handle *hres;
+	int _destroyed;
+
+	if (!destroyed)
+		destroyed = &_destroyed;
 
 	hres = find_resource_handle(ctx, container);
 	if (unlikely(!hres)) {
@@ -757,10 +767,21 @@ void scribe_close_resource(struct scribe_resource_context *ctx,
 		lock(close_lock_region);
 	}
 
-	put_resource_handle(ctx, container, hres);
+	*destroyed = atomic_dec_and_test(&hres->ref_cnt);
+	/*
+	 * We have to defer the resource removal because the unlock() can be
+	 * performed on the resource itself.
+	 */
 
 	if (do_close_sync)
 		unlock(close_lock_region);
+
+	if (*destroyed) {
+		spin_lock(&container->lock);
+		list_del_rcu(&hres->container_node);
+		spin_unlock(&container->lock);
+		call_rcu(&hres->rcu, free_rcu_hres);
+	}
 }
 
 static inline int inode_need_reg_sync(struct inode *inode)
@@ -789,50 +810,51 @@ void scribe_open_file(struct file *file, int do_sync)
 {
 	struct scribe_ps *scribe = current->scribe;
 	struct inode *inode;
-	struct scribe_resource_context *file_ctx, *current_ctx;
+	struct scribe_resource_context *file_ctx, *ctx;
 	struct scribe_resource *sync_res;
 	int do_sync_open, do_sync_close;
 
 	if (!should_handle_resources(scribe))
 		return;
 
-	current_ctx = scribe->ctx->res_ctx;
+	ctx = scribe->ctx->res_ctx;
 
 	/* Files struct must belong to only one scribe resource context */
-	file_ctx = xchg(&file->scribe_context, current_ctx);
+	file_ctx = xchg(&file->scribe_context, ctx);
 	if (!file_ctx) {
 		scribe_init_resource(&file->scribe_resource,
 				     SCRIBE_RES_TYPE_FILE);
-		file_ctx = current_ctx;
+		file_ctx = ctx;
 	}
-	BUG_ON(file_ctx != current_ctx);
-	atomic_inc(&file->scribe_resource.ref_cnt);
+	BUG_ON(file_ctx != ctx);
+	atomic_inc(&file->scribe_ref_cnt);
 
 	inode = file_inode(file);
-	sync_res = find_registration_res_inode(current_ctx, inode);
+	sync_res = find_registration_res_inode(ctx, inode);
 	do_sync_open = do_sync && inode_need_reg_sync(inode);
 	do_sync_close = inode_need_reg_sync(inode);
-	scribe_open_resource(current_ctx, &inode->i_scribe_resource,
+	scribe_open_resource(ctx, &inode->i_scribe_resource,
 			     SCRIBE_RES_TYPE_INODE, sync_res,
-			     do_sync_open, do_sync_close, &scribe->res_cache);
+			     do_sync_open, do_sync_close, NULL,
+			     &scribe->res_cache);
 }
 
 void scribe_close_file(struct file *file)
 {
 	int do_sync;
 	struct inode *inode;
-	struct scribe_resource_context *current_ctx;
+	struct scribe_resource_context *ctx;
 	struct scribe_ps *scribe = current->scribe;
 
 	if (!should_handle_resources(scribe))
 		return;
 
-	current_ctx = scribe->ctx->res_ctx;
+	ctx = scribe->ctx->res_ctx;
 	inode = file_inode(file);
 	do_sync = inode_need_reg_sync(inode);
-	scribe_close_resource(current_ctx, &inode->i_scribe_resource, do_sync);
+	scribe_close_resource(ctx, &inode->i_scribe_resource, do_sync, NULL);
 
-	if (atomic_dec_and_test(&file->scribe_resource.ref_cnt))
+	if (atomic_dec_and_test(&file->scribe_ref_cnt))
 		file->scribe_context = NULL;
 }
 
@@ -980,32 +1002,46 @@ void scribe_pre_fput(struct file *file)
 
 void scribe_open_files(struct files_struct *files)
 {
-	struct scribe_resource *files_res = &files->scribe_resource;
+	struct scribe_ps *scribe = current->scribe;
 	struct file *file;
 	struct fdtable *fdt;
+	int created;
 	int fd;
 
-	mutex_lock_nested(&files_res->lock,
-			  get_lockdep_subclass(files_res->type));
+	BUG_ON(!is_scribed(scribe));
+
+	if (scribe_resource_prepare()) {
+		/*
+		 * FIXME Make this unfailable (do the memory allocation in
+		 * init_scribe()).
+		 */
+		scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
+		return;
+	}
 
 	/*
-	 * It is much more efficient to open files only at the beginning,
-	 * otherwise we will end with a lot of open/close allocated regions
-	 * when dealing with a lot of threads, so we will reference count the
-	 * open/close of the files_struct.
-	 * It is better to use our own ref_cnt rather than the one in
-	 * files_struct because we might want to attach to live processes later
-	 * on, where their ref_cnt is already set.
+	 * We must make other threads wait here until all resources are
+	 * created, otherwise one might start using a file resource that
+	 * haven't been opened yet.
 	 */
-	if (atomic_inc_return(&files_res->ref_cnt) != 1) {
-		mutex_unlock(&files_res->lock);
+	mutex_lock(&files->scribe_open_lock);
+
+	scribe_open_resource(scribe->ctx->res_ctx,
+			     &files->scribe_resource,
+			     SCRIBE_RES_TYPE_FILES_STRUCT |
+			     SCRIBE_RES_TYPE_SPINLOCK, NULL,
+			     SCRIBE_NO_SYNC, SCRIBE_SYNC, &created,
+			     &scribe->res_cache);
+
+	if (!created) {
+		mutex_unlock(&files->scribe_open_lock);
 		return;
 	}
 
 	/*
 	 * We don't need to take any of the standard fdtable locks here
-	 * because any process other process trying to access the files_struct
-	 * will be waiting scribe_resource_register_files() to complete.
+	 * because other processes trying to access the files_struct will be
+	 * waiting on the mutex.
 	 */
 	fdt = files_fdtable(files);
 	for (fd = 0; fd < fdt->max_fds; fd++) {
@@ -1015,11 +1051,10 @@ void scribe_open_files(struct files_struct *files)
 
 		if (scribe_resource_prepare()) {
 			/*
-			 * FIXME Make this unfailable (do the memory
-			 * allocation in init_scribe()).
+			 * TODO once the pre-allocation is done, change the
+			 * mutex to a spinlock.
 			 */
-			scribe_emergency_stop(current->scribe->ctx,
-					      ERR_PTR(-ENOMEM));
+			scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
 			break;
 		}
 
@@ -1032,17 +1067,27 @@ void scribe_open_files(struct files_struct *files)
 		scribe_open_file(file, SCRIBE_NO_SYNC);
 	}
 
-	mutex_unlock(&files_res->lock);
+	mutex_unlock(&files->scribe_open_lock);
 }
 
 void scribe_close_files(struct files_struct *files)
 {
-	struct scribe_resource *files_res = &files->scribe_resource;
+	struct scribe_ps *scribe = current->scribe;
 	struct file *file;
 	struct fdtable *fdt;
+	int destroyed;
 	int fd;
 
-	if (!atomic_dec_and_test(&files_res->ref_cnt))
+	if (!is_scribed(scribe))
+		return;
+
+	/*
+	 * We need to guarantee that the task closing the files during record
+	 * will be the same as the one during the replay. Hence the locking.
+	 */
+	scribe_close_resource(scribe->ctx->res_ctx, &files->scribe_resource,
+			      SCRIBE_SYNC, &destroyed);
+	if (!destroyed)
 		return;
 
 	/*
@@ -1062,12 +1107,12 @@ void scribe_close_files(struct files_struct *files)
 
 void scribe_lock_files_read(struct files_struct *files)
 {
-	scribe_lock_object(files, &files->scribe_resource, SCRIBE_READ);
+	scribe_lock_object_handle(files, &files->scribe_resource, SCRIBE_READ);
 }
 
 void scribe_lock_files_write(struct files_struct *files)
 {
-	scribe_lock_object(files, &files->scribe_resource, SCRIBE_WRITE);
+	scribe_lock_object_handle(files, &files->scribe_resource, SCRIBE_WRITE);
 }
 
 static void lock_task(struct task_struct *task, int flags)
