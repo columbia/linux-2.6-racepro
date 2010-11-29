@@ -613,9 +613,10 @@ static void __lock_object_handle(struct scribe_ps *scribe, void *object,
 	struct scribe_resource_handle *hres;
 
 	hres = find_resource_handle(scribe->ctx->res_ctx, container);
-	BUG_ON(!hres);
-
-	__lock_object(scribe, object, &hres->res, flags);
+	if (likely(hres))
+		__lock_object(scribe, object, &hres->res, flags);
+	else
+		scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOENT));
 }
 
 void scribe_lock_object_handle(void *object,
@@ -739,7 +740,10 @@ void scribe_close_resource(struct scribe_resource_context *ctx,
 	struct scribe_resource_handle *hres;
 
 	hres = find_resource_handle(ctx, container);
-	BUG_ON(!hres);
+	if (unlikely(!hres)) {
+		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOENT));
+		return;
+	}
 
 	if (do_close_sync) {
 		spin_lock(&hres->lock);
