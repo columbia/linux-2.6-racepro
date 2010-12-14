@@ -300,6 +300,28 @@ ssize_t do_sync_read(struct file *filp, char __user *buf, size_t len, loff_t *pp
 
 EXPORT_SYMBOL(do_sync_read);
 
+static ssize_t __do_read(struct file *file, char __user *buf,
+			 size_t len, loff_t *ppos, int force_block)
+{
+	ssize_t ret;
+	unsigned int saved_flags;
+
+	if (force_block) {
+		saved_flags = file->f_flags;
+		file->f_flags &= ~O_NONBLOCK;
+	}
+
+	if (file->f_op->read)
+		ret = file->f_op->read(file, buf, len, ppos);
+	else
+		ret = do_sync_read(file, buf, len, ppos);
+
+	if (force_block)
+		file->f_flags = saved_flags;
+
+	return ret;
+}
+
 #ifdef CONFIG_SCRIBE
 static int is_deterministic(struct file *file)
 {
@@ -323,35 +345,40 @@ static int is_deterministic(struct file *file)
 	return 1;
 }
 
-/*
- * If scribe_do_read():
- * return 0: continue the normal path
- * return != 0: pread contains the number of bytes read, and the normal path
- * should be bypassed.
- */
-static int scribe_do_read(struct file *file, char __user *buf, ssize_t *read)
+static ssize_t scribe_do_read(struct file *file, char __user *buf,
+			      size_t len, loff_t *ppos)
 {
 	struct scribe_ps *scribe = current->scribe;
 	struct scribe_event_data *data_event;
 	struct scribe_event *event;
 	size_t data_size;
+	size_t ret;
+	int force_block = 0;
 
 	if (!is_scribed(scribe))
-		return 0;
+		goto std_read;
 
 	if (is_kernel_copy())
-		return 0;
+		goto std_read;
 
-	if (is_deterministic(file) || !should_scribe_data(scribe))
-		return 0;
+	if (!should_scribe_data(scribe))
+		goto std_read;
+
+	if (is_deterministic(file)) {
+		if (is_replaying(scribe)) {
+			len = scribe->orig_ret;
+			force_block = 1;
+		}
+		goto std_read;
+	}
 
 	scribe_data_non_det();
 
 	if (is_recording(scribe))
-		return 0;
+		goto std_read;
 
 	/* Replaying on a non-deterministic stream */
-	*read = 0;
+	ret = 0;
 	for (;;) {
 		/* Replaying on a non-deterministic stream */
 		event = scribe_peek_event(scribe->queue, SCRIBE_WAIT);
@@ -365,16 +392,19 @@ static int scribe_do_read(struct file *file, char __user *buf, ssize_t *read)
 		data_size = data_event->h.size;
 
 		scribe_copy_to_user_recorded(buf, data_size, NULL);
-		*read += data_size;
+		ret += data_size;
 		buf += data_size;
 	}
-	return 1;
+	return ret;
+
+std_read:
+	return __do_read(file, buf, len, ppos, force_block);
 }
 #else
-static inline int scribe_do_read(struct file *file, char __user *buf,
-				 ssize_t *read)
+static inline ssize_t scribe_do_read(struct file *file, char __user *buf,
+				 size_t len, loff_t *ppos)
 {
-	return 0;
+	return __do_read(file, buf, len, ppos, 0);
 }
 #endif /* CONFIG_SCRIBE */
 
@@ -393,12 +423,7 @@ ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
 	if (ret >= 0) {
 		count = ret;
 
-		if (!scribe_do_read(file, buf, &ret)) {
-			if (file->f_op->read)
-				ret = file->f_op->read(file, buf, count, pos);
-			else
-				ret = do_sync_read(file, buf, count, pos);
-		}
+		ret = scribe_do_read(file, buf, count, pos);
 
 		if (ret > 0) {
 			fsnotify_access(file->f_path.dentry);
