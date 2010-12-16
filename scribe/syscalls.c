@@ -51,8 +51,10 @@ void scribe_enter_syscall(struct pt_regs *regs)
 		if (IS_ERR(event))
 			return;
 
-		if (event->nr != scribe->nr_syscall)
-			scribe_emergency_stop(scribe->ctx, ERR_PTR(-EDIVERGE));
+		if (event->nr != scribe->nr_syscall) {
+			scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_SYSCALL,
+					.nr = scribe->nr_syscall);
+		}
 
 		scribe->orig_ret = event->ret;
 		scribe_free_event(event);
