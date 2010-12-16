@@ -87,7 +87,12 @@ enum scribe_event_type {
 struct scribe_event {
 #ifdef __KERNEL__
 	struct list_head node;
-	loff_t log_offset; /* Only used during replay for back traces */
+	/*
+	 * The log_offset is only used during replay for diverge backtraces and
+	 * the diverge event.
+	 * This way, userspace can figure out where and what happened.
+	 */
+	loff_t log_offset;
 	__u8 __align__[3];
 	char payload_offset[0];
 	/*
@@ -106,6 +111,7 @@ struct scribe_event_sized {
 struct scribe_event_diverge {
 	struct scribe_event h;
 	__u32 pid;
+	__u64 last_event_offset;
 } __attribute__((packed));
 
 /* Log file */

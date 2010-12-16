@@ -41,6 +41,7 @@ static void init_queue(struct scribe_queue *queue,
 	INIT_LIST_HEAD(&queue->node);
 	queue->pid = pid;
 	queue->fence_serial = 0;
+	queue->last_event_offset = -1;
 }
 
 static struct scribe_queue *find_queue(struct scribe_context *ctx, pid_t pid)
@@ -314,6 +315,7 @@ struct scribe_event *scribe_dequeue_event(struct scribe_queue *queue, int wait)
 		spin_unlock(&ctx->backtrace_lock);
 	}
 
+	queue->last_event_offset = event->log_offset;
 	return event;
 }
 
@@ -332,7 +334,11 @@ struct scribe_event *scribe_dequeue_event_stream(struct scribe_stream *stream,
  */
 struct scribe_event *scribe_peek_event(struct scribe_queue *queue, int wait)
 {
-	return __scribe_peek_event(&queue->stream, wait, 0);
+	struct scribe_event *event;
+	event = __scribe_peek_event(&queue->stream, wait, 0);
+	if (!IS_ERR(event))
+		queue->last_event_offset = event->log_offset;
+	return event;
 }
 
 int scribe_is_stream_empty(struct scribe_stream *stream)

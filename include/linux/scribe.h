@@ -86,6 +86,7 @@ struct scribe_queue {
 	pid_t pid;
 
 	int fence_serial;
+	loff_t last_event_offset;
 };
 
 extern void scribe_init_stream(struct scribe_stream *stream);
@@ -311,6 +312,7 @@ extern int scribe_stop(struct scribe_context *ctx);
 		*__event = (struct_##_type) {				\
 			.h.h.type = _type,				\
 			.h.pid = sp->queue->pid,			\
+			.h.last_event_offset = (sp)->queue->last_event_offset, \
 			__VA_ARGS__					\
 		};							\
 	}								\
