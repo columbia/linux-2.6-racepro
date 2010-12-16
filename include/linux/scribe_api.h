@@ -14,6 +14,7 @@
 
 
 #include <linux/types.h>
+#include <asm/ptrace.h>
 #ifdef __KERNEL__
 #include <linux/list.h>
 #else
@@ -62,6 +63,7 @@ enum scribe_event_type {
 	SCRIBE_EVENT_MEM_PUBLIC_READ,
 	SCRIBE_EVENT_MEM_PUBLIC_WRITE,
 	SCRIBE_EVENT_MEM_ALONE,
+	SCRIBE_EVENT_REGS,
 
 	/* userspace -> kernel commands */
 	SCRIBE_EVENT_ATTACH_ON_EXECVE = 128,
@@ -83,6 +85,7 @@ enum scribe_event_type {
 	SCRIBE_EVENT_DIVERGE_FENCE_SERIAL,
 	SCRIBE_EVENT_DIVERGE_MEM_OWNED,
 	SCRIBE_EVENT_DIVERGE_MEM_NOT_OWNED,
+	SCRIBE_EVENT_DIVERGE_REGS,
 };
 
 struct scribe_event {
@@ -235,6 +238,13 @@ struct scribe_event_mem_alone {
 	struct scribe_event h;
 } __attribute__((packed));
 
+#define struct_SCRIBE_EVENT_REGS struct scribe_event_regs
+struct scribe_event_regs {
+	struct scribe_event h;
+	struct pt_regs regs;
+} __attribute__((packed));
+
+
 /* Commands */
 
 #define struct_SCRIBE_EVENT_ATTACH_ON_EXECVE \
@@ -358,6 +368,13 @@ struct scribe_event_diverge_mem_not_owned {
 	struct scribe_event_diverge h;
 } __attribute__((packed));
 
+#define struct_SCRIBE_EVENT_DIVERGE_REGS \
+	struct scribe_event_diverge_regs
+struct scribe_event_diverge_regs {
+	struct scribe_event_diverge h;
+	struct pt_regs regs;
+} __attribute__((packed));
+
 
 static __always_inline int is_sized_type(int type)
 {
@@ -378,7 +395,8 @@ static __always_inline int is_diverge_type(int type)
 		type == SCRIBE_EVENT_DIVERGE_SYSCALL_RET ||
 		type == SCRIBE_EVENT_DIVERGE_FENCE_SERIAL ||
 		type == SCRIBE_EVENT_DIVERGE_MEM_OWNED ||
-		type == SCRIBE_EVENT_DIVERGE_MEM_NOT_OWNED;
+		type == SCRIBE_EVENT_DIVERGE_MEM_NOT_OWNED ||
+		type == SCRIBE_EVENT_DIVERGE_REGS;
 }
 
 void __you_are_using_an_unknown_scribe_type(void);
@@ -404,6 +422,7 @@ static __always_inline size_t sizeof_event_from_type(__u8 type)
 	__TYPE(SCRIBE_EVENT_MEM_PUBLIC_READ);
 	__TYPE(SCRIBE_EVENT_MEM_PUBLIC_WRITE);
 	__TYPE(SCRIBE_EVENT_MEM_ALONE);
+	__TYPE(SCRIBE_EVENT_REGS);
 
 	__TYPE(SCRIBE_EVENT_ATTACH_ON_EXECVE);
 	__TYPE(SCRIBE_EVENT_RECORD);
@@ -424,6 +443,7 @@ static __always_inline size_t sizeof_event_from_type(__u8 type)
 	__TYPE(SCRIBE_EVENT_DIVERGE_FENCE_SERIAL);
 	__TYPE(SCRIBE_EVENT_DIVERGE_MEM_OWNED);
 	__TYPE(SCRIBE_EVENT_DIVERGE_MEM_NOT_OWNED);
+	__TYPE(SCRIBE_EVENT_DIVERGE_REGS);
 #undef  __TYPE
 
 	if (__builtin_constant_p(type))

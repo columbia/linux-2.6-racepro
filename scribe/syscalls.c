@@ -19,6 +19,38 @@ static int is_scribe_syscall(int nr)
 	       nr == __NR_set_scribe_flags;
 }
 
+int scribe_regs(struct scribe_ps *scribe, struct pt_regs *regs)
+{
+	struct scribe_event_regs *event_regs;
+	int ret;
+
+	if (is_recording(scribe)) {
+		if (scribe_queue_new_event(scribe->queue,
+				       SCRIBE_EVENT_REGS,
+				       .regs = *regs)) {
+			scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
+			return -ENOMEM;
+		}
+	} else {
+		event_regs = scribe_dequeue_event_specific(scribe,
+						SCRIBE_EVENT_REGS);
+		if (IS_ERR(event_regs))
+			return PTR_ERR(event_regs);
+
+		ret = memcmp(regs, &event_regs->regs, sizeof(*regs));
+		scribe_free_event(event_regs);
+
+		if (ret) {
+			scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_REGS,
+				       .regs = *regs);
+			return -EDIVERGE;
+		}
+
+	}
+
+	return 0;
+}
+
 void scribe_enter_syscall(struct pt_regs *regs)
 {
 	struct scribe_event_syscall *event;
@@ -29,6 +61,9 @@ void scribe_enter_syscall(struct pt_regs *regs)
 
 	scribe->nr_syscall = syscall_get_nr(current, regs);
 	if (is_scribe_syscall(scribe->nr_syscall))
+		return;
+
+	if (should_scribe_syscalls(scribe) && scribe_regs(scribe, regs))
 		return;
 
 	scribe_signal_sync_point(regs);
