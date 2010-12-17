@@ -25,6 +25,7 @@
 #ifdef __KERNEL__
 #include <linux/list.h>
 #else
+#include <sys/types.h>
 #ifndef __always_inline
 #define __always_inline inline
 #endif
