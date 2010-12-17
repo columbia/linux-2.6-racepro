@@ -460,4 +460,17 @@ static inline size_t sizeof_event(struct scribe_event *event)
 	return sz;
 }
 
+#ifdef __KERNEL__
+static inline size_t sizeof_event_payload(struct scribe_event *event)
+{
+	return sizeof_event(event) - offsetof(__typeof__(*event),
+					      payload_offset);
+}
+
+static inline char *get_event_payload(struct scribe_event *event)
+{
+	return (char *)(event->payload_offset);
+}
+#endif /* __KERNEL __ */
+
 #endif /* _LINUX_SCRIBE_API_H_ */

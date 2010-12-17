@@ -238,6 +238,17 @@ static inline void scribe_free_event(void *event)
 extern int scribe_enter_fenced_region(int region);
 extern void scribe_leave_fenced_region(int region);
 
+/* Pump */
+struct scribe_pump;
+extern struct scribe_pump *scribe_pump_alloc(struct scribe_context *ctx);
+extern void scribe_pump_free(struct scribe_pump *pump);
+extern int scribe_pump_prepare_start(struct scribe_pump *pump);
+extern void scribe_pump_abort_start(struct scribe_pump *pump);
+extern void scribe_pump_start(struct scribe_pump *pump, int state,
+			     struct file *logfile);
+extern void scribe_pump_stop(struct scribe_pump *pump);
+extern int scribe_pump_wait_completion_interruptible(struct scribe_pump *pump);
+
 /* Context */
 
 struct scribe_context {
