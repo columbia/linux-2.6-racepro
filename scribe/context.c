@@ -67,11 +67,9 @@ err_ctx:
 	return NULL;
 }
 
-void scribe_exit_context(struct scribe_context *ctx)
+static void wait_for_tasks(struct scribe_context *ctx)
 {
 	struct scribe_queue *queue, *tmp;
-
-	scribe_emergency_stop(ctx, NULL);
 
 	/* No locks are needed: from now on, tasks cannot be added */
 	wait_event(ctx->tasks_wait, list_empty(&ctx->tasks));
@@ -82,12 +80,14 @@ void scribe_exit_context(struct scribe_context *ctx)
 	spin_unlock(&ctx->queues_lock);
 
 	wait_event(ctx->tasks_wait, list_empty(&ctx->queues));
+}
+
+void scribe_exit_context(struct scribe_context *ctx)
+{
+	scribe_emergency_stop(ctx, NULL);
+	wait_for_tasks(ctx);
 
 	scribe_free_all_events(&ctx->notifications);
-
-	BUG_ON(ctx->idle_event);
-	BUG_ON(ctx->backtrace);
-
 	scribe_free_mem_hash(ctx->mem_hash);
 	scribe_close_futexes(ctx->res_ctx);
 	scribe_free_resource_context(ctx->res_ctx);
@@ -106,32 +106,37 @@ static int context_start(struct scribe_context *ctx, int state,
 		return -EPERM;
 
 	/*
-	 * The task list might not be empty (just got an emergency_stop),
-	 * we're getting there.
+	 * The task list might not be empty (just got an emergency_stop).
 	 */
 	if (!list_empty(&ctx->tasks))
-		return -EPERM;
+		wait_for_tasks(ctx);
 
 	ctx->queues_wont_grow = 0;
 
-	BUG_ON(ctx->idle_event);
 	ctx->idle_event = idle_event;
-
-	BUG_ON(ctx->diverge_event);
 	ctx->diverge_event = diverge_event;
-
-	BUG_ON(ctx->backtrace);
 	ctx->backtrace = backtrace;
 
 	ctx->flags = state;
 
-	/* TODO reset only when context_start() is used multiple times */
+	/*
+	 * TODO reset only when context_start() isn't called for the first
+	 * time.
+	 */
 	scribe_reset_resource_context(ctx->res_ctx);
 	scribe_reset_resource(&ctx->tasks_res);
 
 	return 0;
 }
 
+/*
+ * This is the place to put the context to an idle state.
+ * It is assume that the context is not idle.
+ * @reason can be:
+ * - NULL: everything went well.
+ * - an error (IS_ERR(reason) == 1): something bad happened, such as -ENODATA.
+ * - a diverge event: a specific diverge error happened.
+ */
 static void context_idle(struct scribe_context *ctx,
 			 struct scribe_event *reason)
 {
@@ -147,6 +152,7 @@ static void context_idle(struct scribe_context *ctx,
 	spin_unlock(&ctx->backtrace_lock);
 
 	if (backtrace) {
+		/* We don't dump the backtrace if everything went well */
 		if (reason)
 			scribe_backtrace_dump(backtrace, &ctx->notifications);
 		scribe_free_backtrace(backtrace);
@@ -173,10 +179,12 @@ static void context_idle(struct scribe_context *ctx,
 
 static int event_diverge_max_size_type(void)
 {
-	int i;
+	struct scribe_event *event;
 	size_t max_size = 0;
 	int max_size_type = 0;
-	for (i = 0; i < (__u8)-1; i++) {
+	int i;
+
+	for (i = 0; i < (__typeof__(event->type))-1; i++) {
 		if (!is_diverge_type(i))
 			continue;
 		if (sizeof_event_from_type(i) > max_size) {
@@ -199,6 +207,11 @@ static int do_start(struct scribe_context *ctx, int state, int backtrace_len)
 	if (!idle_event)
 		goto err;
 
+	/*
+	 * We cannot allocate the diverge event when the diverge happens,
+	 * because the context may not allow to.
+	 * Allocating the maximum size will suffice.
+	 */
 	diverge_event = scribe_alloc_event(event_diverge_max_size_type());
 	if (!diverge_event)
 		goto err_idle_event;
@@ -251,9 +264,10 @@ void scribe_emergency_stop(struct scribe_context *ctx,
 	}
 
 	/*
-	 * The SCRIBE_IDLE flag has to be set here to guard against race with
-	 * scribe_attach() called from copy_process() or execve().
-	 * See in scribe_attach() for more details.
+	 * The SCRIBE_IDLE flag has to be set here (as opposed to after the
+	 * killing) to guard against races with scribe_attach() called from
+	 * copy_process() or execve(). See in scribe_attach() for more
+	 * details.
 	 */
 	context_idle(ctx, reason);
 
@@ -267,11 +281,10 @@ void scribe_emergency_stop(struct scribe_context *ctx,
 	list_for_each_entry(scribe, &ctx->tasks, node) {
 		do_send_sig_info(SIGKILL, SEND_SIG_PRIV, scribe->p, 1);
 		/*
-		 * wake_up_process() is necessary when the task is being
-		 * replayed and waiting on a serial number.
-		 * It might also be the case where do_send_sig_info() fails
-		 * because the signal handler is gone, and the task is waiting
-		 * on a resource in do_exit().
+		 * do_send_sig_info() may fail because the signal handler is
+		 * gone, and the task is waiting on a resource in do_exit()
+		 * during the replay. wake_up_process() is necessary in that
+		 * case.
 		 */
 		wake_up_process(scribe->p);
 	}
@@ -280,18 +293,21 @@ void scribe_emergency_stop(struct scribe_context *ctx,
 out:
 	spin_unlock(&ctx->tasks_lock);
 
-	/*
-	 * If the current process called emergency_stop(), we must detach
-	 * ourselves, and die in peace. We have a SIGKILL waiting for us...
-	 */
 	scribe = current->scribe;
-	if (is_replaying(scribe) && scribe->ctx == ctx)
+	if (is_replaying(scribe) && scribe->ctx == ctx) {
+		/*
+		 * This will prevent the current process to try grabbing
+		 * events on the way to the morgue (SIGKILL is pending).
+		 * We want scribe_dequeue_event() to fail.
+		 */
 		scribe_free_all_events(&scribe->queue->stream);
+	}
 }
 
 /*
  * XXX This is not an emergency_stop. This is just a notification that will
  * initiate a graceful ending.
+ * Processes are checking for the SCRIBE_STOP flag when entering a syscall.
  */
 int scribe_stop(struct scribe_context *ctx)
 {
@@ -301,13 +317,16 @@ int scribe_stop(struct scribe_context *ctx)
 	if (ctx->flags == SCRIBE_IDLE)
 		ret = -EPERM;
 	else if (list_empty(&ctx->tasks)) {
-		/* This would happen only when no task attached */
+		/* This would happen only when no task got attached ever */
 		context_idle(ctx, NULL);
 	} else
 		ctx->flags |= SCRIBE_STOP;
 	spin_unlock(&ctx->tasks_lock);
 
-	/* FIXME send a signal wakeup to tasks */
+	/*
+	 * FIXME send a signal wakeup to tasks, set TIF_SIGPENDING or
+	 * something.
+	 */
 
 	return ret;
 }
@@ -338,8 +357,8 @@ int scribe_set_attach_on_exec(struct scribe_context *ctx, int enable)
 }
 
 /*
- * scribe_attach() and scribe_detach() must only be called only by when
- * current == scribe->p, OR scribe->p is sleeping (and thus not accessing
+ * scribe_attach() and scribe_detach() must only be called when
+ * current == scribe->p, or when scribe->p is sleeping (and thus not accessing
  * scribe->flags).
  */
 void scribe_attach(struct scribe_ps *scribe)
@@ -348,8 +367,8 @@ void scribe_attach(struct scribe_ps *scribe)
 
 	/*
 	 * First get the queue, and only then, add to the task list:
-	 * It guarantee that if a task is in the task list, its
-	 * queue is in the queue list.
+	 * It guarantees that if a task is in the task list, its
+	 * queue would also be in the queue list.
 	 */
 	BUG_ON(scribe->queue);
 	BUG_ON(!scribe->pre_alloc_queue);
@@ -365,7 +384,7 @@ void scribe_attach(struct scribe_ps *scribe)
 		spin_unlock(&ctx->tasks_lock);
 
 		/*
-		 * Two reasons we are here:
+		 * Two reasons we landed here:
 		 * 1) We got caught in the attach_on_exec race:
 		 *    - the process calls scribe_set_attach_on_exec(ctx)
 		 *    - the context goes idle (event pump, or device closed)
@@ -375,15 +394,23 @@ void scribe_attach(struct scribe_ps *scribe)
 		 * suddenly scribe_emergency_stop() got called and distributed
 		 * some SIGKILLs, but only to the parent.
 		 *
-		 * We can SIGKILL ourselves because if we attached right
-		 * before the context went IDLE, would have got the SIGKILL
-		 * from emergency_stop() anyways. It's a race condition.
+		 * We can SIGKILL the current process because if we attached
+		 * right before the context went SCRIBE_IDLE, we would have
+		 * received the SIGKILL from emergency_stop() anyways. It's a
+		 * race.
+		 *
+		 * Note: During replay, in case a new event comes in for our
+		 * pid, a new queue will be instantiated by the device, and
+		 * will never be picked up by any process. But that's fine
+		 * because it means something went wrong, and the scribe
+		 * context is about to die, the queue will get freed anyways.
 		 */
+
 		spin_lock(&ctx->queues_lock);
 		scribe_unset_persistent(scribe->queue);
 		spin_unlock(&ctx->queues_lock);
 
-		force_sig(SIGKILL, scribe->p);
+		do_send_sig_info(SIGKILL, SEND_SIG_PRIV, scribe->p, 1);
 		exit_scribe(scribe->p);
 		return;
 	}
@@ -404,14 +431,9 @@ void scribe_attach(struct scribe_ps *scribe)
 	} else { /* is_replaying(scribe) == 1 */
 
 		/*
-		 * Releasing the persistent reference that was holding the
-		 * queue waiting the process to attach.
-		 *
-		 * Note: In case a new event comes in for our pid, a new queue
-		 * will be instantiated by the device, and will never be
-		 * picked up by any process. But that's fine because it means
-		 * something went wrong, and the scribe context is about to
-		 * die, the queue will get freed in scribe_exit_context().
+		 * We can now release the persistent reference that was holding
+		 * the queue waiting the process to attach since we got our
+		 * reference in scribe_get_queue_by_pid()
 		 */
 		spin_lock(&ctx->queues_lock);
 		scribe_unset_persistent(scribe->queue);
@@ -439,9 +461,13 @@ void scribe_detach(struct scribe_ps *scribe)
 	struct scribe_context *ctx = scribe->ctx;
 	BUG_ON(!is_scribed(scribe));
 
-	WARN_ON(scribe->can_uaccess);
+	WARN_ON(scribe->can_uaccess && ctx->flags != SCRIBE_IDLE);
 
-	/* scribe_close_files() should be done before (in exit_files()) */
+	/*
+	 * scribe_close_files() should be called before (in exit_files()),
+	 * and scribe_mem_exit() as well.
+	 */
+
 	scribe_detach_arch(scribe);
 
 	if (scribe->prepared_data_event) {
@@ -452,14 +478,18 @@ void scribe_detach(struct scribe_ps *scribe)
 	spin_lock(&ctx->tasks_lock);
 	list_del(&scribe->node);
 
-	/* We were the last task in the context, it's time to set it idle */
+	/*
+	 * The last task in the context is detaching, it's time to set it to
+	 * idle. Userspace will get notified.
+	 */
 	if (list_empty(&ctx->tasks) && ctx->flags != SCRIBE_IDLE)
 		context_idle(ctx, NULL);
 	spin_unlock(&ctx->tasks_lock);
 
 	/*
 	 * We want to set the wont_grow flag and put the queue in an atomic
-	 * way so that the event pump can send a QUEUE_EOF event just once.
+	 * way so that the event pump sends a QUEUE_EOF event once and only
+	 * once.
 	 */
 	spin_lock(&ctx->queues_lock);
 	if (is_recording(scribe))

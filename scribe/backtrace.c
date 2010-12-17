@@ -9,6 +9,12 @@
 
 #include <linux/scribe.h>
 
+/*
+ * The backtrace mechanism is useful during the replay to understand what
+ * events got dequeue right before an error happened. It's similar to strace.
+ * It more or less a circular buffer of the latest dequeued events' log offsets.
+ */
+
 struct scribe_backtrace {
 	struct list_head events;
 	struct scribe_event_backtrace *last;
@@ -53,13 +59,13 @@ void scribe_free_backtrace(struct scribe_backtrace *bt)
 	kfree(bt);
 }
 
-/* It's the owner responsability to serialize operations */
+/* It's the owner's responsability to serialize operations */
 void scribe_backtrace_add(struct scribe_backtrace *bt,
 			  struct scribe_event *event)
 {
 	struct scribe_event_backtrace *bt_event;
 
-	bt_event = list_first_entry(&bt->events, typeof(*bt_event), h.node);
+	bt_event = list_first_entry(&bt->events, __typeof__(*bt_event), h.node);
 	bt_event->event_offset = event->log_offset;
 	list_move_tail(&bt_event->h.node, &bt->events);
 }

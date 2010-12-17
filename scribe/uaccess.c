@@ -380,7 +380,7 @@ int fault_in_pages_readable(char __user *uaddr, int size)
 	return ret;
 }
 
-/* XXX You have only one level of data_flags "levels" */
+/* XXX There is only one level of data_flags stack levels */
 void scribe_data_push_flags(int flags)
 {
 	struct scribe_ps *scribe = current->scribe;

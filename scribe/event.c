@@ -175,11 +175,11 @@ void scribe_create_insert_point(scribe_insert_point_t *ip,
 }
 
 /*
- * This is where the difference between an insert point and a substream lies.
+ * This is where lies the difference between an insert point and a substream.
  */
 static struct scribe_substream *get_tail_substream(scribe_insert_point_t *ip)
 {
-	return list_entry(ip->node.next, typeof(*ip), node);
+	return list_entry(ip->node.next, __typeof__(*ip), node);
 }
 static struct scribe_substream *get_head_substream(scribe_insert_point_t *ip)
 {
@@ -291,7 +291,7 @@ retry:
 			goto retry;
 		return ERR_PTR(-EAGAIN);
 	}
-	event = list_first_entry(&substream->events, typeof(*event), node);
+	event = list_first_entry(&substream->events, __typeof__(*event), node);
 	if (likely(remove))
 		list_del(&event->node);
 	spin_unlock(&stream->lock);
@@ -329,8 +329,7 @@ struct scribe_event *scribe_dequeue_event_stream(struct scribe_stream *stream,
  * scribe_peek_event() returns the first event (like dequeue), but doesn't
  * remove it from the queue. If you want to consume the event, dequeue it.
  * XXX BE CAREFUL: do not free the event, do not access the event list node,
- * forbit another process dequeing the event while your are accessing that
- * event.
+ * another process must not dequeue the event while your are accessing it.
  */
 struct scribe_event *scribe_peek_event(struct scribe_queue *queue, int wait)
 {

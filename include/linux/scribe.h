@@ -58,8 +58,8 @@ struct scribe_stream {
 
 	/*
 	 * 'wait' points to:
-	 * - &ctx->wait_event in record mode (many producers, one consumer)
-	 * - &default_wait in replay mode (one producer, many consumer)
+	 * - &ctx->wait_event in record mode (one waiter for all queues)
+	 * - &default_wait in replay mode (one waiter per queue)
 	 */
 	wait_queue_head_t default_wait;
 	wait_queue_head_t *wait;
@@ -104,7 +104,7 @@ extern void scribe_free_all_events(struct scribe_stream *stream);
 
 /*
  * Insert points allows to insert event at an arbitrary location which is
- * quite handy when we need to put events "in the past", like saving the
+ * quite handy when we need to "put events in the past", like saving the
  * return value of a syscall.
  */
 extern void scribe_create_insert_point(scribe_insert_point_t *ip,
@@ -251,6 +251,11 @@ extern int scribe_pump_wait_completion_interruptible(struct scribe_pump *pump);
 
 /* Context */
 
+#define SCRIBE_IDLE	0x00000000
+#define SCRIBE_RECORD	0x00000001
+#define SCRIBE_REPLAY	0x00000002
+#define SCRIBE_STOP	0x00000004
+
 struct scribe_context {
 	atomic_t ref_cnt;
 	int id;
@@ -335,9 +340,9 @@ extern int scribe_stop(struct scribe_context *ctx);
 struct scribe_resource_cache {
 	struct scribe_resource_handle *hres;
 	/*
-	 * We need at most 3 lock_regions pre allocated upfront:
-	 * - in fd_install(): Two for the open/close region on the inode
-	 *   registration, and one for the files_struct.
+	 * We need at most 3 lock_regions pre allocated upfront, e.g in
+	 * fd_install(): Two for the open/close region on the inode
+	 * registration, and one for the files_struct.
 	 */
 	struct scribe_lock_region *lock_regions[3];
 };
@@ -408,10 +413,12 @@ extern void scribe_assert_locked(void *object);
 
 /*
  * A few rules:
- * - Only the current process have a write access to the fields in scribe_ps.
+ * - Only the current process have a write access to the fields in the
+ *   scribe_ps struct.
  * - To dereference task->scribe:
  *   - The current process doesn't need extra precaution
- *   - Other processes need to use rcu_read_lock()
+ *   - Other processes need to use rcu_read_lock() (or the safe version of the
+ *   macro defined below).
  */
 struct scribe_ps {
 	struct list_head node;
@@ -469,11 +476,11 @@ static inline int is_stopping(struct scribe_ps *scribe)
 		(scribe->ctx->flags & SCRIBE_STOP);
 }
 
+/* Use the safe version when current != t */
 #define is_ps_scribed(t)	is_scribed(t->scribe)
 #define is_ps_recording(t)	is_recording(t->scribe)
 #define is_ps_replaying(t)	is_replaying(t->scribe)
 
-/* Use the rcu version when current != t */
 #define __call_scribe_safe(t, func)				\
 ({								\
 	int __safe_ret;						\
@@ -536,6 +543,7 @@ extern void scribe_data_dont_record(void);
 extern void scribe_data_ignore(void);
 extern void scribe_data_pop_flags(void);
 
+/* TODO split that macro with functions */
 #define scribe_interpose_value(dst, src)				\
 ({									\
 	int __ret = 0;							\

@@ -1020,8 +1020,10 @@ static int copy_scribe(unsigned long long clone_flags, struct task_struct *p)
 	/*
 	 * To attach a task to a scribe context, we need to know the vpid of
 	 * that task in its pid namespace. attach_pid() happens at the end of
-	 * copy process, so we need to separately: 1) allocate the memory, 2)
-	 * trigger the record/replay.
+	 * copy process, so we need to separately: 1) allocate the memory,
+	 * 2) trigger the record/replay.
+	 *
+	 * TODO The scribe enable/disable flags should be inherited.
 	 */
 	return init_scribe(p, current->scribe->ctx);
 }

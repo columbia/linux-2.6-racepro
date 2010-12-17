@@ -15,6 +15,13 @@
 #include <linux/completion.h>
 #include <linux/scribe.h>
 
+/*
+ * The pump takes care of serializing (record) and deserializing (replay) the
+ * evens to/from a file.
+ * TODO Have one kthread for n contexts, right now we have n kthreads for n
+ * contexts.
+ */
+
 #define PUMP_BUFFER_ORDER 2
 #define PUMP_BUFFER_SIZE (PAGE_SIZE << PUMP_BUFFER_ORDER)
 
@@ -584,7 +591,7 @@ void scribe_pump_abort_start(struct scribe_pump *pump)
 }
 
 /*
- * The owner gives its logfile reference, so fput() should not be performed on
+ * The owner gives its logfile reference: fput() should not be performed on
  * the caller's side.
  */
 void scribe_pump_start(struct scribe_pump *pump, int state,

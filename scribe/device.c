@@ -17,12 +17,18 @@
 #include <linux/sched.h>
 #include <linux/scribe.h>
 
+/*
+ * The scribe device instantiate the scribe context associated with it, and
+ * the event pump which takes care of the serialization/deserialization of the
+ * events.
+ */
+
 struct scribe_dev {
 	struct scribe_context *ctx;
 	struct mutex lock_read;
 	struct mutex lock_write;
 	struct scribe_pump *pump;
-	struct scribe_event *pending_notification_event;
+	struct scribe_event *pending_event;
 };
 
 static int do_start(struct scribe_dev *dev, int state, int log_fd,
@@ -138,7 +144,7 @@ static ssize_t dev_read(struct file *file,
 	size_t to_copy = 0;
 
 	mutex_lock(&dev->lock_read);
-	event = dev->pending_notification_event;
+	event = dev->pending_event;
 	if (!event) {
 		event = scribe_dequeue_event_stream(&ctx->notifications,
 						    SCRIBE_WAIT_INTERRUPTIBLE);
@@ -151,6 +157,11 @@ static ssize_t dev_read(struct file *file,
 
 	if (event->type == SCRIBE_EVENT_CONTEXT_IDLE) {
 		err = -ERESTARTSYS;
+		/*
+		 * We want to make sure that the pump (and hence the log file)
+		 * is complete before returning to userspace. This is the only
+		 * way userspace can know if the log file is written entirely.
+		 */
 		if (scribe_pump_wait_completion_interruptible(dev->pump))
 			goto out;
 	}
@@ -168,7 +179,7 @@ static ssize_t dev_read(struct file *file,
 	err = 0;
 
 out:
-	dev->pending_notification_event = event;
+	dev->pending_event = event;
 	mutex_unlock(&dev->lock_read);
 	if (err)
 		return err;
@@ -189,14 +200,14 @@ static int dev_open(struct inode *inode, struct file *file)
 	if (!dev->ctx)
 		goto out_dev;
 
-	mutex_init(&dev->lock_read);
-	mutex_init(&dev->lock_write);
-
 	dev->pump = scribe_pump_alloc(dev->ctx);
 	if (!dev->pump)
 		goto out_ctx;
 
-	dev->pending_notification_event = NULL;
+	mutex_init(&dev->lock_read);
+	mutex_init(&dev->lock_write);
+
+	dev->pending_event = NULL;
 
 	file->private_data = dev;
 	return 0;
@@ -204,8 +215,6 @@ static int dev_open(struct inode *inode, struct file *file)
 out_ctx:
 	scribe_exit_context(dev->ctx);
 out_dev:
-	mutex_destroy(&dev->lock_read);
-	mutex_destroy(&dev->lock_write);
 	kfree(dev);
 out:
 	return ret;
@@ -217,8 +226,8 @@ static int dev_release(struct inode *inode, struct file *file)
 
 	scribe_pump_free(dev->pump);
 
-	if (dev->pending_notification_event)
-		scribe_free_event(dev->pending_notification_event);
+	if (dev->pending_event)
+		scribe_free_event(dev->pending_event);
 
 	scribe_exit_context(dev->ctx);
 	mutex_destroy(&dev->lock_read);

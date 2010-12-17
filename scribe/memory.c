@@ -20,6 +20,8 @@
 #include "../mm/internal.h"
 #include <asm/tlb.h>
 
+/* TODO heavy reformatting and documentation needed */
+
 #if 0
 #define CONFIG_SCRIBE_MEM_DBG
 #define MEM_DEBUG(scribe, msg, args... ) do {		\

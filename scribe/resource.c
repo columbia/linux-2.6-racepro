@@ -759,8 +759,7 @@ void scribe_close_resource(struct scribe_resource_context *ctx,
 		spin_lock(&hres->lock);
 		BUG_ON(list_empty(&hres->close_lock_regions));
 		close_lock_region = list_first_entry(&hres->close_lock_regions,
-						     typeof(*close_lock_region),
-						     node);
+					__typeof__(*close_lock_region), node);
 		list_del(&close_lock_region->node);
 		spin_unlock(&hres->lock);
 

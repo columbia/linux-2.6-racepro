@@ -13,12 +13,6 @@
 #include <linux/syscalls.h>
 #include <asm/syscall.h>
 
-static int is_scribe_syscall(int nr)
-{
-	return nr == __NR_get_scribe_flags ||
-	       nr == __NR_set_scribe_flags;
-}
-
 int scribe_regs(struct scribe_ps *scribe, struct pt_regs *regs)
 {
 	struct scribe_event_regs *event_regs;
@@ -45,10 +39,15 @@ int scribe_regs(struct scribe_ps *scribe, struct pt_regs *regs)
 				       .regs = *regs);
 			return -EDIVERGE;
 		}
-
 	}
 
 	return 0;
+}
+
+static inline int is_scribe_syscall(int nr)
+{
+	return nr == __NR_get_scribe_flags ||
+	       nr == __NR_set_scribe_flags;
 }
 
 void scribe_enter_syscall(struct pt_regs *regs)
@@ -77,10 +76,19 @@ void scribe_enter_syscall(struct pt_regs *regs)
 	if (!should_scribe_syscalls(scribe))
 		return;
 
-	if (is_recording(scribe))
+	if (is_recording(scribe)) {
+		/*
+		 * We'll postpone the insertion of the syscall event for the
+		 * return value.
+		 *
+		 * XXX This is potentially dangerous in the sense that the
+		 * userspace can make the kernel allocate many events during
+		 * the syscall, which won't get flushed to the logfile until
+		 * the syscall returns.
+		 */
 		scribe_create_insert_point(&scribe->syscall_ip,
 					   &scribe->queue->stream);
-	else {
+	} else {
 		event = scribe_dequeue_event_specific(scribe,
 						      SCRIBE_EVENT_SYSCALL);
 		if (IS_ERR(event))
@@ -103,8 +111,7 @@ void scribe_enter_syscall(struct pt_regs *regs)
 
 		/*
 		 * FIXME Do something about non deterministic errors such as
-		 * -ENOMEM. We need to process any events that the syscall
-		 *  may have produced.
+		 * -ENOMEM.
 		 */
 	}
 	scribe->in_syscall = 1;
@@ -167,7 +174,7 @@ void scribe_exit_syscall(struct pt_regs *regs)
 	scribe_signal_sync_point(regs);
 }
 
-asmlinkage long sys_get_scribe_flags(void)
+SYSCALL_DEFINE0(get_scribe_flags)
 {
 	struct scribe_ps *scribe = current->scribe;
 	if (!is_scribed(scribe))
@@ -176,11 +183,7 @@ asmlinkage long sys_get_scribe_flags(void)
 	return scribe->flags;
 }
 
-/*
- * Scribe enable flags are not inherited on fork().
- * The flags are also reset in scribe_detach().
- */
-asmlinkage long sys_set_scribe_flags(int flags)
+SYSCALL_DEFINE1(set_scribe_flags, int, flags)
 {
 	struct scribe_ps *scribe = current->scribe;
 	int old_flags;
@@ -193,6 +196,8 @@ asmlinkage long sys_set_scribe_flags(int flags)
 	/* We allow only enable flags to be set */
 	scribe->flags &= ~SCRIBE_PS_ENABLE_ALL;
 	scribe->flags |= flags & SCRIBE_PS_ENABLE_ALL;
+
+	/* FIXME switch the pgd to the real page table if needed */
 
 	return old_flags;
 }
