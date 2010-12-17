@@ -15,24 +15,25 @@
 
 #include <linux/types.h>
 #include <asm/ptrace.h>
+
 #ifdef __KERNEL__
 #include <linux/list.h>
 #else
 #ifndef __always_inline
 #define __always_inline inline
 #endif
-
 #endif /* __KERNEL__ */
 
 
 /* FIXME This has to go in <asm/errno.h> */
-#define EDIVERGE	200	/* Replay diverged */
+#define EDIVERGE			200	/* Replay diverged */
 
-#define SCRIBE_DEVICE_NAME	"scribe"
-#define SCRIBE_IDLE		0x00000000
-#define SCRIBE_RECORD		0x00000001
-#define SCRIBE_REPLAY		0x00000002
-#define SCRIBE_STOP		0x00000004
+#define SCRIBE_DEVICE_NAME		"scribe"
+
+#define SCRIBE_IDLE			0x00000000
+#define SCRIBE_RECORD			0x00000001
+#define SCRIBE_REPLAY			0x00000002
+#define SCRIBE_STOP			0x00000004
 
 #define SCRIBE_PS_RECORD		0x00000001
 #define SCRIBE_PS_REPLAY		0x00000002
@@ -375,15 +376,7 @@ struct scribe_event_diverge_regs {
 	struct pt_regs regs;
 } __attribute__((packed));
 
-
-static __always_inline int is_sized_type(int type)
-{
-	return  type == SCRIBE_EVENT_INIT ||
-		type == SCRIBE_EVENT_DATA ||
-		type == SCRIBE_EVENT_SIGNAL;
-}
-
-static __always_inline int is_diverge_type(int type)
+static inline int is_diverge_type(int type)
 {
 	return  type == SCRIBE_EVENT_DIVERGE_EVENT_TYPE ||
 		type == SCRIBE_EVENT_DIVERGE_EVENT_SIZE ||
@@ -399,7 +392,14 @@ static __always_inline int is_diverge_type(int type)
 		type == SCRIBE_EVENT_DIVERGE_REGS;
 }
 
-void __you_are_using_an_unknown_scribe_type(void);
+static __always_inline int is_sized_type(int type)
+{
+	return  type == SCRIBE_EVENT_INIT ||
+		type == SCRIBE_EVENT_DATA ||
+		type == SCRIBE_EVENT_SIGNAL;
+}
+
+void you_are_using_an_unknown_scribe_type(void);
 /*
  * XXX The additional payload of sized event is NOT accounted here.
  */
@@ -447,7 +447,7 @@ static __always_inline size_t sizeof_event_from_type(__u8 type)
 #undef  __TYPE
 
 	if (__builtin_constant_p(type))
-		__you_are_using_an_unknown_scribe_type();
+		you_are_using_an_unknown_scribe_type();
 
 	return (size_t)-1;
 }
