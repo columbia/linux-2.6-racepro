@@ -907,7 +907,7 @@ static void scribe_do_exit(struct task_struct *p, long code)
 		scribe_commit_syscall(scribe, task_pt_regs(p), code);
 	}
 
-	scribe_detach(scribe);
+	__scribe_detach(scribe);
 
 out:
 	exit_scribe(p);

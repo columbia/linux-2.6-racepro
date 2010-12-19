@@ -22,7 +22,7 @@ void scribe_init_stream(struct scribe_stream *stream)
 {
 	spin_lock_init(&stream->lock);
 	init_substream(stream, &stream->master);
-	stream->wont_grow = 0;
+	stream->sealed = 0;
 	init_waitqueue_head(&stream->default_wait);
 	stream->wait = &stream->default_wait;
 }
@@ -78,8 +78,8 @@ struct scribe_queue *scribe_get_queue_by_pid(
 	*pre_alloc_queue = NULL;
 
 	init_queue(queue, ctx, pid);
-	if (ctx->queues_wont_grow)
-		queue->stream.wont_grow = 1;
+	if (ctx->queues_sealed)
+		queue->stream.sealed = 1;
 
 	/*
 	 * Making the new queue persistent: We are keeping an internal
@@ -269,23 +269,23 @@ retry:
 	if (wait == SCRIBE_WAIT_INTERRUPTIBLE &&
 	    wait_event_interruptible(*stream->wait,
 				     !scribe_is_stream_empty(stream) ||
-				     stream->wont_grow))
+				     stream->sealed))
 		return ERR_PTR(-ERESTARTSYS);
 
 	if (wait == SCRIBE_WAIT)
 		wait_event(*stream->wait,
 		       !scribe_is_stream_empty(stream) ||
-		       stream->wont_grow);
+		       stream->sealed);
 
 	spin_lock(&stream->lock);
 	substream = get_head_substream(ip);
 	if (list_empty(&substream->events)) {
 		spin_unlock(&stream->lock);
 		/*
-		 * If the queue will never grow, the queue is officially dead.
+		 * If the queue is sealed, the queue is officially dead.
 		 * There is no point waiting.
 		 */
-		if (stream->wont_grow)
+		if (stream->sealed)
 			return ERR_PTR(-ENODATA);
 		if (wait)
 			goto retry;
@@ -340,7 +340,7 @@ struct scribe_event *scribe_peek_event(struct scribe_queue *queue, int wait)
 	return event;
 }
 
-int scribe_is_stream_empty(struct scribe_stream *stream)
+bool scribe_is_stream_empty(struct scribe_stream *stream)
 {
 	int ret;
 	/* FIXME is the spinlock really necessary ? */
@@ -350,11 +350,27 @@ int scribe_is_stream_empty(struct scribe_stream *stream)
 	return ret;
 }
 
-void scribe_set_stream_wont_grow(struct scribe_stream *stream)
+void scribe_seal_stream(struct scribe_stream *stream)
 {
 	commit_pending_insert_points(stream);
-	stream->wont_grow = 1;
+	stream->sealed = 1;
 	wake_up(stream->wait);
+}
+
+void scribe_kill_stream(struct scribe_stream *stream)
+{
+	scribe_seal_stream(stream);
+	/*
+	 * The write barrier ensure that the pump doesn't add new events once
+	 * the queue is sealed.
+	 */
+	smp_wmb();
+	scribe_free_all_events(stream);
+}
+
+bool scribe_is_stream_dead(struct scribe_stream *stream)
+{
+	return stream->sealed && scribe_is_stream_empty(stream);
 }
 
 void *__scribe_alloc_event(int type)

@@ -771,7 +771,7 @@ void do_signal(struct pt_regs *regs)
 {
 	struct k_sigaction ka;
 	siginfo_t info;
-	int signr;
+	int signr = 0;
 	sigset_t *oldset;
 
 	/*
@@ -784,15 +784,13 @@ void do_signal(struct pt_regs *regs)
 	if (!user_mode(regs))
 		return;
 
-	if (!scribe_can_deliver_signal())
-		return;
-
 	if (current_thread_info()->status & TS_RESTORE_SIGMASK)
 		oldset = &current->saved_sigmask;
 	else
 		oldset = &current->blocked;
 
-	signr = get_signal_to_deliver(&info, &ka, regs, NULL);
+	if (scribe_can_deliver_signal())
+		signr = get_signal_to_deliver(&info, &ka, regs, NULL);
 	if (signr > 0) {
 		/* Whee! Actually deliver the signal.  */
 		if (handle_signal(signr, &info, &ka, oldset, regs) == 0) {

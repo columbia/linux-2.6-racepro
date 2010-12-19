@@ -36,6 +36,7 @@ struct scribe_context *scribe_alloc_context(void)
 
 	ctx->idle_event = NULL;
 	ctx->diverge_event = NULL;
+	ctx->last_error = 0;
 
 	spin_lock_init(&ctx->backtrace_lock);
 	ctx->backtrace = NULL;
@@ -49,15 +50,21 @@ struct scribe_context *scribe_alloc_context(void)
 
 	scribe_init_resource(&ctx->tasks_res, SCRIBE_RES_TYPE_TASK);
 
+	ctx->bmark = scribe_bookmark_alloc(ctx);
+	if (!ctx->bmark)
+		goto err_futex;
+
 	spin_lock_init(&ctx->mem_hash_lock);
 	ctx->mem_hash = scribe_alloc_mem_hash();
 	if (!ctx->mem_hash)
-		goto err_futex;
+		goto err_bmark;
 	spin_lock_init(&ctx->mem_list_lock);
 	INIT_LIST_HEAD(&ctx->mem_list);
 
 	return ctx;
 
+err_bmark:
+	scribe_bookmark_free(ctx->bmark);
 err_futex:
 	scribe_close_futexes(ctx->res_ctx);
 err_res_ctx:
@@ -67,7 +74,7 @@ err_ctx:
 	return NULL;
 }
 
-static void wait_for_tasks(struct scribe_context *ctx)
+static void wait_for_ctx_empty(struct scribe_context *ctx)
 {
 	struct scribe_queue *queue, *tmp;
 
@@ -85,12 +92,13 @@ static void wait_for_tasks(struct scribe_context *ctx)
 void scribe_exit_context(struct scribe_context *ctx)
 {
 	scribe_emergency_stop(ctx, NULL);
-	wait_for_tasks(ctx);
+	wait_for_ctx_empty(ctx);
 
 	scribe_free_all_events(&ctx->notifications);
 	scribe_free_mem_hash(ctx->mem_hash);
 	scribe_close_futexes(ctx->res_ctx);
 	scribe_free_resource_context(ctx->res_ctx);
+	scribe_bookmark_free(ctx->bmark);
 
 	scribe_put_context(ctx);
 }
@@ -108,10 +116,9 @@ static int context_start(struct scribe_context *ctx, int state,
 	/*
 	 * The task list might not be empty (just got an emergency_stop).
 	 */
-	if (!list_empty(&ctx->tasks))
-		wait_for_tasks(ctx);
+	wait_for_ctx_empty(ctx);
 
-	ctx->queues_wont_grow = 0;
+	ctx->queues_sealed = 0;
 
 	ctx->idle_event = idle_event;
 	ctx->diverge_event = diverge_event;
@@ -141,8 +148,17 @@ static void context_idle(struct scribe_context *ctx,
 			 struct scribe_event *reason)
 {
 	struct scribe_backtrace *backtrace;
+	struct scribe_queue *queue;
 
 	assert_spin_locked(&ctx->tasks_lock);
+
+	if (ctx->flags & SCRIBE_REPLAY) {
+		spin_lock(&ctx->queues_lock);
+		list_for_each_entry(queue, &ctx->queues, node)
+			scribe_kill_queue(queue);
+		ctx->queues_sealed = 1;
+		spin_unlock(&ctx->queues_lock);
+	}
 
 	ctx->flags = SCRIBE_IDLE;
 
@@ -159,12 +175,12 @@ static void context_idle(struct scribe_context *ctx,
 	}
 
 	if (IS_ERR(reason) || !reason) {
-		ctx->idle_event->error = PTR_ERR(reason);
+		ctx->last_error = ctx->idle_event->error = PTR_ERR(reason);
 		WARN(reason, "scribe: Context going idle with error=%ld\n",
 		     PTR_ERR(reason));
 	} else {
 		WARN(1, "scribe: Replay diverged\n");
-		ctx->idle_event->error = -EDIVERGE;
+		ctx->last_error = ctx->idle_event->error = -EDIVERGE;
 		scribe_queue_event_stream(&ctx->notifications, reason);
 	}
 
@@ -292,16 +308,6 @@ void scribe_emergency_stop(struct scribe_context *ctx,
 
 out:
 	spin_unlock(&ctx->tasks_lock);
-
-	scribe = current->scribe;
-	if (is_replaying(scribe) && scribe->ctx == ctx) {
-		/*
-		 * This will prevent the current process to try grabbing
-		 * events on the way to the morgue (SIGKILL is pending).
-		 * We want scribe_dequeue_event() to fail.
-		 */
-		scribe_free_all_events(&scribe->queue->stream);
-	}
 }
 
 /*
@@ -316,11 +322,13 @@ int scribe_stop(struct scribe_context *ctx)
 	spin_lock(&ctx->tasks_lock);
 	if (ctx->flags == SCRIBE_IDLE)
 		ret = -EPERM;
-	else if (list_empty(&ctx->tasks)) {
-		/* This would happen only when no task got attached ever */
+	else if (list_empty(&ctx->tasks))
 		context_idle(ctx, NULL);
-	} else
+	else {
 		ctx->flags |= SCRIBE_STOP;
+		if (ctx->flags & SCRIBE_RECORD)
+			scribe_wake_all_fake_sig(ctx);
+	}
 	spin_unlock(&ctx->tasks_lock);
 
 	/*
@@ -329,6 +337,19 @@ int scribe_stop(struct scribe_context *ctx)
 	 */
 
 	return ret;
+}
+
+/* scribe_wake_all_fake_sig() interrupts syscalls */
+void scribe_wake_all_fake_sig(struct scribe_context *ctx)
+{
+	unsigned long flags;
+	struct scribe_ps *scribe;
+
+	list_for_each_entry(scribe, &ctx->tasks, node) {
+		spin_lock_irqsave(&scribe->p->sighand->siglock, flags);
+		signal_wake_up(scribe->p, 0);
+		spin_unlock_irqrestore(&scribe->p->sighand->siglock, flags);
+	}
 }
 
 int scribe_set_attach_on_exec(struct scribe_context *ctx, int enable)
@@ -456,17 +477,12 @@ void scribe_attach(struct scribe_ps *scribe)
 	BUG_ON(scribe_mem_init_st(scribe));
 }
 
-void scribe_detach(struct scribe_ps *scribe)
+void __scribe_detach(struct scribe_ps *scribe)
 {
 	struct scribe_context *ctx = scribe->ctx;
 	BUG_ON(!is_scribed(scribe));
 
 	WARN_ON(scribe->can_uaccess && ctx->flags != SCRIBE_IDLE);
-
-	/*
-	 * scribe_close_files() should be called before (in exit_files()),
-	 * and scribe_mem_exit() as well.
-	 */
 
 	scribe_detach_arch(scribe);
 
@@ -487,13 +503,13 @@ void scribe_detach(struct scribe_ps *scribe)
 	spin_unlock(&ctx->tasks_lock);
 
 	/*
-	 * We want to set the wont_grow flag and put the queue in an atomic
+	 * We want to set the sealed flag and put the queue in an atomic
 	 * way so that the event pump sends a QUEUE_EOF event once and only
 	 * once.
 	 */
 	spin_lock(&ctx->queues_lock);
 	if (is_recording(scribe))
-		scribe_set_stream_wont_grow(&scribe->queue->stream);
+		scribe_seal_queue(scribe->queue);
 	scribe_put_queue_locked(scribe->queue);
 	spin_unlock(&ctx->queues_lock);
 
@@ -502,4 +518,49 @@ void scribe_detach(struct scribe_ps *scribe)
 	scribe->queue = NULL;
 
 	scribe->flags &= ~(SCRIBE_PS_RECORD | SCRIBE_PS_REPLAY);
+}
+
+void scribe_detach(struct scribe_ps *scribe)
+{
+	scribe->flags |= SCRIBE_PS_DETACHING;
+	if (is_replaying(scribe))
+		scribe_kill_queue(scribe->queue);
+
+	scribe_mem_exit_st(scribe);
+	scribe_close_files(scribe->p->files);
+	__scribe_detach(scribe);
+}
+
+static bool should_detach(struct scribe_ps *scribe)
+{
+	if (scribe->ctx->flags & SCRIBE_STOP)
+		return true;
+
+	if (scribe_is_queue_dead(scribe->queue))
+		return true;
+
+	return false;
+}
+
+bool scribe_maybe_detach(struct scribe_ps *scribe)
+{
+	struct scribe_context *ctx = scribe->ctx;
+
+	if (!should_detach(scribe))
+		return false;
+
+	scribe_get_context(ctx);
+	scribe_detach(scribe);
+	exit_scribe(scribe->p);
+
+	wait_event(ctx->tasks_wait, list_empty(&ctx->tasks) || ctx->last_error);
+	/*
+	 * FIXME possible race: when list_empty(ctx->task), the context might
+	 * have started again, and other tasks might have joined the context.
+	 */
+	if (ctx->last_error)
+		do_send_sig_info(SIGKILL, SEND_SIG_PRIV, scribe->p, 1);
+	scribe_put_context(ctx);
+
+	return true;
 }

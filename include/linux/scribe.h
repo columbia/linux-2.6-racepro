@@ -51,10 +51,10 @@ struct scribe_stream {
 	struct scribe_substream master;
 
 	/*
-	 * When wont_grow == 1 and list_empty(events), the queue can be
+	 * When sealed == 1 and list_empty(events), the queue can be
 	 * considered as dead.
 	 */
-	int wont_grow;
+	int sealed;
 
 	/*
 	 * 'wait' points to:
@@ -180,8 +180,29 @@ extern struct scribe_event *scribe_peek_event(
 	(struct_##_type *)__event_sized;				\
 })
 
-extern int scribe_is_stream_empty(struct scribe_stream *stream);
-extern void scribe_set_stream_wont_grow(struct scribe_stream *stream);
+extern bool scribe_is_stream_empty(struct scribe_stream *stream);
+static inline bool scribe_is_queue_empty(struct scribe_queue *queue)
+{
+	return scribe_is_stream_empty(&queue->stream);
+}
+
+extern void scribe_seal_stream(struct scribe_stream *stream);
+static inline void scribe_seal_queue(struct scribe_queue *queue)
+{
+	scribe_seal_stream(&queue->stream);
+}
+
+extern bool scribe_is_stream_dead(struct scribe_stream *stream);
+static inline bool scribe_is_queue_dead(struct scribe_queue *queue)
+{
+	return scribe_is_stream_dead(&queue->stream);
+}
+
+extern void scribe_kill_stream(struct scribe_stream *stream);
+static inline void scribe_kill_queue(struct scribe_queue *queue)
+{
+	scribe_kill_stream(&queue->stream);
+}
 
 /*
  * We need the __always_inline (like kmalloc()) to make sure that the constant
@@ -265,7 +286,7 @@ struct scribe_context {
 	struct list_head tasks;
 	wait_queue_head_t tasks_wait;
 
-	int queues_wont_grow;
+	int queues_sealed;
 	spinlock_t queues_lock;
 	struct list_head queues;
 	wait_queue_head_t queues_wait;
@@ -275,12 +296,15 @@ struct scribe_context {
 	/* Those are pre-allocated events to be used in atomic contexts */
 	struct scribe_event_context_idle *idle_event;
 	struct scribe_event_diverge *diverge_event;
+	int last_error;
 
 	spinlock_t backtrace_lock;
 	struct scribe_backtrace *backtrace;
 
 	struct scribe_resource_context *res_ctx;
 	struct scribe_resource tasks_res;
+
+	struct scribe_bookmark *bmark;
 
 	/* memory page hash table */
 	spinlock_t		mem_hash_lock;
@@ -308,6 +332,7 @@ extern void scribe_exit_context(struct scribe_context *ctx);
 extern int scribe_start_record(struct scribe_context *ctx);
 extern int scribe_start_replay(struct scribe_context *ctx, int backtrace_len);
 extern int scribe_stop(struct scribe_context *ctx);
+extern void scribe_wake_all_fake_sig(struct scribe_context *ctx);
 
 #define scribe_get_diverge_event(sp, _type)				\
 ({									\
@@ -334,6 +359,18 @@ extern int scribe_stop(struct scribe_context *ctx);
 	}								\
 	scribe_emergency_stop((sp)->ctx, (struct scribe_event *)__event); \
 })
+
+/* Bookmarks */
+
+extern struct scribe_bookmark *scribe_bookmark_alloc(
+						struct scribe_context *ctx);
+extern void scribe_bookmark_free(struct scribe_bookmark *bmark);
+extern void scribe_bookmark_reset(struct scribe_bookmark *bmark);
+extern int scribe_bookmark_request(struct scribe_bookmark *bmark);
+extern void scribe_bookmark_point(void);
+extern int scribe_golive_on_bookmark_id(struct scribe_bookmark *bmark, int id);
+extern int scribe_golive_on_next_bookmark(struct scribe_bookmark *bmark);
+
 
 /* Resources */
 
@@ -450,6 +487,8 @@ struct scribe_ps {
 
 	int in_signal_sync_point;
 
+	int bmark_waiting;
+
 	struct scribe_mm *mm;
 };
 
@@ -470,10 +509,9 @@ static inline int is_replaying(struct scribe_ps *scribe)
 {
 	return scribe != NULL && (scribe->flags & SCRIBE_PS_REPLAY);
 }
-static inline int is_stopping(struct scribe_ps *scribe)
+static inline int is_detaching(struct scribe_ps *scribe)
 {
-	return scribe != NULL && scribe->ctx &&
-		(scribe->ctx->flags & SCRIBE_STOP);
+	return scribe != NULL && (scribe->flags & SCRIBE_PS_DETACHING);
 }
 
 /* Use the safe version when current != t */
@@ -525,7 +563,9 @@ extern void exit_scribe(struct task_struct *p);
 
 extern int scribe_set_attach_on_exec(struct scribe_context *ctx, int enable);
 extern void scribe_attach(struct scribe_ps *scribe);
+extern void __scribe_detach(struct scribe_ps *scribe);
 extern void scribe_detach(struct scribe_ps *scribe);
+extern bool scribe_maybe_detach(struct scribe_ps *scribe);
 
 extern void scribe_copy_to_user_recorded(void __user *to, long n,
 					 struct scribe_event_data **event);
@@ -605,6 +645,14 @@ extern void scribe_signal_sync_point(struct pt_regs *regs);
 extern int scribe_can_deliver_signal(void);
 extern void scribe_delivering_signal(int signr, struct siginfo *info);
 
+static inline int is_interruption(int ret)
+{
+	return ret == -ERESTARTSYS ||
+		ret == -ERESTARTNOINTR ||
+		ret == -ERESTARTNOHAND ||
+		ret == -ERESTART_RESTARTBLOCK ||
+		ret == -EINTR;
+}
 
 /* Memory */
 #define MEM_SYNC_IN		1

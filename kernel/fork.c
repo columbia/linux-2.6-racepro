@@ -998,6 +998,7 @@ int init_scribe(struct task_struct *p, struct scribe_context *ctx)
 	scribe->flags = 0;
 	scribe->ctx = ctx;
 	scribe->p = p;
+	scribe->bmark_waiting = 0;
 	scribe->mm = NULL;
 
 	p->scribe = scribe;

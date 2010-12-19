@@ -13,7 +13,7 @@
 #include <linux/syscalls.h>
 #include <asm/syscall.h>
 
-int scribe_regs(struct scribe_ps *scribe, struct pt_regs *regs)
+static int scribe_regs(struct scribe_ps *scribe, struct pt_regs *regs)
 {
 	struct scribe_event_regs *event_regs;
 	int ret;
@@ -68,10 +68,10 @@ void scribe_enter_syscall(struct pt_regs *regs)
 	scribe_signal_sync_point(regs);
 	__scribe_forbid_uaccess(scribe);
 
-	if (is_stopping(scribe)) {
-		scribe_detach(scribe);
+	scribe_bookmark_point();
+
+	if (scribe_maybe_detach(scribe))
 		return;
-	}
 
 	if (!should_scribe_syscalls(scribe))
 		return;
@@ -102,11 +102,7 @@ void scribe_enter_syscall(struct pt_regs *regs)
 		scribe->orig_ret = event->ret;
 		scribe_free_event(event);
 
-		if (scribe->orig_ret == -EINTR ||
-		    scribe->orig_ret == -ERESTARTNOHAND ||
-		    scribe->orig_ret == -ERESTARTSYS ||
-		    scribe->orig_ret == -ERESTARTNOINTR ||
-		    scribe->orig_ret == -ERESTART_RESTARTBLOCK)
+		if (is_interruption(scribe->orig_ret))
 			set_thread_flag(TIF_SIGPENDING);
 
 		/*
@@ -143,7 +139,10 @@ void scribe_commit_syscall(struct scribe_ps *scribe, struct pt_regs *regs,
 		if (!IS_ERR(event_end))
 			scribe_free_event(event_end);
 
-		if (scribe->orig_ret != ret_value) {
+		if (is_interruption(scribe->orig_ret)) {
+			syscall_set_return_value(scribe->p, regs,
+						 scribe->orig_ret, 0);
+		} else if (scribe->orig_ret != ret_value) {
 			scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_SYSCALL_RET,
 				       .ret = ret_value);
 		}
@@ -156,7 +155,7 @@ err:
 
 void scribe_exit_syscall(struct pt_regs *regs)
 {
-	long ret_value;
+	long ret_value = 0;
 	struct scribe_ps *scribe = current->scribe;
 
 	if (!is_scribed(scribe))
@@ -172,6 +171,13 @@ void scribe_exit_syscall(struct pt_regs *regs)
 
 	__scribe_allow_uaccess(scribe);
 	scribe_signal_sync_point(regs);
+
+	/*
+	 * In case we have a fake signal to handle, we want do_signal() to be
+	 * called.
+	 */
+	if (is_interruption(ret_value))
+		set_thread_flag(TIF_SIGPENDING);
 }
 
 SYSCALL_DEFINE0(get_scribe_flags)

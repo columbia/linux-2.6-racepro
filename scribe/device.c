@@ -86,6 +86,13 @@ static int handle_command(struct scribe_dev *dev, struct scribe_event *event)
 				event_replay->backtrace_len);
 	case SCRIBE_EVENT_STOP:
 		return scribe_stop(dev->ctx);
+	case SCRIBE_EVENT_BOOKMARK_REQUEST:
+		return scribe_bookmark_request(dev->ctx->bmark);
+	case SCRIBE_EVENT_GOLIVE_ON_NEXT_BOOKMARK:
+		return scribe_golive_on_next_bookmark(dev->ctx->bmark);
+	case SCRIBE_EVENT_GOLIVE_ON_BOOKMARK_ID:
+		return scribe_golive_on_bookmark_id(dev->ctx->bmark,
+		      ((struct scribe_event_golive_on_bookmark_id *)event)->id);
 	default:
 		return -EINVAL;
 	}

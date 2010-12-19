@@ -60,7 +60,7 @@ void scribe_signal_sync_point(struct pt_regs *regs)
 		return;
 
 	ret = scribe_enter_fenced_region(SCRIBE_REGION_SIGNAL);
-	if (ret) {
+	if (ret && ret != ENODATA) {
 		scribe_emergency_stop(scribe->ctx, ERR_PTR(ret));
 		return;
 	}

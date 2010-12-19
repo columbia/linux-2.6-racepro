@@ -33,21 +33,12 @@ struct scribe_pump {
 	struct file *logfile;
 };
 
-static inline int is_interrupted(int ret)
-{
-	return ret == -ERESTARTSYS ||
-		ret == -ERESTARTNOINTR ||
-		ret == -ERESTARTNOHAND ||
-		ret == -ERESTART_RESTARTBLOCK ||
-		ret == -EINTR;
-}
-
 /* Record */
 
 static inline int is_queue_active(struct scribe_queue *queue)
 {
 	return !scribe_is_stream_empty(&queue->stream) ||
-		queue->stream.wont_grow;
+		queue->stream.sealed;
 }
 
 /*
@@ -144,7 +135,7 @@ static int get_next_event(pid_t *last_pid, struct scribe_event **event,
 	} else if (likely(!scribe_is_stream_empty(&queue->stream))) {
 		*event = scribe_dequeue_event(queue, SCRIBE_NO_WAIT);
 	} else {
-		BUG_ON(!&queue->stream.wont_grow);
+		BUG_ON(!&queue->stream.sealed);
 
 		event_eof = scribe_alloc_event(SCRIBE_EVENT_QUEUE_EOF);
 		if (!event_eof)
@@ -153,10 +144,9 @@ static int get_next_event(pid_t *last_pid, struct scribe_event **event,
 		*event = (struct scribe_event *)event_eof;
 
 		/*
-		 * When the queue is empty and set to not growing, we can
-		 * consider it as dead. Releasing our persistent token on it
-		 * will make the queue go away if the associated process
-		 * detaches.
+		 * When the queue is empty and sealed, we can consider it as
+		 * dead. Releasing our persistent token on it will make the
+		 * queue go away if the associated process detaches.
 		 */
 		spin_lock(&queue->ctx->queues_lock);
 		scribe_unset_persistent(queue);
@@ -282,7 +272,7 @@ static void event_pump_record(struct scribe_context *ctx,
 		while (to_write) {
 			ret = kernel_write(file,
 					   write_buf, to_write, file->f_pos);
-			if (unlikely(is_interrupted(ret)))
+			if (unlikely(is_interruption(ret)))
 				continue;
 
 			if (ret < 0)
@@ -411,10 +401,13 @@ static ssize_t deserialize_events(struct scribe_context *ctx, const char *buf,
 			if (err)
 				goto out;
 		} else if (event->type == SCRIBE_EVENT_QUEUE_EOF) {
-			scribe_set_stream_wont_grow(&(*current_queue)->stream);
+			scribe_seal_queue(*current_queue);
 			scribe_free_event(event);
 		} else { /* generic event handling */
-			scribe_queue_event(*current_queue, event);
+			if (unlikely((*current_queue)->stream.sealed))
+				scribe_free_event(event);
+			else
+				scribe_queue_event(*current_queue, event);
 		}
 
 		event = NULL;
@@ -447,12 +440,12 @@ static void event_pump_replay(struct scribe_context *ctx, char *buf,
 	loff_t old_f_pos;
 	ssize_t ret = 0;
 
-	while (!kthread_should_stop()) {
+	while (!kthread_should_stop() && !ctx->queues_sealed) {
 		ret = kernel_read(file, file->f_pos,
 				  buf + count,
 				  PUMP_BUFFER_SIZE - count);
 
-		if (unlikely(is_interrupted(ret)))
+		if (unlikely(is_interruption(ret)))
 			continue;
 		if (!ret) {
 			/*
@@ -489,22 +482,33 @@ static void event_pump_replay(struct scribe_context *ctx, char *buf,
 		}
 	}
 
+	/*
+	 * emergency_stop() is called before kill_queue() to avoid races with
+	 * scribe_maybe_detach().
+	 */
+retry:
+	if (ret)
+		scribe_emergency_stop(ctx, ERR_PTR(ret));
+
 	spin_lock(&ctx->queues_lock);
 	list_for_each_entry(queue, &ctx->queues, node) {
 		/*
 		 * If some queue were left open, that means that we didn't
 		 * have the entire event stream, we need to kill the context.
 		 */
-		if (!ret && !queue->stream.wont_grow)
+		if (!ret && !queue->stream.sealed)
 			ret = -EPIPE;
-		if (ret)
-			scribe_set_stream_wont_grow(&queue->stream);
-	}
-	ctx->queues_wont_grow = 1;
-	spin_unlock(&ctx->queues_lock);
+		if (ret) {
+			if (ctx->flags != SCRIBE_IDLE) {
+				spin_unlock(&ctx->queues_lock);
+				goto retry;
+			}
 
-	if (ret)
-		scribe_emergency_stop(ctx, ERR_PTR(ret));
+			scribe_kill_queue(queue);
+		}
+	}
+	ctx->queues_sealed = 1;
+	spin_unlock(&ctx->queues_lock);
 
 	if (current_queue)
 		scribe_put_queue(current_queue);

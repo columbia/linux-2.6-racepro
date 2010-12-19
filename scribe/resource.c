@@ -412,6 +412,9 @@ static void lock(struct scribe_lock_region *lock_region)
 
 	res = lock_region->res;
 
+	if (unlikely(is_detaching(scribe)))
+		goto out;
+
 	if (is_recording(scribe)) {
 		scribe_create_insert_point(&lock_region->ip,
 					   &scribe->queue->stream);
@@ -483,6 +486,9 @@ static void unlock(struct scribe_lock_region *lock_region)
 
 	might_sleep();
 
+	if (unlikely(is_detaching(scribe)))
+		goto out;
+
 	if (is_recording(scribe)) {
 		lock_region->lock_event->type = res->type;
 		lock_region->lock_event->serial = serial;
@@ -501,12 +507,14 @@ static void unlock(struct scribe_lock_region *lock_region)
 		 */
 	} else {
 		wake_up_for_serial(res);
+
 		res_event = scribe_dequeue_event_specific(scribe,
 						  SCRIBE_EVENT_RESOURCE_UNLOCK);
 		if (!IS_ERR(res_event))
 			scribe_free_event(res_event);
 	}
 
+out:
 	kfree(lock_region);
 }
 
