@@ -491,7 +491,12 @@ static void unlock(struct scribe_lock_region *lock_region)
 
 	if (is_recording(scribe)) {
 		lock_region->lock_event->type = res->type;
+		lock_region->lock_event->object =
+					(unsigned int)lock_region->object;
 		lock_region->lock_event->serial = serial;
+
+		lock_region->unlock_event->object =
+					(unsigned int)lock_region->object;
 
 		scribe_queue_event_at(&lock_region->ip,
 				      lock_region->lock_event);
