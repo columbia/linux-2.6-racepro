@@ -6,6 +6,7 @@
 #include <linux/statfs.h>
 #include <linux/security.h>
 #include <linux/uaccess.h>
+#include <linux/scribe.h>
 
 int vfs_statfs(struct dentry *dentry, struct kstatfs *buf)
 {
@@ -108,6 +109,7 @@ SYSCALL_DEFINE2(statfs, const char __user *, pathname, struct statfs __user *, b
 	if (!error) {
 		struct statfs tmp;
 		error = vfs_statfs_native(path.dentry, &tmp);
+		scribe_data_non_det();
 		if (!error && copy_to_user(buf, &tmp, sizeof(tmp)))
 			error = -EFAULT;
 		path_put(&path);
@@ -126,6 +128,7 @@ SYSCALL_DEFINE3(statfs64, const char __user *, pathname, size_t, sz, struct stat
 	if (!error) {
 		struct statfs64 tmp;
 		error = vfs_statfs64(path.dentry, &tmp);
+		scribe_data_non_det();
 		if (!error && copy_to_user(buf, &tmp, sizeof(tmp)))
 			error = -EFAULT;
 		path_put(&path);
@@ -144,6 +147,7 @@ SYSCALL_DEFINE2(fstatfs, unsigned int, fd, struct statfs __user *, buf)
 	if (!file)
 		goto out;
 	error = vfs_statfs_native(file->f_path.dentry, &tmp);
+	scribe_data_non_det();
 	if (!error && copy_to_user(buf, &tmp, sizeof(tmp)))
 		error = -EFAULT;
 	fput(file);
@@ -165,6 +169,7 @@ SYSCALL_DEFINE3(fstatfs64, unsigned int, fd, size_t, sz, struct statfs64 __user 
 	if (!file)
 		goto out;
 	error = vfs_statfs64(file->f_path.dentry, &tmp);
+	scribe_data_non_det();
 	if (!error && copy_to_user(buf, &tmp, sizeof(tmp)))
 		error = -EFAULT;
 	fput(file);
@@ -192,5 +197,6 @@ SYSCALL_DEFINE2(ustat, unsigned, dev, struct ustat __user *, ubuf)
 	tmp.f_tfree = sbuf.f_bfree;
 	tmp.f_tinode = sbuf.f_ffree;
 
+	scribe_data_non_det();
 	return copy_to_user(ubuf, &tmp, sizeof(struct ustat)) ? -EFAULT : 0;
 }
