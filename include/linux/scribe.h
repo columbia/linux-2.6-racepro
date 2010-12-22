@@ -23,6 +23,7 @@
 #include <linux/wait.h>
 #include <linux/slab.h>
 #include <linux/fs.h>
+#include <linux/signal.h>
 #include <linux/rcupdate.h>
 #include <asm/scribe.h>
 #include <asm/atomic.h>
@@ -456,6 +457,33 @@ extern void scribe_unlock_discard(void *object);
 extern void scribe_unlock_err(void *object, int err);
 extern void scribe_assert_locked(void *object);
 
+/* Signals */
+
+#define NO_COOKIE ((unsigned int)-1)
+struct scribe_signal {
+	/*
+	 * The should_defer and deferred fields are protected with
+	 * sighand->siglock.
+	 */
+	bool should_defer;
+	struct sigpending deferred;
+	scribe_insert_point_t signal_ip;
+
+	struct scribe_event_sig_send_cookie *send_cookie_event;
+};
+
+extern bool scribe_signal_enter_sync_point(struct scribe_ps *scribe);
+extern void scribe_signal_leave_sync_point(struct scribe_ps *scribe);
+extern void scribe_init_signal(struct scribe_signal *scribe_sig);
+
+static inline int is_interruption(int ret)
+{
+	return ret == -ERESTARTSYS ||
+		ret == -ERESTARTNOINTR ||
+		ret == -ERESTARTNOHAND ||
+		ret == -ERESTART_RESTARTBLOCK ||
+		ret == -EINTR;
+}
 
 /* Process */
 
@@ -496,10 +524,7 @@ struct scribe_ps {
 
 	struct scribe_ps_arch arch;
 
-	int in_signal_sync_point;
-	bool record_next_signal_cookie;
-	bool has_signal_cookie;
-	unsigned int signal_cookie;
+	struct scribe_signal signal;
 
 	int bmark_waiting;
 
@@ -652,23 +677,6 @@ extern void scribe_commit_syscall(struct scribe_ps *scribe,
 				  struct pt_regs *regs, long ret_value);
 extern void scribe_exit_syscall(struct pt_regs *regs);
 extern int is_kernel_copy(void);
-
-/* Signals */
-struct siginfo;
-extern void scribe_signal_sync_point(struct pt_regs *regs);
-extern int scribe_can_deliver_signal(void);
-extern void scribe_delivering_signal(int signr, struct siginfo *info);
-extern void scribe_pre_send_signal_cookie(void);
-extern void scribe_post_send_signal_cookie(void);
-
-static inline int is_interruption(int ret)
-{
-	return ret == -ERESTARTSYS ||
-		ret == -ERESTARTNOINTR ||
-		ret == -ERESTARTNOHAND ||
-		ret == -ERESTART_RESTARTBLOCK ||
-		ret == -EINTR;
-}
 
 /* Memory */
 #define MEM_SYNC_IN		1

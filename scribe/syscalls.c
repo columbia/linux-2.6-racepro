@@ -65,7 +65,9 @@ void scribe_enter_syscall(struct pt_regs *regs)
 	if (should_scribe_syscalls(scribe) && scribe_regs(scribe, regs))
 		return;
 
-	scribe_signal_sync_point(regs);
+	while (scribe_signal_enter_sync_point(scribe))
+		do_signal(regs);
+
 	__scribe_forbid_uaccess(scribe);
 
 	scribe_bookmark_point();
@@ -170,7 +172,7 @@ void scribe_exit_syscall(struct pt_regs *regs)
 	}
 
 	__scribe_allow_uaccess(scribe);
-	scribe_signal_sync_point(regs);
+	scribe_signal_leave_sync_point(scribe);
 
 	/*
 	 * In case we have a fake signal to handle, we want do_signal() to be

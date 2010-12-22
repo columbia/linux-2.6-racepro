@@ -18,6 +18,7 @@ struct sigqueue {
 	int flags;
 	siginfo_t info;
 #ifdef CONFIG_SCRIBE
+	/* value of -1 means no cookie */
 	unsigned int scribe_cookie;
 #endif
 	struct user_struct *user;
@@ -25,7 +26,6 @@ struct sigqueue {
 
 /* flags values. */
 #define SIGQUEUE_PREALLOC		1
-#define SIGQUEUE_HAS_SCRIBE_COOKIE	2
 
 struct sigpending {
 	struct list_head list;

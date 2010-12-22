@@ -482,6 +482,10 @@ void scribe_attach(struct scribe_ps *scribe)
 void __scribe_detach(struct scribe_ps *scribe)
 {
 	struct scribe_context *ctx = scribe->ctx;
+	unsigned int scribe_flags;
+	bool sighand_locked;
+	unsigned long flags;
+
 	BUG_ON(!is_scribed(scribe));
 
 	WARN_ON(scribe->can_uaccess && ctx->flags != SCRIBE_IDLE);
@@ -505,12 +509,22 @@ void __scribe_detach(struct scribe_ps *scribe)
 	spin_unlock(&ctx->tasks_lock);
 
 	/*
+	 * The sighand lock guards against some races within the signal code.
+	 */
+	scribe_flags = scribe->flags;
+
+	sighand_locked = !!lock_task_sighand(scribe->p, &flags);
+	scribe->flags &= ~(SCRIBE_PS_RECORD | SCRIBE_PS_REPLAY);
+	if (sighand_locked)
+		unlock_task_sighand(scribe->p, &flags);
+
+	/*
 	 * We want to set the sealed flag and put the queue in an atomic
 	 * way so that the event pump sends a QUEUE_EOF event once and only
 	 * once.
 	 */
 	spin_lock(&ctx->queues_lock);
-	if (is_recording(scribe))
+	if (scribe_flags & SCRIBE_PS_RECORD)
 		scribe_seal_queue(scribe->queue);
 	scribe_put_queue_locked(scribe->queue);
 	spin_unlock(&ctx->queues_lock);
@@ -518,8 +532,6 @@ void __scribe_detach(struct scribe_ps *scribe)
 	wake_up(&ctx->tasks_wait);
 
 	scribe->queue = NULL;
-
-	scribe->flags &= ~(SCRIBE_PS_RECORD | SCRIBE_PS_REPLAY);
 }
 
 void scribe_detach(struct scribe_ps *scribe)

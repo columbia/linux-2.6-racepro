@@ -131,6 +131,12 @@ static int recalc_sigpending_tsk(struct task_struct *t)
 		set_tsk_thread_flag(t, TIF_SIGPENDING);
 		return 1;
 	}
+
+	/*
+	 * Scribe: We don't look on the deferred pending queue since the
+	 * target need to reach a sync point to deliver the signals
+	 */
+
 	/*
 	 * We must never clear the flag in another thread, or in current
 	 * when it's possible the current syscall is returning -ERESTART*.
@@ -225,26 +231,44 @@ static inline void print_dropped_signal(int sig)
 }
 
 #ifdef CONFIG_SCRIBE
-static void scribe_sigqueue(struct sigqueue *q)
+static void scribe_sigqueue(struct task_struct *t, struct sigqueue *q)
 {
-	struct scribe_ps *scribe = current->scribe;
+	struct scribe_ps *target_scribe = t->scribe;
+	struct scribe_ps *current_scribe = current->scribe;
+	struct scribe_event_sig_send_cookie *event;
 
-	if (!is_recording(scribe))
+	if (!is_recording(target_scribe))
 		return;
 
-	if (!scribe->record_next_signal_cookie)
+	if (!q) {
+		scribe_emergency_stop(target_scribe->ctx, ERR_PTR(-ENOMEM));
+		return;
+	}
+
+	q->scribe_cookie = NO_COOKIE;
+
+	if (!is_recording(current_scribe))
 		return;
 
-	if (!q)
+	if (unlikely(current_scribe->ctx != target_scribe->ctx))
 		return;
 
-	q->scribe_cookie = atomic_inc_return(&scribe->ctx->signal_cookie);
-	scribe->signal_cookie = q->scribe_cookie;
-	q->flags |= SIGQUEUE_HAS_SCRIBE_COOKIE;
-	scribe->has_signal_cookie = true;
+	event = current_scribe->signal.send_cookie_event;
+	if (!event)
+		return;
+	current_scribe->signal.send_cookie_event = NULL;
+
+	do {
+		q->scribe_cookie = atomic_inc_return(
+					&current_scribe->ctx->signal_cookie);
+	} while(unlikely(q->scribe_cookie == NO_COOKIE));
+
+	event->cookie = q->scribe_cookie;
+	scribe_queue_event(current_scribe->queue, event);
 }
 #else
-static inline void scribe_sigqueue(struct sigqueue *q) { }
+static inline void scribe_sigqueue(struct task_struct *t,
+				   struct sigqueue *q) {}
 #endif
 
 /*
@@ -283,7 +307,7 @@ __sigqueue_alloc(int sig, struct task_struct *t, gfp_t flags, int override_rlimi
 		q->flags = 0;
 		q->user = user;
 	}
-	scribe_sigqueue(q);
+	scribe_sigqueue(t, q);
 
 	return q;
 }
@@ -435,10 +459,9 @@ unblock_all_signals(void)
 	spin_unlock_irqrestore(&current->sighand->siglock, flags);
 }
 
-static void collect_signal(int sig, struct sigpending *list, siginfo_t *info)
+static struct sigqueue *next_sigqueue(struct sigpending *list, int sig)
 {
 	struct sigqueue *q, *first = NULL;
-	struct scribe_ps *scribe = current->scribe;
 
 	/*
 	 * Collect the siginfo appropriate to this signal.  Check if
@@ -454,28 +477,35 @@ static void collect_signal(int sig, struct sigpending *list, siginfo_t *info)
 
 	sigdelset(&list->signal, sig);
 
-	if (first) {
 still_pending:
+	if (first)
 		list_del_init(&first->list);
+	return first;
+}
+
+static void clear_info(siginfo_t *info, int sig)
+{
+	info->si_signo = sig;
+	info->si_errno = 0;
+	info->si_code = SI_USER;
+	info->si_pid = 0;
+	info->si_uid = 0;
+}
+
+static void collect_signal(int sig, struct sigpending *list, siginfo_t *info)
+{
+	struct sigqueue *first;
+
+	first = next_sigqueue(list, sig);
+	if (first) {
 		copy_siginfo(info, &first->info);
-#ifdef CONFIG_SCRIBE
-		if (is_recording(scribe)) {
-			scribe->has_signal_cookie =
-				!!(first->flags & SIGQUEUE_HAS_SCRIBE_COOKIE);
-			scribe->signal_cookie = first->scribe_cookie;
-		}
-#endif
 		__sigqueue_free(first);
 	} else {
 		/* Ok, it wasn't in the queue.  This must be
 		   a fast-pathed signal or we must have been
 		   out of queue space.  So zero out the info.
 		 */
-		info->si_signo = sig;
-		info->si_errno = 0;
-		info->si_code = SI_USER;
-		info->si_pid = 0;
-		info->si_uid = 0;
+		clear_info(info, sig);
 	}
 }
 
@@ -574,6 +604,242 @@ int dequeue_signal(struct task_struct *tsk, sigset_t *mask, siginfo_t *info)
 	}
 	return signr;
 }
+
+#ifdef CONFIG_SCRIBE
+static sigset_t empty_mask;
+
+#define sig_kernel_synchronous(sig) \
+	(((sig) < SIGRTMIN) && siginmask(sig, SYNCHRONOUS_MASK))
+
+static inline bool sig_kernel_stop_cont(int sig)
+{
+	return sig == SIGCONT || sig_kernel_stop(sig);
+}
+
+static void scribe_record_signal(struct scribe_ps *scribe,
+				 int sig, struct sigqueue *q,
+				 bool was_deferred, gfp_t flags)
+{
+	struct scribe_event_sig_recv_cookie *cookie_event;
+	struct scribe_event_signal *sig_event;
+	scribe_insert_point_t *ip;
+
+	/*
+	 * We don't record synchronous signals because we would have to replay
+	 * them properly, it's a little easier to just ignore them.
+	 */
+	if (sig_kernel_synchronous(sig))
+		return;
+
+	ip = was_deferred ? &scribe->queue->stream.master :
+			    &scribe->signal.signal_ip;
+
+	if (q && q->scribe_cookie != NO_COOKIE) {
+		cookie_event = scribe_alloc_event_flags(
+					SCRIBE_EVENT_SIG_RECV_COOKIE, flags);
+		if (!cookie_event)
+			goto err_nomem;
+		cookie_event->cookie = q->scribe_cookie;
+		scribe_queue_event_at(ip, cookie_event);
+	}
+
+	sig_event = scribe_alloc_event_sized_flags(SCRIBE_EVENT_SIGNAL,
+						   sizeof(q->info), flags);
+	if (!sig_event)
+		goto err_nomem;
+
+	/*
+	 * FIXME Do like in copy_siginfo_to_user(), where only
+	 * the relevent fields are copied because right now we are copying the
+	 * padding and all, it contains non-initialized data...
+	 */
+	sig_event->nr = sig;
+	sig_event->deferred = was_deferred;
+	if (q)
+		copy_siginfo((siginfo_t *)sig_event->info, &q->info);
+	else
+		clear_info((siginfo_t *)sig_event->info, sig);
+	scribe_queue_event_at(ip, sig_event);
+	return;
+
+err_nomem:
+	/*
+	 * We cannot really fail gracefully here: sys_kill() cannot fail with
+	 * a -ENOMEM, so even preallocation won't do it.
+	 */
+	scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
+}
+
+static bool scribe_signal_enter_sync_point_record(struct scribe_ps *scribe)
+{
+	struct scribe_signal *scribe_sig = &scribe->signal;
+	struct sigqueue *q;
+	int sig;
+
+	spin_lock_irq(&scribe->p->sighand->siglock);
+	sig = next_signal(&scribe_sig->deferred, &empty_mask);
+	if (likely(!sig)) {
+		scribe_create_insert_point(&scribe_sig->signal_ip,
+					   &scribe->queue->stream);
+		scribe_sig->should_defer = false;
+		spin_unlock_irq(&scribe->p->sighand->siglock);
+		return false;
+	}
+
+	q = next_sigqueue(&scribe_sig->deferred, sig);
+	if (q)
+		list_add_tail(&q->list, &scribe->p->pending.list);
+	sigaddset(&scribe->p->pending.signal, sig);
+	spin_unlock_irq(&scribe->p->sighand->siglock);
+
+	scribe_record_signal(scribe, sig, q, true, GFP_KERNEL);
+
+	set_tsk_thread_flag(current, TIF_SIGPENDING);
+	return true;
+}
+
+static bool scribe_signal_enter_sync_point_replay(struct scribe_ps *scribe)
+{
+	struct scribe_event *event;
+	struct scribe_event_signal *sig_event;
+	bool deferred;
+
+	for (;;) {
+		event = scribe_peek_event(scribe->queue, SCRIBE_WAIT);
+		if (IS_ERR(event))
+			return false;
+
+		if (event->type == SCRIBE_EVENT_SIG_RECV_COOKIE) {
+			event = scribe_dequeue_event(scribe->queue,
+						     SCRIBE_NO_WAIT);
+			scribe_free_event(event);
+			continue;
+		}
+
+		if (event->type != SCRIBE_EVENT_SIGNAL)
+			return false;
+
+		sig_event = scribe_dequeue_event_sized(
+				scribe, SCRIBE_EVENT_SIGNAL, sizeof(siginfo_t));
+		if (IS_ERR(sig_event))
+			return false;
+
+		deferred = sig_event->deferred;
+		do_send_sig_info(sig_event->nr, (siginfo_t *)sig_event->info,
+				 current, false);
+
+		scribe_free_event(sig_event);
+
+		if (deferred)
+			return true;
+	}
+}
+
+/*
+ * When it returns true, the caller needs to trigger do_signal() to process
+ * pending signals
+ */
+bool scribe_signal_enter_sync_point(struct scribe_ps *scribe)
+{
+	int ret;
+
+	BUG_ON(!is_scribed(scribe));
+
+	if (!should_scribe_signals(scribe))
+		return false;
+
+	ret = scribe_enter_fenced_region(SCRIBE_REGION_SIGNAL);
+	if (ret && ret != ENODATA) {
+		scribe_emergency_stop(scribe->ctx, ERR_PTR(ret));
+		return true;
+	}
+
+	if (is_recording(scribe))
+		ret = scribe_signal_enter_sync_point_record(scribe);
+	else
+		ret = scribe_signal_enter_sync_point_replay(scribe);
+
+	scribe_leave_fenced_region(SCRIBE_REGION_SIGNAL);
+
+	return ret;
+}
+
+static void scribe_signal_leave_sync_point_record(struct scribe_ps *scribe)
+{
+	struct scribe_signal *scribe_sig = &scribe->signal;
+
+	/* should_defer == true only when we just attached */
+	if (unlikely(scribe_sig->should_defer))
+		return;
+
+	spin_lock_irq(&scribe->p->sighand->siglock);
+	scribe_sig->should_defer = true;
+	spin_unlock_irq(&scribe->p->sighand->siglock);
+
+	scribe_commit_insert_point(&scribe_sig->signal_ip);
+}
+
+void scribe_signal_leave_sync_point(struct scribe_ps *scribe)
+{
+	BUG_ON(!is_scribed(scribe));
+
+	if (!should_scribe_signals(scribe))
+		return;
+	
+	if (is_recording(scribe))
+		scribe_signal_leave_sync_point_record(scribe);
+}
+
+void scribe_init_signal(struct scribe_signal *scribe_sig)
+{
+	/*
+	 * When we attach, we start by being outside the sync point. It's
+	 * easier to implement. The drawback is that we'll process pending
+	 * signals only on the next sync point.
+	 */
+	scribe_sig->should_defer = true;
+	init_sigpending(&scribe_sig->deferred);
+
+	scribe_sig->send_cookie_event = NULL;
+}
+
+static void scribe_pre_send_cookie(void)
+{
+	struct scribe_ps *scribe = current->scribe;
+	struct scribe_event_sig_send_cookie *event;
+
+	if (is_recording(scribe)) {
+		event = scribe_alloc_event(SCRIBE_EVENT_SIG_SEND_COOKIE);
+		if (!event)
+			scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
+
+		BUG_ON(scribe->signal.send_cookie_event);
+		scribe->signal.send_cookie_event = event;
+	}
+}
+
+static void scribe_post_send_cookie(void)
+{
+	struct scribe_event *event;
+	struct scribe_ps *scribe = current->scribe;
+
+	if (is_recording(scribe)) {
+		if (scribe->signal.send_cookie_event) {
+			scribe_free_event(scribe->signal.send_cookie_event);
+			scribe->signal.send_cookie_event = NULL;
+		}
+	} else if (is_replaying(scribe)) {
+		event = scribe_peek_event(scribe->queue, SCRIBE_WAIT);
+		if (IS_ERR(event) ||
+		    event->type != SCRIBE_EVENT_SIG_SEND_COOKIE)
+			return;
+
+		event = scribe_dequeue_event(scribe->queue, SCRIBE_NO_WAIT);
+		scribe_free_event(event);
+	}
+}
+
+#endif /* CONFIG_SCRIBE */
 
 /*
  * Tell a process that it has a new active signal..
@@ -870,6 +1136,13 @@ static void complete_signal(int sig, struct task_struct *p, int group)
 	}
 
 	/*
+	 * We don't want to send signals that won't get logged, going the slow
+	 * path.
+	 */
+	if (is_ps_recording(p))
+		goto skip_killall;
+
+	/*
 	 * Found a killable thread.  If the signal will be fatal,
 	 * then start taking the whole group down immediately.
 	 */
@@ -900,6 +1173,7 @@ static void complete_signal(int sig, struct task_struct *p, int group)
 		}
 	}
 
+skip_killall:
 	/*
 	 * The signal is already in the shared-pending queue.
 	 * Tell the chosen thread to wake up and dequeue it.
@@ -913,12 +1187,50 @@ static inline int legacy_queue(struct sigpending *signals, int sig)
 	return (sig < SIGRTMIN) && sigismember(&signals->signal, sig);
 }
 
+#ifdef CONFIG_SCRIBE
+
+static bool scribe_should_defer_signal(struct scribe_ps *scribe, int sig)
+{
+	/*
+	 * Three options:
+	 * - We are at a sync point, so we will be able to replay the signal
+	 *   at the exact same location.
+	 * - We don't care about being in a sync point because the signal to
+	 *   get delivered will not need a sync point (but fences are still
+	 *   needed).
+	 * - If the context state is set to SCRIBE_IDLE, it means that
+	 *   emergency_stop() got called, and we have a SIGKILL to process ASAP,
+	 *   synchronizing doesn't really matter here because something has
+	 *   already gone wrong.
+	 */
+	return scribe->signal.should_defer &&
+		!sig_kernel_synchronous(sig) &&
+		likely(scribe->ctx->flags != SCRIBE_IDLE);
+}
+#endif /* CONFIG_SCRIBE */
+
 static int __send_signal(int sig, struct siginfo *info, struct task_struct *t,
 			int group, int from_ancestor_ns)
 {
 	struct sigpending *pending;
-	struct sigqueue *q;
+	struct sigqueue *q = NULL;
 	int override_rlimit;
+	bool do_completion = true;
+
+#ifdef CONFIG_SCRIBE
+	/* We don't need the rcu version because we have the siglock locked */
+	struct scribe_ps *scribe = t->scribe;
+	if (!is_recording(scribe) || !should_scribe_signals(scribe))
+		scribe = NULL;
+
+	/*
+	 * We are ignoring stop/cont signals: they can't be replayed properly
+	 * since the target sends signals to himself during replay (and if it
+	 * stops, it won't send a cont signal).
+	 */
+	if (sig_kernel_stop_cont(sig))
+		scribe = NULL;
+#endif
 
 	trace_signal_generate(sig, info, t);
 
@@ -927,7 +1239,27 @@ static int __send_signal(int sig, struct siginfo *info, struct task_struct *t,
 	if (!prepare_signal(sig, t, from_ancestor_ns))
 		return 0;
 
+#ifdef CONFIG_SCRIBE
+	/*
+	 * FIXME With scribe enabled, we don't want to send signals on the
+	 * shared queue, because we need to know right now which thread will
+	 * get the signal.
+	 * This will have to get fixed.
+	 */
+	if (scribe) {
+		group = 0;
+		if (scribe_should_defer_signal(scribe, sig)) {
+			if (legacy_queue(&t->pending, sig))
+				return 0;
+			pending = &scribe->signal.deferred;
+		} else
+			pending = &t->pending;
+	} else
+		pending = group ? &t->signal->shared_pending : &t->pending;
+#else
 	pending = group ? &t->signal->shared_pending : &t->pending;
+#endif
+
 	/*
 	 * Short-circuit ignored signals and support queuing
 	 * exactly one non-rt signal, so that we can get more
@@ -935,6 +1267,7 @@ static int __send_signal(int sig, struct siginfo *info, struct task_struct *t,
 	 */
 	if (legacy_queue(pending, sig))
 		return 0;
+
 	/*
 	 * fast-pathed signals for kernel-internal things like SIGSTOP
 	 * or SIGKILL.
@@ -1000,9 +1333,21 @@ static int __send_signal(int sig, struct siginfo *info, struct task_struct *t,
 	}
 
 out_set:
-	signalfd_notify(t, sig);
+
+#ifdef CONFIG_SCRIBE
+	if (scribe) {
+		if (pending == &scribe->signal.deferred)
+			do_completion = false;
+		else
+			scribe_record_signal(scribe, sig, q, false, GFP_ATOMIC);
+	}
+#endif
+
 	sigaddset(&pending->signal, sig);
-	complete_signal(sig, t, group);
+	if (do_completion) {
+		signalfd_notify(t, sig);
+		complete_signal(sig, t, group);
+	}
 	return 0;
 }
 
@@ -1131,6 +1476,15 @@ int zap_other_threads(struct task_struct *p)
 		/* Don't bother with already dead threads */
 		if (t->exit_state)
 			continue;
+
+#ifdef CONFIG_SCRIBE
+		if (t->scribe) {
+			/* We need to log the signal, going the slow path */
+			specific_send_sig_info(SIGKILL, SEND_SIG_FORCED, t);
+			continue;
+		}
+#endif
+
 		sigaddset(&t->pending.signal, SIGKILL);
 		signal_wake_up(t, 1);
 	}
@@ -1865,9 +2219,6 @@ int get_signal_to_deliver(siginfo_t *info, struct k_sigaction *return_ka,
 	struct signal_struct *signal = current->signal;
 	int signr;
 
-	if (!scribe_can_deliver_signal())
-		return 0;
-
 relock:
 	/*
 	 * We'll jump back here after any time we were stopped in TASK_STOPPED.
@@ -2002,8 +2353,6 @@ relock:
 		}
 
 		spin_unlock_irq(&sighand->siglock);
-
-		scribe_delivering_signal(signr, info);
 		scribe_forbid_uaccess();
 		/*
 		 * Anything else is fatal, maybe with a core dump.
@@ -2031,8 +2380,8 @@ relock:
 		/* NOTREACHED */
 	}
 	spin_unlock_irq(&sighand->siglock);
-	if (signr)
-		scribe_delivering_signal(signr, info);
+	/* That's a hint for all the do_signal() user accesses */
+	scribe_data_det();
 	return signr;
 }
 
@@ -2358,7 +2707,7 @@ SYSCALL_DEFINE2(kill, pid_t, pid, int, sig)
 	struct siginfo info;
 	int ret;
 
-	scribe_pre_send_signal_cookie();
+	scribe_pre_send_cookie();
 
 	if (is_replaying(scribe)) {
 		ret = scribe->orig_ret;
@@ -2373,7 +2722,7 @@ SYSCALL_DEFINE2(kill, pid_t, pid, int, sig)
 
 	ret = kill_something_info(sig, &info, pid);
 out:
-	scribe_post_send_signal_cookie();
+	scribe_post_send_cookie();
 	return ret;
 }
 
@@ -2413,7 +2762,7 @@ static int do_tkill(pid_t tgid, pid_t pid, int sig)
 	struct siginfo info;
 	int ret;
 
-	scribe_pre_send_signal_cookie();
+	scribe_pre_send_cookie();
 	if (is_replaying(scribe)) {
 		ret = scribe->orig_ret;
 		goto out;
@@ -2427,7 +2776,7 @@ static int do_tkill(pid_t tgid, pid_t pid, int sig)
 
 	ret = do_send_specific(tgid, pid, sig, &info);
 out:
-	scribe_post_send_signal_cookie();
+	scribe_post_send_cookie();
 	return ret;
 
 }

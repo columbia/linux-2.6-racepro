@@ -381,9 +381,9 @@ bool scribe_is_stream_dead(struct scribe_stream *stream)
 	return stream->sealed && scribe_is_stream_empty(stream);
 }
 
-void *__scribe_alloc_event(int type)
+void *__scribe_alloc_event(int type, gfp_t flags)
 {
-	return __scribe_alloc_event_const(type);
+	return __scribe_alloc_event_const(type, flags);
 }
 
 int scribe_enter_fenced_region(int region)
