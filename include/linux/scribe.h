@@ -208,29 +208,34 @@ static inline void scribe_kill_queue(struct scribe_queue *queue)
  * We need the __always_inline (like kmalloc()) to make sure that the constant
  * propagation with its optimization will be made by the compiler.
  */
-static __always_inline void *__scribe_alloc_event_const(int type)
+static __always_inline void *__scribe_alloc_event_const(int type, gfp_t flags)
 {
 	struct scribe_event *event;
 
-	event = kmalloc(sizeof_event_from_type(type), GFP_KERNEL);
+	event = kmalloc(sizeof_event_from_type(type), flags);
 	if (event)
 		event->type = type;
 
 	return event;
 }
 
-extern void *__scribe_alloc_event(int type);
+extern void *__scribe_alloc_event(int type, gfp_t flags);
 void __please_use_scribe_alloc_event_sized(void);
-static __always_inline void *scribe_alloc_event(int type)
+static __always_inline void *scribe_alloc_event_flags(int type, gfp_t flags)
 {
 	if (__builtin_constant_p(type)) {
 		if (is_sized_type(type))
 			__please_use_scribe_alloc_event_sized();
-		return __scribe_alloc_event_const(type);
+		return __scribe_alloc_event_const(type, flags);
 	}
-	return __scribe_alloc_event(type);
+	return __scribe_alloc_event(type, flags);
 }
-static __always_inline void *scribe_alloc_event_sized(int type, size_t size)
+static __always_inline void *scribe_alloc_event(int type)
+{
+	return scribe_alloc_event_flags(type, GFP_KERNEL);
+}
+static __always_inline void *scribe_alloc_event_sized_flags(
+					int type, size_t size, gfp_t flags)
 {
 	struct scribe_event_sized *event;
 	size_t event_size;
@@ -240,7 +245,7 @@ static __always_inline void *scribe_alloc_event_sized(int type, size_t size)
 	WARN(event_size > PAGE_SIZE*4,
 	     "This event (%d) is quite big (%d)...\n", type, size);
 
-	event = kmalloc(event_size, GFP_KERNEL);
+	event = kmalloc(event_size, flags);
 
 	if (event) {
 		event->h.type = type;
@@ -248,6 +253,10 @@ static __always_inline void *scribe_alloc_event_sized(int type, size_t size)
 	}
 
 	return event;
+}
+static __always_inline void *scribe_alloc_event_sized(int type, size_t size)
+{
+	return scribe_alloc_event_sized_flags(type, size, GFP_KERNEL);
 }
 static inline void scribe_free_event(void *event)
 {
