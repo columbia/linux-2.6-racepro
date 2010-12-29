@@ -304,6 +304,8 @@ struct scribe_context {
 	struct scribe_resource_context *res_ctx;
 	struct scribe_resource tasks_res;
 
+	atomic_t signal_cookie;
+
 	struct scribe_bookmark *bmark;
 
 	/* memory page hash table */
@@ -486,6 +488,9 @@ struct scribe_ps {
 	struct scribe_ps_arch arch;
 
 	int in_signal_sync_point;
+	bool record_next_signal_cookie;
+	bool has_signal_cookie;
+	unsigned int signal_cookie;
 
 	int bmark_waiting;
 
@@ -644,6 +649,8 @@ struct siginfo;
 extern void scribe_signal_sync_point(struct pt_regs *regs);
 extern int scribe_can_deliver_signal(void);
 extern void scribe_delivering_signal(int signr, struct siginfo *info);
+extern void scribe_pre_send_signal_cookie(void);
+extern void scribe_post_send_signal_cookie(void);
 
 static inline int is_interruption(int ret)
 {

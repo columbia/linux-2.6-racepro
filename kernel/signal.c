@@ -224,6 +224,29 @@ static inline void print_dropped_signal(int sig)
 				current->comm, current->pid, sig);
 }
 
+#ifdef CONFIG_SCRIBE
+static void scribe_sigqueue(struct sigqueue *q)
+{
+	struct scribe_ps *scribe = current->scribe;
+
+	if (!is_recording(scribe))
+		return;
+
+	if (!scribe->record_next_signal_cookie)
+		return;
+
+	if (!q)
+		return;
+
+	q->scribe_cookie = atomic_inc_return(&scribe->ctx->signal_cookie);
+	scribe->signal_cookie = q->scribe_cookie;
+	q->flags |= SIGQUEUE_HAS_SCRIBE_COOKIE;
+	scribe->has_signal_cookie = true;
+}
+#else
+static inline void scribe_sigqueue(struct sigqueue *q) { }
+#endif
+
 /*
  * allocate a new signal queue record
  * - this may be called without locks if and only if t == current, otherwise an
@@ -260,6 +283,7 @@ __sigqueue_alloc(int sig, struct task_struct *t, gfp_t flags, int override_rlimi
 		q->flags = 0;
 		q->user = user;
 	}
+	scribe_sigqueue(q);
 
 	return q;
 }
@@ -414,6 +438,7 @@ unblock_all_signals(void)
 static void collect_signal(int sig, struct sigpending *list, siginfo_t *info)
 {
 	struct sigqueue *q, *first = NULL;
+	struct scribe_ps *scribe = current->scribe;
 
 	/*
 	 * Collect the siginfo appropriate to this signal.  Check if
@@ -433,6 +458,13 @@ static void collect_signal(int sig, struct sigpending *list, siginfo_t *info)
 still_pending:
 		list_del_init(&first->list);
 		copy_siginfo(info, &first->info);
+#ifdef CONFIG_SCRIBE
+		if (is_recording(scribe)) {
+			scribe->has_signal_cookie =
+				!!(first->flags & SIGQUEUE_HAS_SCRIBE_COOKIE);
+			scribe->signal_cookie = first->scribe_cookie;
+		}
+#endif
 		__sigqueue_free(first);
 	} else {
 		/* Ok, it wasn't in the queue.  This must be
@@ -2324,9 +2356,14 @@ SYSCALL_DEFINE2(kill, pid_t, pid, int, sig)
 {
 	struct scribe_ps *scribe = current->scribe;
 	struct siginfo info;
+	int ret;
 
-	if (is_replaying(scribe))
-		return scribe->orig_ret;
+	scribe_pre_send_signal_cookie();
+
+	if (is_replaying(scribe)) {
+		ret = scribe->orig_ret;
+		goto out;
+	}
 
 	info.si_signo = sig;
 	info.si_errno = 0;
@@ -2334,7 +2371,10 @@ SYSCALL_DEFINE2(kill, pid_t, pid, int, sig)
 	info.si_pid = task_tgid_vnr(current);
 	info.si_uid = current_uid();
 
-	return kill_something_info(sig, &info, pid);
+	ret = kill_something_info(sig, &info, pid);
+out:
+	scribe_post_send_signal_cookie();
+	return ret;
 }
 
 static int
@@ -2371,9 +2411,13 @@ static int do_tkill(pid_t tgid, pid_t pid, int sig)
 {
 	struct scribe_ps *scribe = current->scribe;
 	struct siginfo info;
+	int ret;
 
-	if (is_replaying(scribe))
-		return scribe->orig_ret;
+	scribe_pre_send_signal_cookie();
+	if (is_replaying(scribe)) {
+		ret = scribe->orig_ret;
+		goto out;
+	}
 
 	info.si_signo = sig;
 	info.si_errno = 0;
@@ -2381,7 +2425,11 @@ static int do_tkill(pid_t tgid, pid_t pid, int sig)
 	info.si_pid = task_tgid_vnr(current);
 	info.si_uid = current_uid();
 
-	return do_send_specific(tgid, pid, sig, &info);
+	ret = do_send_specific(tgid, pid, sig, &info);
+out:
+	scribe_post_send_signal_cookie();
+	return ret;
+
 }
 
 /**

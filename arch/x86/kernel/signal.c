@@ -20,7 +20,6 @@
 #include <linux/personality.h>
 #include <linux/uaccess.h>
 #include <linux/user-return-notifier.h>
-#include <linux/scribe.h>
 
 #include <asm/processor.h>
 #include <asm/ucontext.h>
@@ -771,7 +770,7 @@ void do_signal(struct pt_regs *regs)
 {
 	struct k_sigaction ka;
 	siginfo_t info;
-	int signr = 0;
+	int signr;
 	sigset_t *oldset;
 
 	/*
@@ -789,8 +788,7 @@ void do_signal(struct pt_regs *regs)
 	else
 		oldset = &current->blocked;
 
-	if (scribe_can_deliver_signal())
-		signr = get_signal_to_deliver(&info, &ka, regs, NULL);
+	signr = get_signal_to_deliver(&info, &ka, regs, NULL);
 	if (signr > 0) {
 		/* Whee! Actually deliver the signal.  */
 		if (handle_signal(signr, &info, &ka, oldset, regs) == 0) {

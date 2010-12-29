@@ -17,11 +17,15 @@ struct sigqueue {
 	struct list_head list;
 	int flags;
 	siginfo_t info;
+#ifdef CONFIG_SCRIBE
+	unsigned int scribe_cookie;
+#endif
 	struct user_struct *user;
 };
 
 /* flags values. */
-#define SIGQUEUE_PREALLOC	1
+#define SIGQUEUE_PREALLOC		1
+#define SIGQUEUE_HAS_SCRIBE_COOKIE	2
 
 struct sigpending {
 	struct list_head list;

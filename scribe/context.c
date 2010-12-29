@@ -133,6 +133,8 @@ static int context_start(struct scribe_context *ctx, int state,
 	scribe_reset_resource_context(ctx->res_ctx);
 	scribe_reset_resource(&ctx->tasks_res);
 
+	atomic_set(&ctx->signal_cookie, 0);
+
 	return 0;
 }
 

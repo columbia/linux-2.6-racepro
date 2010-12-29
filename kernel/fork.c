@@ -988,6 +988,9 @@ int init_scribe(struct task_struct *p, struct scribe_context *ctx)
 		goto err_exit_arch;
 
 	scribe->in_signal_sync_point = 0;
+	scribe->record_next_signal_cookie = false;
+	scribe->has_signal_cookie = false;
+	scribe->signal_cookie = 0;
 
 	scribe_resource_init_cache(&scribe->res_cache);
 	scribe->lock_next_file = 0;

@@ -31,7 +31,17 @@ static void scribe_signal_sync_point_replay(struct scribe_ps *scribe,
 	struct scribe_event *event;
 	for (;;) {
 		event = scribe_peek_event(scribe->queue, SCRIBE_WAIT);
-		if (IS_ERR(event) || event->type != SCRIBE_EVENT_SIGNAL)
+		if (IS_ERR(event))
+			return;
+
+		if (event->type == SCRIBE_EVENT_SIG_RECV_COOKIE) {
+			event = scribe_dequeue_event(scribe->queue,
+						     SCRIBE_NO_WAIT);
+			scribe_free_event(event);
+			continue;
+		}
+
+		if (event->type != SCRIBE_EVENT_SIGNAL)
 			return;
 
 		sig_event = scribe_dequeue_event_sized(
@@ -100,6 +110,39 @@ static int has_synchronous_sig(struct scribe_ps *scribe)
 	return ret;
 }
 
+void scribe_pre_send_signal_cookie(void)
+{
+	struct scribe_ps *scribe = current->scribe;
+
+	if (is_recording(scribe))
+		scribe->record_next_signal_cookie = true;
+}
+
+void scribe_post_send_signal_cookie(void)
+{
+	struct scribe_event *event;
+	struct scribe_ps *scribe = current->scribe;
+
+	if (is_recording(scribe)) {
+		scribe->record_next_signal_cookie = false;
+
+		if (scribe->has_signal_cookie &&
+		    scribe_queue_new_event(scribe->queue,
+					   SCRIBE_EVENT_SIG_SEND_COOKIE,
+					   .cookie = scribe->signal_cookie))
+			scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
+		scribe->has_signal_cookie = false;
+	} else if (is_replaying(scribe)) {
+		event = scribe_peek_event(scribe->queue, SCRIBE_WAIT);
+		if (IS_ERR(event) ||
+		    event->type != SCRIBE_EVENT_SIG_SEND_COOKIE)
+			return;
+
+		event = scribe_dequeue_event(scribe->queue, SCRIBE_NO_WAIT);
+		scribe_free_event(event);
+	}
+}
+
 int scribe_can_deliver_signal(void)
 {
 	struct scribe_ps *scribe = current->scribe;
@@ -120,7 +163,7 @@ int scribe_can_deliver_signal(void)
 	 * - If the context state is set to SCRIBE_IDLE, it means that
 	 *   emergency_stop() got called, and we have a SIGKILL to process ASAP,
 	 *   synchronizing doesn't really matter here because something has
-	 *   already went wrong.
+	 *   already gone wrong.
 	 */
 	if (scribe->in_signal_sync_point ||
 	    has_synchronous_sig(scribe) ||
@@ -153,15 +196,17 @@ void scribe_delivering_signal(int signr, struct siginfo *info)
 	if (sigismember(&sync_set, signr))
 		return;
 
-	/*
-	 * We cannot really fail gracefully here: sys_kill() cannot fail with
-	 * a -ENOMEM, so even preallocation won't do it.
-	 */
-	event = scribe_alloc_event_sized(SCRIBE_EVENT_SIGNAL, sizeof(*info));
-	if (!event) {
-		scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
-		return;
+	if (scribe->has_signal_cookie) {
+		scribe->has_signal_cookie = false;
+		if (scribe_queue_new_event(scribe->queue,
+					   SCRIBE_EVENT_SIG_RECV_COOKIE,
+					   .cookie = scribe->signal_cookie))
+			goto err_nomem;
 	}
+
+	event = scribe_alloc_event_sized(SCRIBE_EVENT_SIGNAL, sizeof(*info));
+	if (!event)
+		goto err_nomem;
 
 	/*
 	 * FIXME Do like in copy_siginfo_to_user(), where only
@@ -171,4 +216,12 @@ void scribe_delivering_signal(int signr, struct siginfo *info)
 	event->nr = signr;
 	memcpy(event->info, info, sizeof(*info));
 	scribe_queue_event(scribe->queue, event);
+	return;
+
+err_nomem:
+	/*
+	 * We cannot really fail gracefully here: sys_kill() cannot fail with
+	 * a -ENOMEM, so even preallocation won't do it.
+	 */
+	scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
 }
