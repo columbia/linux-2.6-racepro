@@ -489,6 +489,7 @@ void __scribe_detach(struct scribe_ps *scribe)
 	BUG_ON(!is_scribed(scribe));
 
 	WARN_ON(scribe->can_uaccess && ctx->flags != SCRIBE_IDLE);
+	WARN_ON(is_recording(scribe) && scribe->signal.should_defer);
 
 	scribe_detach_arch(scribe);
 

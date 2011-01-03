@@ -473,8 +473,8 @@ struct scribe_signal {
 	struct scribe_event_sig_send_cookie *send_cookie_event;
 };
 
-extern bool scribe_signal_enter_sync_point(struct scribe_ps *scribe);
-extern void scribe_signal_leave_sync_point(struct scribe_ps *scribe);
+extern bool scribe_signal_enter_sync_point(void);
+extern void scribe_signal_leave_sync_point(void);
 extern void scribe_init_signal(struct scribe_signal *scribe_sig);
 
 static inline int is_interruption(int ret)

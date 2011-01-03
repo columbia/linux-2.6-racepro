@@ -736,16 +736,14 @@ static bool scribe_signal_enter_sync_point_replay(struct scribe_ps *scribe)
 }
 
 /*
- * When it returns true, the caller needs to trigger do_signal() to process
- * pending signals
+ * When it returns true, new signals have been queues pending signals
  */
-bool scribe_signal_enter_sync_point(struct scribe_ps *scribe)
+bool scribe_signal_enter_sync_point(void)
 {
+	struct scribe_ps *scribe = current->scribe;
 	int ret;
 
-	BUG_ON(!is_scribed(scribe));
-
-	if (!should_scribe_signals(scribe))
+	if (!is_scribed(scribe) || !should_scribe_signals(scribe))
 		return false;
 
 	ret = scribe_enter_fenced_region(SCRIBE_REGION_SIGNAL);
@@ -779,11 +777,11 @@ static void scribe_signal_leave_sync_point_record(struct scribe_ps *scribe)
 	scribe_commit_insert_point(&scribe_sig->signal_ip);
 }
 
-void scribe_signal_leave_sync_point(struct scribe_ps *scribe)
+void scribe_signal_leave_sync_point(void)
 {
-	BUG_ON(!is_scribed(scribe));
+	struct scribe_ps *scribe = current->scribe;
 
-	if (!should_scribe_signals(scribe))
+	if (!is_scribed(scribe) || !should_scribe_signals(scribe))
 		return;
 	
 	if (is_recording(scribe))
@@ -2354,6 +2352,8 @@ relock:
 
 		spin_unlock_irq(&sighand->siglock);
 		scribe_forbid_uaccess();
+		while(scribe_signal_enter_sync_point())
+			{}
 		/*
 		 * Anything else is fatal, maybe with a core dump.
 		 */

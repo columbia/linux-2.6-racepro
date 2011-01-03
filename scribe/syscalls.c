@@ -65,8 +65,13 @@ void scribe_enter_syscall(struct pt_regs *regs)
 	if (should_scribe_syscalls(scribe) && scribe_regs(scribe, regs))
 		return;
 
-	while (scribe_signal_enter_sync_point(scribe))
-		do_signal(regs);
+	scribe_data_det();
+
+	while (scribe_signal_enter_sync_point()) {
+		recalc_sigpending();
+		if (signal_pending(current))
+			do_signal(regs);
+	}
 
 	__scribe_forbid_uaccess(scribe);
 
@@ -113,7 +118,6 @@ void scribe_enter_syscall(struct pt_regs *regs)
 		 */
 	}
 	scribe->in_syscall = 1;
-	scribe_data_det();
 }
 
 void scribe_commit_syscall(struct scribe_ps *scribe, struct pt_regs *regs,
@@ -172,7 +176,7 @@ void scribe_exit_syscall(struct pt_regs *regs)
 	}
 
 	__scribe_allow_uaccess(scribe);
-	scribe_signal_leave_sync_point(scribe);
+	scribe_signal_leave_sync_point();
 
 	/*
 	 * In case we have a fake signal to handle, we want do_signal() to be
