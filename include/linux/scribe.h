@@ -416,7 +416,8 @@ extern void scribe_open_resource(struct scribe_resource_context *ctx,
 				 struct scribe_resource_cache *cache);
 extern void scribe_close_resource(struct scribe_resource_context *ctx,
 				  struct scribe_resource_container *container,
-				  int do_close_sync, int *destroyed);
+				  int do_close_sync, int *destroyed,
+				  struct scribe_resource_cache *cache);
 
 #define SCRIBE_READ		0x01
 #define SCRIBE_WRITE		0x02

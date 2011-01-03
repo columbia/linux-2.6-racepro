@@ -469,7 +469,11 @@ static void wake_up_for_serial(struct scribe_resource *res)
 	spin_unlock(&q->lock);
 }
 
-static void unlock(struct scribe_lock_region *lock_region)
+static bool put_back_lock_region(struct scribe_resource_cache *cache,
+				 struct scribe_lock_region *lock_region);
+
+static void unlock(struct scribe_resource_cache *cache,
+		   struct scribe_lock_region *lock_region)
 {
 	struct scribe_resource *res;
 	struct scribe_event_resource_unlock *res_event;
@@ -507,8 +511,8 @@ static void unlock(struct scribe_lock_region *lock_region)
 		lock_region->unlock_event = NULL;
 
 		/*
-		 * We don't need to call exit_lock_region(),
-		 * The events are gone.
+		 * We don't put back the lock region in the cache since the
+		 * events have been consumed.
 		 */
 	} else {
 		wake_up_for_serial(res);
@@ -517,13 +521,18 @@ static void unlock(struct scribe_lock_region *lock_region)
 						  SCRIBE_EVENT_RESOURCE_UNLOCK);
 		if (!IS_ERR(res_event))
 			scribe_free_event(res_event);
+
+		if (put_back_lock_region(cache, lock_region))
+			return;
 	}
 
 out:
+	exit_lock_region(lock_region);
 	kfree(lock_region);
 }
 
-static void unlock_discard(struct scribe_lock_region *lock_region)
+static void unlock_discard(struct scribe_resource_cache *cache,
+			   struct scribe_lock_region *lock_region)
 {
 	struct scribe_ps *scribe = current->scribe;
 	struct scribe_resource *res;
@@ -534,11 +543,17 @@ static void unlock_discard(struct scribe_lock_region *lock_region)
 	else
 		mutex_unlock(&res->lock);
 
-	if (is_recording(scribe)) {
-		scribe_commit_insert_point(&lock_region->ip);
-		exit_lock_region(lock_region);
-	}
+	if (unlikely(is_detaching(scribe)))
+		goto out;
 
+	if (is_recording(scribe))
+		scribe_commit_insert_point(&lock_region->ip);
+
+	if (put_back_lock_region(cache, lock_region))
+		return;
+
+out:
+	exit_lock_region(lock_region);
 	kfree(lock_region);
 }
 
@@ -583,6 +598,28 @@ static inline struct scribe_lock_region *get_lock_region(
 	*lock_region_ptr = NULL;
 	return lock_region;
 }
+
+/*
+ * returns true if able to put the region back in the cache, false otherwise
+ */
+static bool put_back_lock_region(struct scribe_resource_cache *cache,
+				 struct scribe_lock_region *lock_region)
+{
+	struct scribe_lock_region **cached_region_slot;
+
+	if (unlikely(!cache))
+		return false;
+
+	cached_region_slot = find_lock_region_ptr(cache, NULL);
+	if (!cached_region_slot)
+		return false;
+
+	lock_region->res = NULL;
+	lock_region->object = NULL;
+	*cached_region_slot = lock_region;
+	return true;
+}
+
 
 static void __lock_object(struct scribe_ps *scribe, void *object,
 			  struct scribe_resource *res, int flags)
@@ -655,10 +692,10 @@ void scribe_unlock_err(void *object, int err)
 		scribe_unlock_err(file_inode(file), err);
 	}
 
-	if (likely(err >= 0))
-		unlock(lock_region);
+	if (likely(!IS_ERR_VALUE(err)))
+		unlock(&scribe->res_cache, lock_region);
 	else
-		unlock_discard(lock_region);
+		unlock_discard(&scribe->res_cache, lock_region);
 }
 
 void scribe_unlock(void *object)
@@ -668,7 +705,7 @@ void scribe_unlock(void *object)
 
 void scribe_unlock_discard(void *object)
 {
-	scribe_unlock_err(object, -1);
+	scribe_unlock_err(object, -EAGAIN);
 }
 
 void scribe_assert_locked(void *object)
@@ -724,7 +761,7 @@ void scribe_open_resource(struct scribe_resource_context *ctx,
 	hres = get_resource_handle(ctx, container, type, created, &cache->hres);
 
 	if (do_sync_open)
-		unlock(open_lock_region);
+		unlock(cache, open_lock_region);
 
 	if (do_sync_close) {
 		close_lock_region = get_lock_region(cache, NULL);
@@ -753,7 +790,8 @@ static void free_rcu_hres(struct rcu_head *rcu)
 
 void scribe_close_resource(struct scribe_resource_context *ctx,
 			   struct scribe_resource_container *container,
-			   int do_close_sync, int *destroyed)
+			   int do_close_sync, int *destroyed,
+			   struct scribe_resource_cache *cache)
 {
 	struct scribe_lock_region *close_lock_region = NULL;
 	struct scribe_resource_handle *hres;
@@ -786,7 +824,7 @@ void scribe_close_resource(struct scribe_resource_context *ctx,
 	 */
 
 	if (do_close_sync)
-		unlock(close_lock_region);
+		unlock(cache, close_lock_region);
 
 	if (*destroyed) {
 		spin_lock(&container->lock);
@@ -864,7 +902,8 @@ void scribe_close_file(struct file *file)
 	ctx = scribe->ctx->res_ctx;
 	inode = file_inode(file);
 	do_sync = inode_need_reg_sync(inode);
-	scribe_close_resource(ctx, &inode->i_scribe_resource, do_sync, NULL);
+	scribe_close_resource(ctx, &inode->i_scribe_resource, do_sync, NULL,
+			      &scribe->res_cache);
 
 	if (atomic_dec_and_test(&file->scribe_ref_cnt))
 		file->scribe_context = NULL;
@@ -1097,8 +1136,9 @@ void scribe_close_files(struct files_struct *files)
 	 * We need to guarantee that the task closing the files during record
 	 * will be the same as the one during the replay. Hence the locking.
 	 */
-	scribe_close_resource(scribe->ctx->res_ctx, &files->scribe_resource,
-			      SCRIBE_SYNC, &destroyed);
+	scribe_close_resource(scribe->ctx->res_ctx,
+			      &files->scribe_resource, SCRIBE_SYNC, &destroyed,
+			      &scribe->res_cache);
 	if (!destroyed)
 		return;
 
