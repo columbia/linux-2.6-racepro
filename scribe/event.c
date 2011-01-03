@@ -143,8 +143,9 @@ void scribe_unset_persistent(struct scribe_queue *queue)
 void scribe_free_all_events(struct scribe_stream *stream)
 {
 	struct scribe_event *event, *tmp;
+	unsigned long flags;
 
-	spin_lock(&stream->lock);
+	spin_lock_irqsave(&stream->lock, flags);
 
 	/* Some insert points are in progress... */
 	BUG_ON(!list_empty(&stream->master.node));
@@ -154,18 +155,20 @@ void scribe_free_all_events(struct scribe_stream *stream)
 		scribe_free_event(event);
 	}
 
-	spin_unlock(&stream->lock);
+	spin_unlock_irqrestore(&stream->lock, flags);
 }
 
 static void init_insert_point(scribe_insert_point_t *ip,
 			      struct scribe_stream *stream,
 			      struct scribe_substream *where)
 {
+	unsigned long flags;
+
 	ip->stream = stream;
 	INIT_LIST_HEAD(&ip->events);
-	spin_lock(&stream->lock);
+	spin_lock_irqsave(&stream->lock, flags);
 	list_add(&ip->node, &where->node);
-	spin_unlock(&stream->lock);
+	spin_unlock_irqrestore(&stream->lock, flags);
 }
 
 void scribe_create_insert_point(scribe_insert_point_t *ip,
@@ -190,12 +193,13 @@ void scribe_commit_insert_point(scribe_insert_point_t *ip)
 {
 	struct scribe_stream *stream = ip->stream;
 	struct scribe_substream *substream;
+	unsigned long flags;
 
-	spin_lock(&stream->lock);
+	spin_lock_irqsave(&stream->lock, flags);
 	substream = get_tail_substream(ip);
 	list_splice_tail(&ip->events, &substream->events);
 	list_del(&ip->node);
-	spin_unlock(&stream->lock);
+	spin_unlock_irqrestore(&stream->lock, flags);
 
 	if (substream == &stream->master)
 		wake_up(stream->wait);
@@ -215,8 +219,9 @@ static inline void __scribe_queue_events_at(struct scribe_stream *stream,
 					    struct list_head *events)
 {
 	struct scribe_substream *substream;
+	unsigned long flags;
 
-	spin_lock(&stream->lock);
+	spin_lock_irqsave(&stream->lock, flags);
 	substream = get_tail_substream(ip);
 
 	/*
@@ -231,7 +236,7 @@ static inline void __scribe_queue_events_at(struct scribe_stream *stream,
 		list_add_tail(&event->node, &substream->events);
 	if (events)
 		list_splice_tail_init(events, &substream->events);
-	spin_unlock(&stream->lock);
+	spin_unlock_irqrestore(&stream->lock, flags);
 
 	if (substream == &stream->master)
 		wake_up(stream->wait);
@@ -264,6 +269,7 @@ static struct scribe_event *__scribe_peek_event(struct scribe_stream *stream,
 	scribe_insert_point_t *ip = &stream->master;
 	struct scribe_substream *substream;
 	struct scribe_event *event;
+	unsigned long flags;
 
 retry:
 	if (wait == SCRIBE_WAIT_INTERRUPTIBLE &&
@@ -277,10 +283,10 @@ retry:
 		       !scribe_is_stream_empty(stream) ||
 		       stream->sealed);
 
-	spin_lock(&stream->lock);
+	spin_lock_irqsave(&stream->lock, flags);
 	substream = get_head_substream(ip);
 	if (list_empty(&substream->events)) {
-		spin_unlock(&stream->lock);
+		spin_unlock_irqrestore(&stream->lock, flags);
 		/*
 		 * If the queue is sealed, the queue is officially dead.
 		 * There is no point waiting.
@@ -294,7 +300,7 @@ retry:
 	event = list_first_entry(&substream->events, __typeof__(*event), node);
 	if (likely(remove))
 		list_del(&event->node);
-	spin_unlock(&stream->lock);
+	spin_unlock_irqrestore(&stream->lock, flags);
 
 	return event;
 }
@@ -343,10 +349,12 @@ struct scribe_event *scribe_peek_event(struct scribe_queue *queue, int wait)
 bool scribe_is_stream_empty(struct scribe_stream *stream)
 {
 	int ret;
+	unsigned long flags;
+
 	/* FIXME is the spinlock really necessary ? */
-	spin_lock(&stream->lock);
+	spin_lock_irqsave(&stream->lock, flags);
 	ret = list_empty(&stream->master.events);
-	spin_unlock(&stream->lock);
+	spin_unlock_irqrestore(&stream->lock, flags);
 	return ret;
 }
 
