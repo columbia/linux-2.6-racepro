@@ -90,6 +90,7 @@ struct scribe_queue *scribe_get_queue_by_pid(
 	list_add_tail(&queue->node, &ctx->queues);
 out:
 	spin_unlock(&ctx->queues_lock);
+	wake_up(&ctx->queues_wait);
 	return queue;
 }
 
@@ -105,6 +106,7 @@ void scribe_put_queue(struct scribe_queue *queue)
 	if (atomic_dec_and_lock(&queue->ref_cnt, &ctx->queues_lock)) {
 		list_del(&queue->node);
 		spin_unlock(&ctx->queues_lock);
+		wake_up(&queue->ctx->queues_wait);
 		scribe_free_all_events(&queue->stream);
 		kfree(queue);
 	}
@@ -114,6 +116,7 @@ void scribe_put_queue_locked(struct scribe_queue *queue)
 {
 	if (atomic_dec_and_test(&queue->ref_cnt)) {
 		list_del(&queue->node);
+		wake_up(&queue->ctx->queues_wait);
 		scribe_free_all_events(&queue->stream);
 		kfree(queue);
 	}

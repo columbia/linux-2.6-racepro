@@ -86,7 +86,7 @@ static void wait_for_ctx_empty(struct scribe_context *ctx)
 		scribe_unset_persistent(queue);
 	spin_unlock(&ctx->queues_lock);
 
-	wait_event(ctx->tasks_wait, list_empty(&ctx->queues));
+	wait_event(ctx->queues_wait, list_empty(&ctx->queues));
 }
 
 void scribe_exit_context(struct scribe_context *ctx)
@@ -441,6 +441,8 @@ void scribe_attach(struct scribe_ps *scribe)
 	list_add_tail(&scribe->node, &ctx->tasks);
 	spin_unlock(&ctx->tasks_lock);
 
+	wake_up(&ctx->tasks_wait);
+
 	scribe->flags |= (ctx->flags & SCRIBE_RECORD) ? SCRIBE_PS_RECORD : 0;
 	scribe->flags |= (ctx->flags & SCRIBE_REPLAY) ? SCRIBE_PS_REPLAY : 0;
 	scribe->flags |= SCRIBE_PS_ENABLE_ALL;
@@ -465,8 +467,6 @@ void scribe_attach(struct scribe_ps *scribe)
 		BUG_ON(scribe->queue->stream.wait !=
 		       &scribe->queue->stream.default_wait);
 	}
-
-	wake_up(&ctx->tasks_wait);
 
 	scribe->in_syscall = 0;
 	scribe->data_flags = 0;
@@ -507,6 +507,7 @@ void __scribe_detach(struct scribe_ps *scribe)
 	if (list_empty(&ctx->tasks) && ctx->flags != SCRIBE_IDLE)
 		context_idle(ctx, NULL);
 	spin_unlock(&ctx->tasks_lock);
+	wake_up(&ctx->tasks_wait);
 
 	/*
 	 * The sighand lock guards against some races within the signal code.
@@ -528,8 +529,6 @@ void __scribe_detach(struct scribe_ps *scribe)
 		scribe_seal_queue(scribe->queue);
 	scribe_put_queue_locked(scribe->queue);
 	spin_unlock(&ctx->queues_lock);
-
-	wake_up(&ctx->tasks_wait);
 
 	scribe->queue = NULL;
 }
