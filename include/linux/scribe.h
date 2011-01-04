@@ -282,11 +282,6 @@ extern int scribe_pump_wait_completion_interruptible(struct scribe_pump *pump);
 
 /* Context */
 
-#define SCRIBE_IDLE	0x00000000
-#define SCRIBE_RECORD	0x00000001
-#define SCRIBE_REPLAY	0x00000002
-#define SCRIBE_STOP	0x00000004
-
 struct scribe_context {
 	atomic_t ref_cnt;
 	int id;

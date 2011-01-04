@@ -39,8 +39,18 @@
 
 #define SCRIBE_DEVICE_NAME		"scribe"
 
+
 /*
- * Thoses flags are used for the scribe syscalls such as sys_set_scribe_flags().
+ * These flags are used in the context flags, they are passed along with the
+ * record/replay command
+ */
+#define SCRIBE_IDLE			0x00000000
+#define SCRIBE_RECORD			0x00000001
+#define SCRIBE_REPLAY			0x00000002
+#define SCRIBE_STOP			0x00000004
+
+/*
+ * These flags are used for the scribe syscalls such as sys_set_scribe_flags().
  */
 #define SCRIBE_PS_RECORD		0x00000001
 #define SCRIBE_PS_REPLAY		0x00000002
@@ -53,6 +63,31 @@
 #define SCRIBE_PS_ENABLE_TSC		0x00001000
 #define SCRIBE_PS_ENABLE_MM		0x00002000
 #define SCRIBE_PS_ENABLE_ALL		0x0000ff00
+
+
+/*
+ * These flags are used as a data type
+ * Some of those flags are also defined in scribe_uaccess.h
+ */
+#define SCRIBE_DATA_INPUT		0x01
+#define SCRIBE_DATA_STRING		0x02
+#define SCRIBE_DATA_NON_DETERMINISTIC	0x04
+#define SCRIBE_DATA_INTERNAL		0x08
+#define SCRIBE_DATA_ZERO		0x10
+
+/*
+ * These flags are used as a resource type
+ * They are also defined in scribe_resource.h
+ */
+#define SCRIBE_RES_TYPE_RESERVED	0
+#define SCRIBE_RES_TYPE_INODE		1
+#define SCRIBE_RES_TYPE_FILE		2
+#define SCRIBE_RES_TYPE_FILES_STRUCT	3
+#define SCRIBE_RES_TYPE_TASK		4
+#define SCRIBE_RES_TYPE_FUTEX		5
+#define SCRIBE_RES_TYPE_SPINLOCK	0x40
+#define SCRIBE_RES_TYPE_REGISTRATION	0x80
+
 
 enum scribe_event_type {
 	SCRIBE_EVENT_DUMMY1 = 0, /* skip the type 0 for safety */

@@ -91,13 +91,6 @@ SCRIBE_EVENT(PID, pid,
 	__field(__u32, pid)
 )
 
-/* Some of those flags are also defined in scribe_uaccess.h */
-#define SCRIBE_DATA_INPUT		0x01
-#define SCRIBE_DATA_STRING		0x02
-#define SCRIBE_DATA_NON_DETERMINISTIC	0x04
-#define SCRIBE_DATA_INTERNAL		0x08
-#define SCRIBE_DATA_ZERO		0x10
-
 SCRIBE_EVENT_SIZED(DATA, data,
 	__field(__u32, user_ptr) /* FIXME 64 bit support ? */
 	__field(__u8, data_type)
@@ -113,16 +106,6 @@ SCRIBE_EVENT(SYSCALL, syscall,
 SCRIBE_EVENT(SYSCALL_END, syscall_end)
 
 SCRIBE_EVENT(QUEUE_EOF, queue_eof)
-
-/* Those flags are also defined in scribe_resource.h */
-#define SCRIBE_RES_TYPE_RESERVED	0
-#define SCRIBE_RES_TYPE_INODE		1
-#define SCRIBE_RES_TYPE_FILE		2
-#define SCRIBE_RES_TYPE_FILES_STRUCT	3
-#define SCRIBE_RES_TYPE_TASK		4
-#define SCRIBE_RES_TYPE_FUTEX		5
-#define SCRIBE_RES_TYPE_SPINLOCK	0x40
-#define SCRIBE_RES_TYPE_REGISTRATION	0x80
 
 SCRIBE_EVENT(RESOURCE_LOCK, resource_lock,
 	__field(__u8, type)
