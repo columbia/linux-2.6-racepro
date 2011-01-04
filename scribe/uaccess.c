@@ -90,10 +90,15 @@ void scribe_prepare_data_event(size_t pre_alloc_size)
 {
 	struct scribe_event_data_extra *event;
 	struct scribe_ps *scribe = current->scribe;
+
 	if (!is_scribed(scribe))
 		return;
 
 	if (!should_handle_data(scribe))
+		return;
+
+	if (!(scribe->data_flags & SCRIBE_DATA_NON_DETERMINISTIC) &&
+	    !should_scribe_data_det(scribe))
 		return;
 
 	event = get_data_event(scribe, pre_alloc_size);
@@ -269,6 +274,11 @@ static void __scribe_post_uaccess(const void *data, const void __user *user_ptr,
 	WARN_ON((long)user_ptr > TASK_SIZE);
 
 	if (data_flags & SCRIBE_DATA_DONT_RECORD)
+		goto skip;
+
+	if ((!(data_flags & SCRIBE_DATA_NON_DETERMINISTIC) ||
+	     data_flags & SCRIBE_DATA_ZERO) &&
+	    !should_scribe_data_det(scribe))
 		goto skip;
 
 	event = get_data_event(scribe, size);
