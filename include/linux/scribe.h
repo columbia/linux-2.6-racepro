@@ -336,8 +336,8 @@ extern void scribe_emergency_stop(struct scribe_context *ctx,
 				  struct scribe_event *reason);
 extern void scribe_exit_context(struct scribe_context *ctx);
 
-extern int scribe_start_record(struct scribe_context *ctx);
-extern int scribe_start_replay(struct scribe_context *ctx, int backtrace_len);
+extern int scribe_start(struct scribe_context *ctx, unsigned long flags,
+			int backtrace_len);
 extern int scribe_stop(struct scribe_context *ctx);
 extern void scribe_wake_all_fake_sig(struct scribe_context *ctx);
 
@@ -508,7 +508,7 @@ struct scribe_ps {
 	int nr_syscall;
 	long orig_ret;
 
-	struct scribe_event_data *prepared_data_event;
+	struct scribe_event_data_extra *prepared_data_event;
 	int data_flags;
 	int old_data_flags;
 	int can_uaccess;
@@ -603,7 +603,7 @@ extern void scribe_detach(struct scribe_ps *scribe);
 extern bool scribe_maybe_detach(struct scribe_ps *scribe);
 
 extern void scribe_copy_to_user_recorded(void __user *to, long n,
-					 struct scribe_event_data **event);
+				 struct scribe_event_data_extra **event);
 extern void __scribe_allow_uaccess(struct scribe_ps *scribe);
 extern void __scribe_forbid_uaccess(struct scribe_ps *scribe);
 extern void scribe_allow_uaccess(void);
@@ -623,11 +623,11 @@ extern void scribe_data_pop_flags(void);
 ({									\
 	int __ret = 0;							\
 	struct scribe_ps *__scribe = current->scribe;			\
-	struct scribe_event_data *__event;				\
+	struct scribe_event_data_extra *__event;			\
 									\
 	if (is_recording(__scribe) && should_scribe_data(__scribe)) {	\
-		__event = scribe_alloc_event_sized(SCRIBE_EVENT_DATA,	\
-						   sizeof(src));	\
+		__event = scribe_alloc_event_sized(			\
+				SCRIBE_EVENT_DATA_EXTRA, sizeof(src));	\
 		if (!__event)						\
 			__ret = -ENOMEM;				\
 		else {							\
@@ -639,7 +639,7 @@ extern void scribe_data_pop_flags(void);
 		}							\
 	} else if (is_replaying(__scribe) && should_scribe_data(__scribe)) { \
 		__event = scribe_dequeue_event_sized(__scribe,		\
-				SCRIBE_EVENT_DATA, sizeof(src));	\
+				SCRIBE_EVENT_DATA_EXTRA, sizeof(src));	\
 		if (IS_ERR(__event)) {					\
 			__ret = PTR_ERR(__event);			\
 			/* the next line fixes a compiler warning */	\

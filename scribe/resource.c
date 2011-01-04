@@ -154,7 +154,7 @@ static void init_resource_handle(struct scribe_resource_context *ctx,
 struct scribe_lock_region {
 	struct list_head node;
 	scribe_insert_point_t ip;
-	struct scribe_event_resource_lock *lock_event;
+	struct scribe_event_resource_lock_extra *lock_event;
 	struct scribe_event_resource_unlock *unlock_event;
 	struct scribe_resource *res;
 	void *object;
@@ -173,7 +173,7 @@ static int reinit_lock_region(struct scribe_lock_region *lock_region,
 
 	if (!lock_region->lock_event) {
 		lock_region->lock_event = scribe_alloc_event(
-						SCRIBE_EVENT_RESOURCE_LOCK);
+					SCRIBE_EVENT_RESOURCE_LOCK_EXTRA);
 		if (!lock_region->lock_event)
 			return -ENOMEM;
 	}
@@ -403,7 +403,7 @@ static inline int use_spinlock(struct scribe_resource *res)
 static void lock(struct scribe_lock_region *lock_region)
 {
 	struct scribe_resource *res;
-	struct scribe_event_resource_lock *event;
+	struct scribe_event_resource_lock_extra *event;
 	struct scribe_ps *scribe = current->scribe;
 	int type;
 	int serial;
@@ -420,7 +420,7 @@ static void lock(struct scribe_lock_region *lock_region)
 					   &scribe->queue->stream);
 	} else {
 		event = scribe_dequeue_event_specific(scribe,
-						SCRIBE_EVENT_RESOURCE_LOCK);
+					SCRIBE_EVENT_RESOURCE_LOCK_EXTRA);
 		if (IS_ERR(event))
 			goto out;
 

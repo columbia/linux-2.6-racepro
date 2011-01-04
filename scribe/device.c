@@ -31,7 +31,8 @@ struct scribe_dev {
 	struct scribe_event *pending_event;
 };
 
-static int do_start(struct scribe_dev *dev, int state, int log_fd,
+static int do_start(struct scribe_dev *dev, int state,
+		    unsigned long flags, int log_fd,
 		    unsigned int backtrace_len)
 {
 	struct file *logfile;
@@ -49,10 +50,7 @@ static int do_start(struct scribe_dev *dev, int state, int log_fd,
 	if (!logfile)
 		goto err_pump;
 
-	if (state == SCRIBE_RECORD)
-		ret = scribe_start_record(dev->ctx);
-	else
-		ret = scribe_start_replay(dev->ctx, backtrace_len);
+	ret = scribe_start(dev->ctx, state | flags, backtrace_len);
 	if (ret)
 		goto err_file;
 
@@ -78,10 +76,12 @@ static int handle_command(struct scribe_dev *dev, struct scribe_event *event)
 	case SCRIBE_EVENT_RECORD:
 		event_record = ((struct scribe_event_record *)event);
 		return do_start(dev, SCRIBE_RECORD,
+				event_record->flags & SCRIBE_ALL,
 				event_record->log_fd, 0);
 	case SCRIBE_EVENT_REPLAY:
 		event_replay = ((struct scribe_event_replay *)event);
 		return do_start(dev, SCRIBE_REPLAY,
+				event_replay->flags & SCRIBE_ALL,
 				event_replay->log_fd,
 				event_replay->backtrace_len);
 	case SCRIBE_EVENT_STOP:

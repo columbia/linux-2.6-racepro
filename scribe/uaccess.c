@@ -36,10 +36,10 @@ void __scribe_forbid_uaccess(struct scribe_ps *scribe)
 	scribe_mem_sync_point(scribe, MEM_SYNC_IN);
 }
 
-static struct scribe_event_data *get_data_event(struct scribe_ps *scribe,
-						size_t size)
+static struct scribe_event_data_extra *get_data_event(struct scribe_ps *scribe,
+						      size_t size)
 {
-	struct scribe_event_data *event;
+	struct scribe_event_data_extra *event;
 
 	if (is_recording(scribe)) {
 		event = scribe->prepared_data_event;
@@ -50,7 +50,7 @@ static struct scribe_event_data *get_data_event(struct scribe_ps *scribe,
 			return event;
 		}
 
-		event = scribe_alloc_event_sized(SCRIBE_EVENT_DATA, size);
+		event = scribe_alloc_event_sized(SCRIBE_EVENT_DATA_EXTRA, size);
 		if (!event) {
 			scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
 			event = ERR_PTR(-ENOMEM);
@@ -68,7 +68,7 @@ static struct scribe_event_data *get_data_event(struct scribe_ps *scribe,
 		 * maximum size).
 		 */
 		event = scribe_dequeue_event_specific(scribe,
-						      SCRIBE_EVENT_DATA);
+						      SCRIBE_EVENT_DATA_EXTRA);
 	}
 
 	return event;
@@ -88,7 +88,7 @@ static int should_handle_data(struct scribe_ps *scribe)
 
 void scribe_prepare_data_event(size_t pre_alloc_size)
 {
-	struct scribe_event_data *event;
+	struct scribe_event_data_extra *event;
 	struct scribe_ps *scribe = current->scribe;
 	if (!is_scribed(scribe))
 		return;
@@ -152,7 +152,7 @@ static void ensure_data_correctness(struct scribe_ps *scribe,
 }
 
 static void scribe_post_uaccess_record(struct scribe_ps *scribe,
-		struct scribe_event_data *event, const void *data,
+		struct scribe_event_data_extra *event, const void *data,
 		void __user *user_ptr, size_t size, int data_flags)
 {
 	event->data_type = data_flags;
@@ -166,7 +166,7 @@ static void scribe_post_uaccess_record(struct scribe_ps *scribe,
 }
 
 static void scribe_post_uaccess_replay(struct scribe_ps *scribe,
-		struct scribe_event_data *event, const void *data,
+		struct scribe_event_data_extra *event, const void *data,
 		void __user *user_ptr, size_t size, int data_flags)
 {
 	if ((event->data_type & ~SCRIBE_DATA_ZERO) !=
@@ -243,10 +243,10 @@ static void scribe_post_uaccess_replay(struct scribe_ps *scribe,
 
 static void __scribe_post_uaccess(const void *data, const void __user *user_ptr,
 				  size_t size, int flags,
-				  struct scribe_event_data **eventp)
+				  struct scribe_event_data_extra **eventp)
 {
 	int data_flags;
-	struct scribe_event_data *event;
+	struct scribe_event_data_extra *event;
 	struct scribe_ps *scribe = current->scribe;
 	if (!is_scribed(scribe))
 		return;
@@ -304,7 +304,7 @@ void scribe_post_uaccess(const void *data, const void __user *user_ptr,
 EXPORT_SYMBOL(scribe_post_uaccess);
 
 void scribe_copy_to_user_recorded(void __user *to, long n,
-				  struct scribe_event_data **event)
+				  struct scribe_event_data_extra **event)
 {
 	struct scribe_ps *scribe = current->scribe;
 	BUG_ON(!is_replaying(scribe));

@@ -349,7 +349,7 @@ static ssize_t scribe_do_read(struct file *file, char __user *buf,
 			      size_t len, loff_t *ppos)
 {
 	struct scribe_ps *scribe = current->scribe;
-	struct scribe_event_data *data_event;
+	struct scribe_event_data_extra *data_event;
 	struct scribe_event *event;
 	size_t data_size;
 	size_t ret;
@@ -385,10 +385,10 @@ static ssize_t scribe_do_read(struct file *file, char __user *buf,
 		if (IS_ERR(event))
 			break;
 
-		if (event->type != SCRIBE_EVENT_DATA)
+		if (event->type != SCRIBE_EVENT_DATA_EXTRA)
 			break;
 
-		data_event = (struct scribe_event_data *)event;
+		data_event = (struct scribe_event_data_extra *)event;
 		data_size = data_event->h.size;
 
 		scribe_copy_to_user_recorded(buf, data_size, NULL);

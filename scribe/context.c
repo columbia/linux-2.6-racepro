@@ -103,7 +103,7 @@ void scribe_exit_context(struct scribe_context *ctx)
 	scribe_put_context(ctx);
 }
 
-static int context_start(struct scribe_context *ctx, int state,
+static int context_start(struct scribe_context *ctx, unsigned long flags,
 			 struct scribe_event_context_idle *idle_event,
 			 struct scribe_event_diverge *diverge_event,
 			 struct scribe_backtrace *backtrace)
@@ -124,7 +124,7 @@ static int context_start(struct scribe_context *ctx, int state,
 	ctx->diverge_event = diverge_event;
 	ctx->backtrace = backtrace;
 
-	ctx->flags = state;
+	ctx->flags = flags;
 
 	/*
 	 * TODO reset only when context_start() isn't called for the first
@@ -214,7 +214,8 @@ static int event_diverge_max_size_type(void)
 	return max_size_type;
 }
 
-static int do_start(struct scribe_context *ctx, int state, int backtrace_len)
+int scribe_start(struct scribe_context *ctx, unsigned long flags,
+		 int backtrace_len)
 {
 	int ret = -ENOMEM;
 	struct scribe_event_context_idle *idle_event;
@@ -241,7 +242,7 @@ static int do_start(struct scribe_context *ctx, int state, int backtrace_len)
 	}
 
 	spin_lock(&ctx->tasks_lock);
-	ret = context_start(ctx, state, idle_event, diverge_event, backtrace);
+	ret = context_start(ctx, flags, idle_event, diverge_event, backtrace);
 	spin_unlock(&ctx->tasks_lock);
 	if (ret)
 		goto err_backtrace;
@@ -256,16 +257,6 @@ err_idle_event:
 	scribe_free_event(idle_event);
 err:
 	return ret;
-}
-
-int scribe_start_record(struct scribe_context *ctx)
-{
-	return do_start(ctx, SCRIBE_RECORD, 0);
-}
-
-int scribe_start_replay(struct scribe_context *ctx, int backtrace_len)
-{
-	return do_start(ctx, SCRIBE_REPLAY, backtrace_len);
 }
 
 void scribe_emergency_stop(struct scribe_context *ctx,

@@ -82,6 +82,7 @@
 SCRIBE_START_LOG_FILE_DECL
 
 SCRIBE_EVENT_SIZED(INIT, init,
+	__field(__u32, flags)
 	__field(__u16, argc)
 	__field(__u16, envc)
 	__field(__u8, data[0])
@@ -92,6 +93,11 @@ SCRIBE_EVENT(PID, pid,
 )
 
 SCRIBE_EVENT_SIZED(DATA, data,
+	__field(__u8, data[0])
+	__field(__u32, ldata[0])
+)
+
+SCRIBE_EVENT_SIZED(DATA_EXTRA, data_extra,
 	__field(__u32, user_ptr) /* FIXME 64 bit support ? */
 	__field(__u8, data_type)
 	__field(__u8, data[0])
@@ -108,6 +114,10 @@ SCRIBE_EVENT(SYSCALL_END, syscall_end)
 SCRIBE_EVENT(QUEUE_EOF, queue_eof)
 
 SCRIBE_EVENT(RESOURCE_LOCK, resource_lock,
+	__field(__u32, serial)
+)
+
+SCRIBE_EVENT(RESOURCE_LOCK_EXTRA, resource_lock_extra,
 	__field(__u8, type)
 	__field(__u32, object)
 	__field(__u32, serial)
@@ -176,10 +186,12 @@ SCRIBE_EVENT(ATTACH_ON_EXECVE, attach_on_execve,
 )
 
 SCRIBE_EVENT(RECORD, record,
+	__field(__u32, flags)
 	__field(__u32, log_fd)
 )
 
 SCRIBE_EVENT(REPLAY, replay,
+	__field(__u32, flags)
 	__field(__u32, log_fd)
 	__field(__s32, backtrace_len)
 )
