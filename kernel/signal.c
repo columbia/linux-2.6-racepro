@@ -261,7 +261,7 @@ static void scribe_sigqueue(struct task_struct *t, struct sigqueue *q)
 	do {
 		q->scribe_cookie = atomic_inc_return(
 					&current_scribe->ctx->signal_cookie);
-	} while(unlikely(q->scribe_cookie == NO_COOKIE));
+	} while (unlikely(q->scribe_cookie == NO_COOKIE));
 
 	event->cookie = q->scribe_cookie;
 	scribe_queue_event(current_scribe->queue, event);
@@ -2352,7 +2352,7 @@ relock:
 
 		spin_unlock_irq(&sighand->siglock);
 		scribe_forbid_uaccess();
-		while(scribe_signal_enter_sync_point())
+		while (scribe_signal_enter_sync_point())
 			{}
 		/*
 		 * Anything else is fatal, maybe with a core dump.
