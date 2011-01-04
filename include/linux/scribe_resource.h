@@ -54,7 +54,7 @@ extern void scribe_init_resource_container(
 				struct scribe_resource_container *container);
 
 
-/* Types are also in scribe_api.h */
+/* Types are also in scribe_events.h */
 #define SCRIBE_RES_TYPE_RESERVED	0
 #define SCRIBE_RES_TYPE_INODE		1
 #define SCRIBE_RES_TYPE_FILE		2
