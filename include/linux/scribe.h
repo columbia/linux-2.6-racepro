@@ -398,7 +398,7 @@ extern void scribe_free_resource_context(struct scribe_resource_context *);
 extern void scribe_resource_init_cache(struct scribe_resource_cache *cache);
 extern void scribe_resource_exit_cache(struct scribe_resource_cache *cache);
 extern int scribe_resource_pre_alloc(struct scribe_resource_cache *cache,
-				     int doing_recording);
+				     int doing_recording, int res_extra);
 extern int scribe_resource_prepare(void);
 
 #define SCRIBE_NO_SYNC	0
@@ -603,6 +603,10 @@ static inline int should_scribe_sig_cookie(struct scribe_ps *scribe)
 static inline int should_scribe_data_det(struct scribe_ps *scribe)
 {
 	return scribe->ctx->flags & SCRIBE_DATA_DET;
+}
+static inline int should_scribe_res_extra(struct scribe_ps *scribe)
+{
+	return scribe->ctx->flags & SCRIBE_RES_EXTRA;
 }
 
 extern int init_scribe(struct task_struct *p, struct scribe_context *ctx);

@@ -2786,7 +2786,7 @@ int scribe_open_futexes(struct scribe_resource_context *ctx)
 
 	scribe_resource_init_cache(&cache);
 	for (i = 0; i < ARRAY_SIZE(futex_queues); i++) {
-		if (scribe_resource_pre_alloc(&cache, 0)) {
+		if (scribe_resource_pre_alloc(&cache, 0, 0)) {
 			ret = -ENOMEM;
 			break;
 		}
