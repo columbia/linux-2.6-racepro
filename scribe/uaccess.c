@@ -11,6 +11,7 @@
 #include <linux/sched.h>
 #include <linux/hardirq.h>
 #include <linux/pagemap.h>
+#include <linux/module.h>
 
 void __scribe_allow_uaccess(struct scribe_ps *scribe)
 {
@@ -110,6 +111,7 @@ void scribe_pre_uaccess(const void *data, const void __user *user_ptr,
 	if (!is_kernel_copy())
 		__scribe_allow_uaccess(scribe);
 }
+EXPORT_SYMBOL(scribe_pre_uaccess);
 
 /*
  * This version of memcmp() returns the offset of the mismatch,
@@ -299,6 +301,7 @@ void scribe_post_uaccess(const void *data, const void __user *user_ptr,
 {
 	__scribe_post_uaccess(data, user_ptr, size, flags, NULL);
 }
+EXPORT_SYMBOL(scribe_post_uaccess);
 
 void scribe_copy_to_user_recorded(void __user *to, long n,
 				  struct scribe_event_data **event)
