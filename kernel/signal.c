@@ -749,7 +749,7 @@ bool scribe_signal_enter_sync_point(void)
 	ret = scribe_enter_fenced_region(SCRIBE_REGION_SIGNAL);
 	if (ret && ret != ENODATA) {
 		scribe_emergency_stop(scribe->ctx, ERR_PTR(ret));
-		return true;
+		return false;
 	}
 
 	if (is_recording(scribe))
