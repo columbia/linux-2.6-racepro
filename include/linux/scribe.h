@@ -592,6 +592,10 @@ static inline int should_scribe_mm(struct scribe_ps *scribe)
 {
 	return scribe->flags & SCRIBE_PS_ENABLE_MM;
 }
+static inline int should_scribe_regs(struct scribe_ps *scribe)
+{
+	return scribe->ctx->flags & SCRIBE_REGS;
+}
 
 extern int init_scribe(struct task_struct *p, struct scribe_context *ctx);
 extern void exit_scribe(struct task_struct *p);

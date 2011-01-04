@@ -62,7 +62,9 @@ void scribe_enter_syscall(struct pt_regs *regs)
 	if (is_scribe_syscall(scribe->nr_syscall))
 		return;
 
-	if (should_scribe_syscalls(scribe) && scribe_regs(scribe, regs))
+	if (should_scribe_syscalls(scribe) &&
+	    should_scribe_regs(scribe) &&
+	    scribe_regs(scribe, regs))
 		return;
 
 	scribe_data_det();
