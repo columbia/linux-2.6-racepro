@@ -806,6 +806,9 @@ static void scribe_pre_send_cookie(void)
 	struct scribe_ps *scribe = current->scribe;
 	struct scribe_event_sig_send_cookie *event;
 
+	if (!is_scribed(scribe) || !should_scribe_sig_cookie(scribe))
+		return;
+
 	if (is_recording(scribe)) {
 		event = scribe_alloc_event(SCRIBE_EVENT_SIG_SEND_COOKIE);
 		if (!event)
@@ -820,6 +823,9 @@ static void scribe_post_send_cookie(void)
 {
 	struct scribe_event *event;
 	struct scribe_ps *scribe = current->scribe;
+
+	if (!is_scribed(scribe) || !should_scribe_sig_cookie(scribe))
+		return;
 
 	if (is_recording(scribe)) {
 		if (scribe->signal.send_cookie_event) {

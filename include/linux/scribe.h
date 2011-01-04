@@ -596,6 +596,10 @@ static inline int should_scribe_regs(struct scribe_ps *scribe)
 {
 	return scribe->ctx->flags & SCRIBE_REGS;
 }
+static inline int should_scribe_sig_cookie(struct scribe_ps *scribe)
+{
+	return scribe->ctx->flags & SCRIBE_SIG_COOKIE;
+}
 
 extern int init_scribe(struct task_struct *p, struct scribe_context *ctx);
 extern void exit_scribe(struct task_struct *p);
