@@ -55,6 +55,7 @@ modules.builtin
 #
 include/config
 include/linux/version.h
+include/linux/scribe_defines.h
 include/generated
 
 # stgit generated dirs

@@ -127,14 +127,14 @@ extern void scribe_queue_events_stream(struct scribe_stream *stream,
  */
 #define scribe_queue_new_event(queue, _type, ...)			\
 ({									\
-	struct_##_type *__new_event;					\
+	struct##_type *__new_event;					\
 	int __ret = 0;							\
 									\
 	__new_event = scribe_alloc_event(_type);			\
 	if (!__new_event)						\
 		__ret = -ENOMEM;					\
 	else {								\
-		*__new_event = (struct_##_type)				\
+		*__new_event = (struct##_type)				\
 			{.h = {.type = _type},  __VA_ARGS__};		\
 		scribe_queue_event(queue, __new_event);			\
 	}								\
@@ -163,7 +163,7 @@ extern struct scribe_event *scribe_peek_event(
 			       .type = _type);				\
 		__event = ERR_PTR(-EDIVERGE);				\
 	}								\
-	(struct_##_type *)__event;					\
+	(struct##_type *)__event;					\
 })
 
 #define scribe_dequeue_event_sized(sp, _type, _size)			\
@@ -178,7 +178,7 @@ extern struct scribe_event *scribe_peek_event(
 			       .size = _size);				\
 		__event_sized = ERR_PTR(-EDIVERGE);			\
 	}								\
-	(struct_##_type *)__event_sized;				\
+	(struct##_type *)__event_sized;				\
 })
 
 extern bool scribe_is_stream_empty(struct scribe_stream *stream);
@@ -350,14 +350,14 @@ extern void scribe_wake_all_fake_sig(struct scribe_context *ctx);
 		__event->pid = (sp)->queue->pid;			\
 	} else								\
 		__event = ERR_PTR(-EDIVERGE);				\
-	(struct_##_type *)__event;					\
+	(struct##_type *)__event;					\
 })
 
 #define scribe_diverge(sp, _type, ...)					\
 ({									\
-	struct_##_type *__event = scribe_get_diverge_event(sp, _type);	\
+	struct##_type *__event = scribe_get_diverge_event(sp, _type);	\
 	if (!IS_ERR(__event)) {						\
-		*__event = (struct_##_type) {				\
+		*__event = (struct##_type) {				\
 			.h.h.type = _type,				\
 			.h.pid = sp->queue->pid,			\
 			.h.last_event_offset = (sp)->queue->last_event_offset, \

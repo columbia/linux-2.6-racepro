@@ -917,7 +917,7 @@ endif
 prepare2: prepare3 outputmakefile
 
 prepare1: prepare2 include/linux/version.h include/generated/utsrelease.h \
-                   include/config/auto.conf
+                   include/config/auto.conf include/linux/scribe_defines.h
 	$(cmd_crmodverdir)
 
 archprepare: prepare1 scripts_basic
@@ -955,6 +955,16 @@ include/linux/version.h: $(srctree)/Makefile FORCE
 
 include/generated/utsrelease.h: include/config/kernel.release FORCE
 	$(call filechk,utsrelease.h)
+
+quiet_cmd_scribe_defines = GEN     $@
+      cmd_scribe_defines = scripts/scribe/genheaders.sh \
+			   include/linux/scribe_events.h > \
+			   include/linux/scribe_defines.h
+
+include/linux/scribe_defines.h: scripts/scribe/genheaders.sh \
+				include/linux/scribe_events.h
+	$(call if_changed,scribe_defines)
+target += include/linux/scribe_defines.h
 
 PHONY += headerdep
 headerdep:
@@ -1106,6 +1116,7 @@ CLEAN_FILES +=	vmlinux System.map \
 MRPROPER_DIRS  += include/config usr/include include/generated
 MRPROPER_FILES += .config .config.old .version .old_version             \
                   include/linux/version.h                               \
+                  include/linux/scribe_defines.h                        \
 		  Module.symvers tags TAGS cscope*
 
 # clean - Delete most, but leave enough to build external modules
