@@ -36,29 +36,40 @@ void __scribe_forbid_uaccess(struct scribe_ps *scribe)
 	scribe_mem_sync_point(scribe, MEM_SYNC_IN);
 }
 
-static struct scribe_event_data_extra *get_data_event(struct scribe_ps *scribe,
-						      size_t size)
+static union scribe_event_data_union get_data_event(struct scribe_ps *scribe,
+						    int data_extra, size_t size)
 {
-	struct scribe_event_data_extra *event;
+	union scribe_event_data_union event;
 
 	if (is_recording(scribe)) {
 		event = scribe->prepared_data_event;
-		if (event) {
-			scribe->prepared_data_event = NULL;
-			BUG_ON(event->h.size < size);
-			event->h.size = size;
+		if (event.generic) {
+			scribe->prepared_data_event.generic = NULL;
+
+			if (data_extra) {
+				BUG_ON(event.extra->h.size < size);
+				event.extra->h.size = size;
+			} else {
+				BUG_ON(event.regular->h.size < size);
+				event.regular->h.size = size;
+			}
 			return event;
 		}
 
-		event = scribe_alloc_event_sized(SCRIBE_EVENT_DATA_EXTRA, size);
-		if (!event) {
+		if (data_extra)
+			event.extra = scribe_alloc_event_sized(
+						SCRIBE_EVENT_DATA_EXTRA, size);
+		else
+			event.regular = scribe_alloc_event_sized(
+						SCRIBE_EVENT_DATA, size);
+		if (!event.generic) {
 			scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
-			event = ERR_PTR(-ENOMEM);
+			event.generic = ERR_PTR(-ENOMEM);
 		}
 	} else {
 		event = scribe->prepared_data_event;
-		if (event) {
-			scribe->prepared_data_event = NULL;
+		if (event.generic) {
+			scribe->prepared_data_event.generic = NULL;
 			return event;
 		}
 		/*
@@ -67,8 +78,12 @@ static struct scribe_event_data_extra *get_data_event(struct scribe_ps *scribe,
 		 * scribe_prepare_data_event() and @size would only be the
 		 * maximum size).
 		 */
-		event = scribe_dequeue_event_specific(scribe,
+		if (data_extra)
+			event.extra = scribe_dequeue_event_specific(scribe,
 						      SCRIBE_EVENT_DATA_EXTRA);
+		else
+			event.regular = scribe_dequeue_event_specific(scribe,
+						      SCRIBE_EVENT_DATA);
 	}
 
 	return event;
@@ -88,7 +103,7 @@ static int should_handle_data(struct scribe_ps *scribe)
 
 void scribe_prepare_data_event(size_t pre_alloc_size)
 {
-	struct scribe_event_data_extra *event;
+	union scribe_event_data_union event;
 	struct scribe_ps *scribe = current->scribe;
 
 	if (!is_scribed(scribe))
@@ -101,8 +116,9 @@ void scribe_prepare_data_event(size_t pre_alloc_size)
 	    !should_scribe_data_det(scribe))
 		return;
 
-	event = get_data_event(scribe, pre_alloc_size);
-	if (!IS_ERR(event))
+	event = get_data_event(scribe, should_scribe_data_extra(scribe),
+			       pre_alloc_size);
+	if (!IS_ERR(event.generic))
 		scribe->prepared_data_event = event;
 }
 
@@ -156,41 +172,54 @@ static void ensure_data_correctness(struct scribe_ps *scribe,
 	scribe_emergency_stop(scribe->ctx, (struct scribe_event *)de);
 }
 
-static void scribe_post_uaccess_record(struct scribe_ps *scribe,
-		struct scribe_event_data_extra *event, const void *data,
-		void __user *user_ptr, size_t size, int data_flags)
+static void scribe_post_uaccess_record(struct scribe_ps *scribe, int data_extra,
+				       union scribe_event_data_union event,
+				       const void *data, void __user *user_ptr,
+				       size_t size, int data_flags)
 {
-	event->data_type = data_flags;
-	event->user_ptr = (__u32)user_ptr;
+	void *event_data;
+
+	if (data_extra) {
+		event.extra->data_type = data_flags;
+		event.extra->user_ptr = (__u32)user_ptr;
+		event_data = event.extra->data;
+	} else
+		event_data = event.regular->data;
 
 	if (data_flags & SCRIBE_DATA_ZERO)
-		memset(event->data, 0, size);
+		memset(event_data, 0, size);
 	else
-		memcpy(event->data, data, size);
-	scribe_queue_event(scribe->queue, event);
+		memcpy(event_data, data, size);
+	scribe_queue_event(scribe->queue, event.generic);
 }
 
-static void scribe_post_uaccess_replay(struct scribe_ps *scribe,
-		struct scribe_event_data_extra *event, const void *data,
-		void __user *user_ptr, size_t size, int data_flags)
+static void scribe_post_uaccess_replay(struct scribe_ps *scribe, int data_extra,
+				       union scribe_event_data_union event,
+				       const void *data, void __user *user_ptr,
+				       size_t size, int data_flags)
 {
-	if ((event->data_type & ~SCRIBE_DATA_ZERO) !=
+	const void *event_data;
+
+	if (!data_extra)
+		goto skip_extra_checks;
+
+	if ((event.extra->data_type & ~SCRIBE_DATA_ZERO) !=
 	    (data_flags & ~SCRIBE_DATA_ZERO)) {
 		scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_DATA_TYPE,
 			       .type = data_flags);
 		return;
 	}
-	data_flags = event->data_type;
 
-	if (event->h.size != size) {
-		scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_EVENT_SIZE,
-			       .size = size);
+	if ((void *)event.extra->user_ptr != user_ptr) {
+		scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_DATA_PTR,
+			       .user_ptr = (u32)user_ptr);
 		return;
 	}
 
-	if ((void *)event->user_ptr != user_ptr) {
-		scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_DATA_PTR,
-			       .user_ptr = (u32)user_ptr);
+skip_extra_checks:
+	if (event.generic->size != size) {
+		scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_EVENT_SIZE,
+			       .size = size);
 		return;
 	}
 
@@ -209,9 +238,11 @@ static void scribe_post_uaccess_replay(struct scribe_ps *scribe,
 		return;
 	}
 
+	event_data = data_extra ? event.extra->data : event.regular->data;
+
 	if (!(data_flags & SCRIBE_DATA_NON_DETERMINISTIC)) {
-		if (data)
-			ensure_data_correctness(scribe, event->data,
+		if (likely(data))
+			ensure_data_correctness(scribe, event_data,
 						data, size);
 		else
 			scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_DATA_TYPE,
@@ -231,7 +262,7 @@ static void scribe_post_uaccess_replay(struct scribe_ps *scribe,
 	 * might_sleep(), but if we're not in an atomic context, it's
 	 * equivalent to __copy_to_user().
 	 */
-	if (__copy_to_user_inatomic(user_ptr, event->data, size)) {
+	if (__copy_to_user_inatomic(user_ptr, event_data, size)) {
 		/*
 		 * FIXME If we are in an atomic region, the copy may or may
 		 * not have happended. We need to make sure that the copy
@@ -248,16 +279,18 @@ static void scribe_post_uaccess_replay(struct scribe_ps *scribe,
 
 static void __scribe_post_uaccess(const void *data, const void __user *user_ptr,
 				  size_t size, int flags,
-				  struct scribe_event_data_extra **eventp)
+				  union scribe_event_data_union *eventp)
 {
 	int data_flags;
-	struct scribe_event_data_extra *event;
+	union scribe_event_data_union event;
 	struct scribe_ps *scribe = current->scribe;
+	int data_extra;
+
 	if (!is_scribed(scribe))
 		return;
 
 	if (eventp)
-		*eventp = NULL;
+		eventp->generic = NULL;
 
 	if (!should_handle_data(scribe))
 		goto skip;
@@ -281,28 +314,29 @@ static void __scribe_post_uaccess(const void *data, const void __user *user_ptr,
 	    !should_scribe_data_det(scribe))
 		goto skip;
 
-	event = get_data_event(scribe, size);
-	if (IS_ERR(event))
+	data_extra = should_scribe_data_extra(scribe);
+	event = get_data_event(scribe, data_extra, size);
+	if (IS_ERR(event.generic))
 		goto skip;
 
 	if (is_recording(scribe)) {
-		scribe_post_uaccess_record(scribe, event, data,
+		scribe_post_uaccess_record(scribe, data_extra, event, data,
 					   (void __user *)user_ptr, size,
 					   data_flags);
 	} else { /* replay */
-		scribe_post_uaccess_replay(scribe, event, data,
+		scribe_post_uaccess_replay(scribe, data_extra, event, data,
 					   (void __user *)user_ptr, size,
 					   data_flags);
 		if (eventp)
 			*eventp = event;
 		else
-			scribe_free_event(event);
+			scribe_free_event(event.generic);
 	}
 
 skip:
 	if (!is_kernel_copy())
 		__scribe_forbid_uaccess(scribe);
-	WARN(scribe->prepared_data_event,
+	WARN(scribe->prepared_data_event.generic,
 	     "pre-allocated data event not used\n");
 }
 
@@ -314,13 +348,74 @@ void scribe_post_uaccess(const void *data, const void __user *user_ptr,
 EXPORT_SYMBOL(scribe_post_uaccess);
 
 void scribe_copy_to_user_recorded(void __user *to, long n,
-				  struct scribe_event_data_extra **event)
+				  union scribe_event_data_union *event)
 {
 	struct scribe_ps *scribe = current->scribe;
 	BUG_ON(!is_replaying(scribe));
 
 	scribe_pre_uaccess(NULL, to, n, scribe->data_flags);
 	__scribe_post_uaccess(NULL, to, n, scribe->data_flags, event);
+}
+
+int scribe_interpose_value_record(struct scribe_ps *scribe,
+				  const void *data, size_t size)
+{
+	int data_extra = should_scribe_data_extra(scribe);
+	union scribe_event_data_union event;
+
+	if (data_extra)
+		event.extra = scribe_alloc_event_sized(
+						SCRIBE_EVENT_DATA_EXTRA, size);
+	else
+		event.regular = scribe_alloc_event_sized(
+						SCRIBE_EVENT_DATA, size);
+
+	if (!event.generic)
+		return -ENOMEM;
+
+	if (data_extra) {
+		event.extra->data_type = SCRIBE_DATA_INTERNAL;
+		event.extra->user_ptr = 0;
+		memcpy(event.extra->data, data, size);
+	} else {
+		memcpy(event.regular->data, data, size);
+	}
+	scribe_queue_event(scribe->queue, event.regular);
+	return 0;
+}
+
+int scribe_interpose_value_replay(struct scribe_ps *scribe,
+				  void *data, size_t size)
+{
+
+	int data_extra = should_scribe_data_extra(scribe);
+	union scribe_event_data_union event;
+
+	if (data_extra)
+		event.extra = scribe_dequeue_event_sized(scribe,
+						 SCRIBE_EVENT_DATA_EXTRA, size);
+	else
+		event.regular = scribe_dequeue_event_sized(scribe,
+						 SCRIBE_EVENT_DATA, size);
+
+	if (IS_ERR(event.generic))
+		return PTR_ERR(event.generic);
+
+	if (data_extra) {
+		if (event.extra->data_type != SCRIBE_DATA_INTERNAL) {
+			scribe_free_event(event.generic);
+			scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_DATA_TYPE,
+				       .type = SCRIBE_DATA_INTERNAL);
+			return -EDIVERGE;
+		}
+
+		memcpy(data, event.extra->data, size);
+	} else {
+		memcpy(data, event.regular->data, size);
+	}
+
+	scribe_free_event(event.generic);
+	return 0;
 }
 
 void scribe_allow_uaccess(void)

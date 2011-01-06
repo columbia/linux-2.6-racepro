@@ -481,6 +481,12 @@ static inline int is_interruption(int ret)
 		ret == -EINTR;
 }
 
+union scribe_event_data_union {
+	struct scribe_event_sized *generic;
+	struct scribe_event_data *regular;
+	struct scribe_event_data_extra *extra;
+};
+
 /* Process */
 
 /*
@@ -508,7 +514,7 @@ struct scribe_ps {
 	int nr_syscall;
 	long orig_ret;
 
-	struct scribe_event_data_extra *prepared_data_event;
+	union scribe_event_data_union prepared_data_event;
 	int data_flags;
 	int old_data_flags;
 	int can_uaccess;
@@ -608,6 +614,10 @@ static inline int should_scribe_res_extra(struct scribe_ps *scribe)
 {
 	return scribe->ctx->flags & SCRIBE_RES_EXTRA;
 }
+static inline int should_scribe_data_extra(struct scribe_ps *scribe)
+{
+	return scribe->ctx->flags & SCRIBE_DATA_EXTRA;
+}
 
 extern int init_scribe(struct task_struct *p, struct scribe_context *ctx);
 extern void exit_scribe(struct task_struct *p);
@@ -619,7 +629,7 @@ extern void scribe_detach(struct scribe_ps *scribe);
 extern bool scribe_maybe_detach(struct scribe_ps *scribe);
 
 extern void scribe_copy_to_user_recorded(void __user *to, long n,
-				 struct scribe_event_data_extra **event);
+					 union scribe_event_data_union *event);
 extern void __scribe_allow_uaccess(struct scribe_ps *scribe);
 extern void __scribe_forbid_uaccess(struct scribe_ps *scribe);
 extern void scribe_allow_uaccess(void);
@@ -634,46 +644,27 @@ extern void scribe_data_dont_record(void);
 extern void scribe_data_ignore(void);
 extern void scribe_data_pop_flags(void);
 
-/* TODO split that macro with functions */
+extern int scribe_interpose_value_record(struct scribe_ps *scribe,
+					 const void *data, size_t size);
+extern int scribe_interpose_value_replay(struct scribe_ps *scribe,
+					 void *data, size_t size);
+
 #define scribe_interpose_value(dst, src)				\
 ({									\
-	int __ret = 0;							\
+	int __ret;							\
 	struct scribe_ps *__scribe = current->scribe;			\
-	struct scribe_event_data_extra *__event;			\
 									\
-	if (is_recording(__scribe) && should_scribe_data(__scribe)) {	\
-		__event = scribe_alloc_event_sized(			\
-				SCRIBE_EVENT_DATA_EXTRA, sizeof(src));	\
-		if (!__event)						\
-			__ret = -ENOMEM;				\
-		else {							\
-			__event->data_type = SCRIBE_DATA_INTERNAL;	\
-			__event->user_ptr = 0;				\
-			(dst) = *((__typeof__(src) *)__event->data)	\
-			      = (src);					\
-			scribe_queue_event(__scribe->queue, __event);	\
-		}							\
-	} else if (is_replaying(__scribe) && should_scribe_data(__scribe)) { \
-		__event = scribe_dequeue_event_sized(__scribe,		\
-				SCRIBE_EVENT_DATA_EXTRA, sizeof(src));	\
-		if (IS_ERR(__event)) {					\
-			__ret = PTR_ERR(__event);			\
-			/* the next line fixes a compiler warning */	\
-			__ret = __ret ? : -EDIVERGE;			\
-		}							\
-		else if (__event->data_type != SCRIBE_DATA_INTERNAL) {	\
-			scribe_free_event(__event);			\
-			scribe_diverge(__scribe,			\
-				       SCRIBE_EVENT_DIVERGE_DATA_TYPE,	\
-				       .type = SCRIBE_DATA_INTERNAL);	\
-			__ret = -EDIVERGE;				\
-		} else {						\
-			(dst) = __event->ldata[0];			\
-			scribe_free_event(__event);			\
-		}							\
-	} else								\
+	if (!is_scribed(__scribe) || !should_scribe_data(__scribe)) {	\
 		(dst) = (src);						\
-									\
+		__ret = 0;						\
+	} else if (is_recording(__scribe)) {				\
+		(dst) = (src);						\
+		__ret = scribe_interpose_value_record(			\
+				__scribe, &(dst), sizeof(dst));		\
+	} else {							\
+		__ret = scribe_interpose_value_replay(			\
+				__scribe, &(dst), sizeof(dst));		\
+	}								\
 	__ret;								\
 })
 

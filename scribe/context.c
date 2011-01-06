@@ -461,7 +461,7 @@ void scribe_attach(struct scribe_ps *scribe)
 
 	scribe->in_syscall = 0;
 	scribe->data_flags = 0;
-	scribe->prepared_data_event = NULL;
+	scribe->prepared_data_event.generic = NULL;
 	scribe->can_uaccess = 0;
 
 	scribe_attach_arch(scribe);
@@ -484,9 +484,9 @@ void __scribe_detach(struct scribe_ps *scribe)
 
 	scribe_detach_arch(scribe);
 
-	if (scribe->prepared_data_event) {
+	if (scribe->prepared_data_event.generic) {
 		WARN(1, "prepared_data_event present\n");
-		scribe_free_event(scribe->prepared_data_event);
+		scribe_free_event(scribe->prepared_data_event.generic);
 	}
 
 	spin_lock(&ctx->tasks_lock);
