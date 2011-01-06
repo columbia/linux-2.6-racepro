@@ -13,6 +13,12 @@
 #include <linux/syscalls.h>
 #include <asm/syscall.h>
 
+union scribe_syscall_event_union {
+	struct scribe_event *generic;
+	struct scribe_event_syscall *regular;
+	struct scribe_event_syscall_extra *extra;
+};
+
 static int scribe_regs(struct scribe_ps *scribe, struct pt_regs *regs)
 {
 	struct scribe_event_regs *event_regs;
@@ -50,9 +56,58 @@ static inline int is_scribe_syscall(int nr)
 	       nr == __NR_set_scribe_flags;
 }
 
+static void scribe_enter_syscall_record(struct scribe_ps *scribe)
+{
+	/*
+	 * We'll postpone the insertion of the syscall event for the
+	 * return value.
+	 *
+	 * XXX This is potentially dangerous in the sense that the
+	 * userspace can make the kernel allocate many events during
+	 * the syscall, which won't get flushed to the logfile until
+	 * the syscall returns.
+	 */
+	scribe_create_insert_point(&scribe->syscall_ip, &scribe->queue->stream);
+}
+
+static void scribe_enter_syscall_replay(struct scribe_ps *scribe)
+{
+	union scribe_syscall_event_union event;
+	int syscall_extra = should_scribe_syscall_extra(scribe);
+
+	if (syscall_extra)
+		event.extra = scribe_dequeue_event_specific(scribe,
+				      SCRIBE_EVENT_SYSCALL_EXTRA);
+	else 
+		event.regular = scribe_dequeue_event_specific(scribe,
+				      SCRIBE_EVENT_SYSCALL);
+
+	if (IS_ERR(event.generic))
+		return;
+
+	if (syscall_extra) {
+		if (event.extra->nr != scribe->nr_syscall) {
+			scribe_diverge(scribe,
+				       SCRIBE_EVENT_DIVERGE_SYSCALL,
+				       .nr = scribe->nr_syscall);
+		}
+		scribe->orig_ret = event.extra->ret;
+	} else
+		scribe->orig_ret = event.regular->ret;
+
+	scribe_free_event(event.generic);
+
+	if (is_interruption(scribe->orig_ret))
+		set_thread_flag(TIF_SIGPENDING);
+
+	/*
+	 * FIXME Do something about non deterministic errors such as
+	 * -ENOMEM.
+	 */
+}
+
 void scribe_enter_syscall(struct pt_regs *regs)
 {
-	struct scribe_event_syscall *event;
 	struct scribe_ps *scribe = current->scribe;
 
 	if (!is_scribed(scribe))
@@ -86,79 +141,77 @@ void scribe_enter_syscall(struct pt_regs *regs)
 		return;
 
 	if (is_recording(scribe)) {
-		/*
-		 * We'll postpone the insertion of the syscall event for the
-		 * return value.
-		 *
-		 * XXX This is potentially dangerous in the sense that the
-		 * userspace can make the kernel allocate many events during
-		 * the syscall, which won't get flushed to the logfile until
-		 * the syscall returns.
-		 */
-		scribe_create_insert_point(&scribe->syscall_ip,
-					   &scribe->queue->stream);
-	} else {
-		event = scribe_dequeue_event_specific(scribe,
-						      SCRIBE_EVENT_SYSCALL);
-		if (IS_ERR(event))
-			return;
+		scribe_enter_syscall_record(scribe);
+	} else
+		scribe_enter_syscall_replay(scribe);
 
-		if (event->nr != scribe->nr_syscall) {
-			scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_SYSCALL,
-					.nr = scribe->nr_syscall);
-		}
-
-		scribe->orig_ret = event->ret;
-		scribe_free_event(event);
-
-		if (is_interruption(scribe->orig_ret))
-			set_thread_flag(TIF_SIGPENDING);
-
-		/*
-		 * FIXME Do something about non deterministic errors such as
-		 * -ENOMEM.
-		 */
-	}
 	scribe->in_syscall = 1;
+}
+
+static void scribe_commit_syscall_record(struct scribe_ps *scribe,
+					 struct pt_regs *regs, long ret_value)
+{
+	union scribe_syscall_event_union event;
+	int syscall_extra = should_scribe_syscall_extra(scribe);
+
+	if (syscall_extra)
+		event.extra = scribe_alloc_event(SCRIBE_EVENT_SYSCALL_EXTRA);
+	else
+		event.regular = scribe_alloc_event(SCRIBE_EVENT_SYSCALL);
+
+	if (!event.generic)
+		goto err;
+
+	if (syscall_extra) {
+		event.extra->nr = scribe->nr_syscall;
+		event.extra->ret = ret_value;
+	} else
+		event.regular->ret = ret_value;
+
+	scribe_queue_event_at(&scribe->syscall_ip, event.generic);
+	scribe_commit_insert_point(&scribe->syscall_ip);
+
+	if (syscall_extra) {
+		if (scribe_queue_new_event(scribe->queue,
+				   SCRIBE_EVENT_SYSCALL_END))
+			goto err;
+	}
+
+	return;
+err:
+	scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
+}
+
+static void scribe_commit_syscall_replay(struct scribe_ps *scribe,
+					 struct pt_regs *regs, long ret_value)
+{
+	struct scribe_event_syscall_end *event_end;
+	int syscall_extra = should_scribe_syscall_extra(scribe);
+
+	if (syscall_extra) {
+		event_end = scribe_dequeue_event_specific(scribe,
+						SCRIBE_EVENT_SYSCALL_END);
+		if (!IS_ERR(event_end))
+			scribe_free_event(event_end);
+	}
+
+	if (is_interruption(scribe->orig_ret)) {
+		syscall_set_return_value(scribe->p, regs,
+					 scribe->orig_ret, 0);
+	} else if (scribe->orig_ret != ret_value) {
+		scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_SYSCALL_RET,
+			       .ret = ret_value);
+	}
 }
 
 void scribe_commit_syscall(struct scribe_ps *scribe, struct pt_regs *regs,
 			   long ret_value)
 {
-	struct scribe_event_syscall *event;
-	struct scribe_event_syscall_end *event_end;
-
-	if (is_recording(scribe)) {
-		event = scribe_alloc_event(SCRIBE_EVENT_SYSCALL);
-		if (!event)
-			goto err;
-		event->nr = scribe->nr_syscall;
-		event->ret = ret_value;
-
-		scribe_queue_event_at(&scribe->syscall_ip, event);
-		scribe_commit_insert_point(&scribe->syscall_ip);
-
-		if (scribe_queue_new_event(scribe->queue,
-					   SCRIBE_EVENT_SYSCALL_END))
-			goto err;
-	} else {
-		event_end = scribe_dequeue_event_specific(scribe,
-						  SCRIBE_EVENT_SYSCALL_END);
-		if (!IS_ERR(event_end))
-			scribe_free_event(event_end);
-
-		if (is_interruption(scribe->orig_ret)) {
-			syscall_set_return_value(scribe->p, regs,
-						 scribe->orig_ret, 0);
-		} else if (scribe->orig_ret != ret_value) {
-			scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_SYSCALL_RET,
-				       .ret = ret_value);
-		}
-	}
+	if (is_recording(scribe))
+		scribe_commit_syscall_record(scribe, regs, ret_value);
+	else
+		scribe_commit_syscall_replay(scribe, regs, ret_value);
 	scribe->in_syscall = 0;
-	return;
-err:
-	scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
 }
 
 void scribe_exit_syscall(struct pt_regs *regs)

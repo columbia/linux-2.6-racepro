@@ -616,9 +616,9 @@ static inline int should_scribe_mm(struct scribe_ps *scribe)
 	return scribe->flags & SCRIBE_PS_ENABLE_MM;
 }
 
-static inline int should_scribe_fence_always(struct scribe_ps *scribe)
+static inline int should_scribe_syscall_extra(struct scribe_ps *scribe)
 {
-	return scribe->ctx->flags & SCRIBE_FENCE_ALWAYS;
+	return scribe->ctx->flags & SCRIBE_SYSCALL_EXTRA;
 }
 static inline int should_scribe_sig_cookie(struct scribe_ps *scribe)
 {
@@ -635,6 +635,10 @@ static inline int should_scribe_data_extra(struct scribe_ps *scribe)
 static inline int should_scribe_data_det(struct scribe_ps *scribe)
 {
 	return scribe->ctx->flags & SCRIBE_DATA_DET;
+}
+static inline int should_scribe_fence_always(struct scribe_ps *scribe)
+{
+	return scribe->ctx->flags & SCRIBE_FENCE_ALWAYS;
 }
 static inline int should_scribe_regs(struct scribe_ps *scribe)
 {
