@@ -736,7 +736,8 @@ static bool scribe_signal_enter_sync_point_replay(struct scribe_ps *scribe)
 }
 
 /*
- * When it returns true, new signals have been queues pending signals
+ * When it returns true, new signals have been added to the real pending
+ * signals queue.
  */
 bool scribe_signal_enter_sync_point(void)
 {
@@ -747,7 +748,7 @@ bool scribe_signal_enter_sync_point(void)
 		return false;
 
 	ret = scribe_enter_fenced_region(SCRIBE_REGION_SIGNAL);
-	if (ret && ret != ENODATA) {
+	if (ret) {
 		scribe_emergency_stop(scribe->ctx, ERR_PTR(ret));
 		return false;
 	}
@@ -805,9 +806,16 @@ static void scribe_pre_send_cookie(void)
 {
 	struct scribe_ps *scribe = current->scribe;
 	struct scribe_event_sig_send_cookie *event;
+	int ret;
 
 	if (!is_scribed(scribe) || !should_scribe_sig_cookie(scribe))
 		return;
+
+	ret = scribe_enter_fenced_region(SCRIBE_REGION_SIG_COOKIE);
+	if (ret) {
+		scribe_emergency_stop(scribe->ctx, ERR_PTR(ret));
+		return;
+	}
 
 	if (is_recording(scribe)) {
 		event = scribe_alloc_event(SCRIBE_EVENT_SIG_SEND_COOKIE);
@@ -836,11 +844,14 @@ static void scribe_post_send_cookie(void)
 		event = scribe_peek_event(scribe->queue, SCRIBE_WAIT);
 		if (IS_ERR(event) ||
 		    event->type != SCRIBE_EVENT_SIG_SEND_COOKIE)
-			return;
+			goto out;
 
 		event = scribe_dequeue_event(scribe->queue, SCRIBE_NO_WAIT);
 		scribe_free_event(event);
 	}
+
+out:
+	scribe_leave_fenced_region(SCRIBE_REGION_SIG_COOKIE);
 }
 
 #endif /* CONFIG_SCRIBE */
