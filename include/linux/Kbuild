@@ -385,6 +385,7 @@ unifdef-y += watchdog.h
 unifdef-y += wireless.h
 unifdef-y += xattr.h
 unifdef-y += xfrm.h
+unifdef-y += scribe_defines.h
 unifdef-y += scribe_events.h
 unifdef-y += scribe_api.h
 
