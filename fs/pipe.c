@@ -486,6 +486,9 @@ pipe_write(struct kiocb *iocb, const struct iovec *_iov,
 
 	is_current_scribed = is_ps_scribed(current);
 
+	if (is_current_scribed)
+		scribe_need_syscall_ret(current->scribe);
+
 	can_epipe = 1;
 	if (is_ps_replaying(current)) {
 		can_epipe = 0;

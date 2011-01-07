@@ -30,9 +30,6 @@
 
 /* Events */
 
-#define SCRIBE_REGION_NUM		3
-#define SCRIBE_MAX_PENDING_EVENTS	SCRIBE_REGION_NUM
-
 struct scribe_substream {
 	/*
 	 * For the master substream, @node serves as the list head.
@@ -71,6 +68,11 @@ struct scribe_stream {
 	wait_queue_head_t default_wait;
 	wait_queue_head_t *wait;
 };
+
+#define SCRIBE_REGION_SIGNAL		0
+#define SCRIBE_REGION_SIG_COOKIE	1
+#define SCRIBE_REGION_MEM		2
+#define SCRIBE_REGION_NUM		4
 
 /*
  * scribe_queues are used for the per process queue whereas scribe_streams are
@@ -277,10 +279,6 @@ static inline void scribe_free_event(void *event)
 	kfree(event);
 }
 
-#define SCRIBE_REGION_SIGNAL		0
-#define SCRIBE_REGION_SIG_COOKIE	1
-#define SCRIBE_REGION_MEM		2
-/* The number of region should match SCRIBE_REGION_NUM */
 extern int scribe_enter_fenced_region(int region);
 extern void scribe_leave_fenced_region(int region);
 
@@ -527,6 +525,7 @@ struct scribe_ps {
 	scribe_insert_point_t syscall_ip;
 	int in_syscall;
 	int nr_syscall;
+	bool need_syscall_ret;
 	long orig_ret;
 
 	union scribe_event_data_union prepared_data_event;
@@ -614,6 +613,10 @@ static inline int should_scribe_mm(struct scribe_ps *scribe)
 	return scribe->flags & SCRIBE_PS_ENABLE_MM;
 }
 
+static inline int should_scribe_syscall_ret(struct scribe_ps *scribe)
+{
+	return scribe->ctx->flags & (SCRIBE_SYSCALL_RET | SCRIBE_SYSCALL_EXTRA);
+}
 static inline int should_scribe_syscall_extra(struct scribe_ps *scribe)
 {
 	return scribe->ctx->flags & SCRIBE_SYSCALL_EXTRA;
@@ -699,6 +702,7 @@ extern void scribe_backtrace_add(struct scribe_backtrace *bt,
 extern void scribe_backtrace_dump(struct scribe_backtrace *bt,
 				  struct scribe_stream *stream);
 
+extern int scribe_need_syscall_ret(struct scribe_ps *scribe);
 extern void scribe_enter_syscall(struct pt_regs *regs);
 extern void scribe_commit_syscall(struct scribe_ps *scribe,
 				  struct pt_regs *regs, long ret_value);

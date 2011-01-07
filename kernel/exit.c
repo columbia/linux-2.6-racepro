@@ -899,13 +899,11 @@ static void scribe_do_exit(struct task_struct *p, long code)
 	if (!is_scribed(scribe))
 		goto out;
 
-	if (scribe->in_syscall) {
-		/*
-		 * If we are in a syscall, we need to record the end of the
-		 * syscall properly (it's going to be sys_exit_group()).
-		 */
-		scribe_commit_syscall(scribe, task_pt_regs(p), code);
-	}
+	/*
+	 * If we are in a syscall, we need to record the end of the syscall
+	 * properly (it's going to be sys_exit_group()).
+	 */
+	scribe_commit_syscall(scribe, task_pt_regs(p), code);
 
 	__scribe_detach(scribe);
 

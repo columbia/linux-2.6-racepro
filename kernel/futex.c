@@ -1794,6 +1794,7 @@ static void futex_wait_queue_me(struct futex_hash_bucket *hb, struct futex_q *q,
 	 * If we have been removed from the hash list, then another task
 	 * has tried to wake us, and we can skip the call to schedule().
 	 */
+	scribe_need_syscall_ret(current->scribe);
 	scribe_forbid_uaccess();
 	scribe_enable_sync_sleep();
 	if (likely(!plist_node_empty(&q->list))) {

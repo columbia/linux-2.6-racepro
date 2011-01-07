@@ -896,6 +896,10 @@ void do_sys_times(struct tms *tms)
 
 SYSCALL_DEFINE1(times, struct tms __user *, tbuf)
 {
+#ifdef CONFIG_SCRIBE
+	struct scribe_ps *scribe;
+#endif
+
 	if (tbuf) {
 		struct tms tmp;
 
@@ -906,9 +910,12 @@ SYSCALL_DEFINE1(times, struct tms __user *, tbuf)
 	}
 	force_successful_syscall_return();
 
+
 #ifdef CONFIG_SCRIBE
-	if (is_ps_replaying(current))
-		return current->scribe->orig_ret;
+	scribe = current->scribe;
+	scribe_need_syscall_ret(scribe);
+	if (is_replaying(scribe))
+		return scribe->orig_ret;
 #endif /* CONFIG_SCRIBE */
 
 	return (long) jiffies_64_to_clock_t(get_jiffies_64());

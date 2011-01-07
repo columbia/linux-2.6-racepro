@@ -365,6 +365,8 @@ static ssize_t scribe_do_read(struct file *file, char __user *buf,
 		goto std_read;
 
 	if (is_deterministic(file)) {
+		scribe_need_syscall_ret(scribe);
+
 		if (is_replaying(scribe)) {
 			len = scribe->orig_ret;
 			force_block = 1;

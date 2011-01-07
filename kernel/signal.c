@@ -2726,6 +2726,7 @@ SYSCALL_DEFINE2(kill, pid_t, pid, int, sig)
 	struct siginfo info;
 	int ret;
 
+	scribe_need_syscall_ret(scribe);
 	scribe_pre_send_cookie();
 
 	if (is_replaying(scribe)) {
@@ -2781,7 +2782,9 @@ static int do_tkill(pid_t tgid, pid_t pid, int sig)
 	struct siginfo info;
 	int ret;
 
+	scribe_need_syscall_ret(scribe);
 	scribe_pre_send_cookie();
+
 	if (is_replaying(scribe)) {
 		ret = scribe->orig_ret;
 		goto out;

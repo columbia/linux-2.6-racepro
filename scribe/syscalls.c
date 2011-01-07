@@ -55,7 +55,7 @@ static inline int is_scribe_syscall(int nr)
 	       nr == __NR_set_scribe_flags;
 }
 
-static void scribe_enter_syscall_record(struct scribe_ps *scribe)
+static int scribe_need_syscall_ret_record(struct scribe_ps *scribe)
 {
 	/*
 	 * We'll postpone the insertion of the syscall event for the
@@ -67,9 +67,10 @@ static void scribe_enter_syscall_record(struct scribe_ps *scribe)
 	 * the syscall returns.
 	 */
 	scribe_create_insert_point(&scribe->syscall_ip, &scribe->queue->stream);
+	return 0;
 }
 
-static void scribe_enter_syscall_replay(struct scribe_ps *scribe)
+static int scribe_need_syscall_ret_replay(struct scribe_ps *scribe)
 {
 	union scribe_syscall_event_union event;
 	int syscall_extra = should_scribe_syscall_extra(scribe);
@@ -82,12 +83,11 @@ static void scribe_enter_syscall_replay(struct scribe_ps *scribe)
 				      SCRIBE_EVENT_SYSCALL);
 
 	if (IS_ERR(event.generic))
-		return;
+		return PTR_ERR(event.generic);
 
 	if (syscall_extra) {
 		if (event.extra->nr != scribe->nr_syscall) {
-			scribe_diverge(scribe,
-				       SCRIBE_EVENT_DIVERGE_SYSCALL,
+			scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_SYSCALL,
 				       .nr = scribe->nr_syscall);
 		}
 		scribe->orig_ret = event.extra->ret;
@@ -96,13 +96,35 @@ static void scribe_enter_syscall_replay(struct scribe_ps *scribe)
 
 	scribe_free_event(event.generic);
 
-	if (is_interruption(scribe->orig_ret))
-		set_thread_flag(TIF_SIGPENDING);
-
 	/*
 	 * FIXME Do something about non deterministic errors such as
 	 * -ENOMEM.
 	 */
+	return 0;
+}
+
+static int __scribe_need_syscall_ret(struct scribe_ps *scribe)
+{
+	scribe->need_syscall_ret = true;
+
+	if (is_recording(scribe))
+		return scribe_need_syscall_ret_record(scribe);
+	else
+		return scribe_need_syscall_ret_replay(scribe);
+}
+
+int scribe_need_syscall_ret(struct scribe_ps *scribe)
+{
+	if (!is_scribed(scribe))
+		return 0;
+
+	if (!should_scribe_syscalls(scribe))
+		return 0;
+
+	if (scribe->need_syscall_ret)
+		return 0;
+
+	return __scribe_need_syscall_ret(scribe);
 }
 
 void scribe_enter_syscall(struct pt_regs *regs)
@@ -139,12 +161,10 @@ void scribe_enter_syscall(struct pt_regs *regs)
 	if (!should_scribe_syscalls(scribe))
 		return;
 
-	if (is_recording(scribe))
-		scribe_enter_syscall_record(scribe);
-	else
-		scribe_enter_syscall_replay(scribe);
+	scribe->need_syscall_ret = false;
 
-	scribe->in_syscall = 1;
+	if (should_scribe_syscall_ret(scribe))
+		__scribe_need_syscall_ret(scribe);
 }
 
 static void scribe_commit_syscall_record(struct scribe_ps *scribe,
@@ -194,10 +214,7 @@ static void scribe_commit_syscall_replay(struct scribe_ps *scribe,
 			scribe_free_event(event_end);
 	}
 
-	if (is_interruption(scribe->orig_ret)) {
-		syscall_set_return_value(scribe->p, regs,
-					 scribe->orig_ret, 0);
-	} else if (scribe->orig_ret != ret_value) {
+	if (scribe->orig_ret != ret_value) {
 		scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_SYSCALL_RET,
 			       .ret = ret_value);
 	}
@@ -206,16 +223,19 @@ static void scribe_commit_syscall_replay(struct scribe_ps *scribe,
 void scribe_commit_syscall(struct scribe_ps *scribe, struct pt_regs *regs,
 			   long ret_value)
 {
+	if (!scribe->need_syscall_ret)
+		return;
+
+	scribe->need_syscall_ret = false;
+
 	if (is_recording(scribe))
 		scribe_commit_syscall_record(scribe, regs, ret_value);
 	else
 		scribe_commit_syscall_replay(scribe, regs, ret_value);
-	scribe->in_syscall = 0;
 }
 
 void scribe_exit_syscall(struct pt_regs *regs)
 {
-	long ret_value = 0;
 	struct scribe_ps *scribe = current->scribe;
 
 	if (!is_scribed(scribe))
@@ -224,20 +244,11 @@ void scribe_exit_syscall(struct pt_regs *regs)
 	if (is_scribe_syscall(scribe->nr_syscall))
 		return;
 
-	if (scribe->in_syscall) {
-		ret_value = syscall_get_return_value(current, regs);
-		scribe_commit_syscall(scribe, regs, ret_value);
-	}
+	scribe_commit_syscall(scribe, regs,
+			      syscall_get_return_value(current, regs));
 
 	__scribe_allow_uaccess(scribe);
 	scribe_signal_leave_sync_point();
-
-	/*
-	 * In case we have a fake signal to handle, we want do_signal() to be
-	 * called.
-	 */
-	if (is_interruption(ret_value))
-		set_thread_flag(TIF_SIGPENDING);
 }
 
 SYSCALL_DEFINE0(get_scribe_flags)

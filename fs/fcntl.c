@@ -137,6 +137,7 @@ SYSCALL_DEFINE2(dup2, unsigned int, oldfd, unsigned int, newfd)
 		struct files_struct *files = current->files;
 		int retval = oldfd;
 
+		scribe_need_syscall_ret(scribe);
 		if (is_replaying(scribe))
 			return scribe->orig_ret;
 
