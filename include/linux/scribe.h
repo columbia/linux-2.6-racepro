@@ -629,6 +629,10 @@ static inline int should_scribe_res_extra(struct scribe_ps *scribe)
 {
 	return scribe->ctx->flags & SCRIBE_RES_EXTRA;
 }
+static inline int should_scribe_mem_extra(struct scribe_ps *scribe)
+{
+	return scribe->ctx->flags & SCRIBE_MEM_EXTRA;
+}
 static inline int should_scribe_data_extra(struct scribe_ps *scribe)
 {
 	return scribe->ctx->flags & SCRIBE_DATA_EXTRA;

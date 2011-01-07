@@ -1173,16 +1173,27 @@ static int scribe_make_page_owned_log(struct scribe_ps *scribe,
 #ifdef CONFIG_SCRIBE_MEM_DBG
 	spin_unlock(&page->owners_lock);
 #endif
-	if (write_access)
-		ret = scribe_queue_new_event(scribe->queue,
-					     SCRIBE_EVENT_MEM_OWNED_WRITE,
-					     .address = address & PAGE_MASK,
-					     .serial = serial);
-	else
-		ret = scribe_queue_new_event(scribe->queue,
-					     SCRIBE_EVENT_MEM_OWNED_READ,
-					     .address = address & PAGE_MASK,
-					     .serial = serial);
+	if (should_scribe_mem_extra(scribe)) {
+		if (write_access)
+			ret = scribe_queue_new_event(scribe->queue,
+					SCRIBE_EVENT_MEM_OWNED_WRITE_EXTRA,
+					.address = address & PAGE_MASK,
+					.serial = serial);
+		else
+			ret = scribe_queue_new_event(scribe->queue,
+					SCRIBE_EVENT_MEM_OWNED_READ_EXTRA,
+					.address = address & PAGE_MASK,
+					.serial = serial);
+	} else {
+		if (write_access)
+			ret = scribe_queue_new_event(scribe->queue,
+					SCRIBE_EVENT_MEM_OWNED_WRITE,
+					.serial = serial);
+		else
+			ret = scribe_queue_new_event(scribe->queue,
+					SCRIBE_EVENT_MEM_OWNED_READ,
+					.serial = serial);
+	}
 	if (ret)
 		atomic_dec_return(&page->serial);
 	return ret;
@@ -1797,13 +1808,54 @@ static int serial_match(struct scribe_ps *scribe,
 	return 0;
 }
 
+static int get_owned_event_info(struct scribe_ps *scribe,
+				struct scribe_event *event,
+				int *rw_flag, unsigned long *page_addr,
+				unsigned int *serial)
+{
+	struct scribe_event_mem_owned_read *owned_read_event;
+	struct scribe_event_mem_owned_write *owned_write_event;
+	struct scribe_event_mem_owned_read_extra *owned_read_event_extra;
+	struct scribe_event_mem_owned_write_extra *owned_write_event_extra;
+
+	if (should_scribe_mem_extra(scribe)) {
+		switch (event->type) {
+		case SCRIBE_EVENT_MEM_OWNED_WRITE_EXTRA:
+			owned_write_event_extra = (void *)event;
+			*page_addr = owned_write_event_extra->address;
+			*serial = owned_write_event_extra->serial;
+			*rw_flag = 1;
+			return 0;
+		case SCRIBE_EVENT_MEM_OWNED_READ_EXTRA:
+			owned_read_event_extra = (void *)event;
+			*page_addr = owned_read_event_extra->address;
+			*serial = owned_read_event_extra->serial;
+			*rw_flag = 0;
+			return 0;
+		}
+	} else {
+		switch (event->type) {
+		case SCRIBE_EVENT_MEM_OWNED_WRITE:
+			owned_write_event = (void *)event;
+			*serial = owned_write_event->serial;
+			*rw_flag = 1;
+			return 0;
+		case SCRIBE_EVENT_MEM_OWNED_READ:
+			owned_read_event = (void *)event;
+			*serial = owned_read_event->serial;
+			*rw_flag = 0;
+			return 0;
+		}
+	}
+
+	return -ENODATA;
+}
+
 static int scribe_page_access_replay(struct scribe_ps *scribe,
 		struct mm_struct *mm, struct vm_area_struct *vma,
 		struct scribe_page *page, unsigned long address,
 		int write_access)
 {
-	struct scribe_event_mem_owned_read *owned_read_event;
-	struct scribe_event_mem_owned_write *owned_write_event;
 	struct scribe_event *event;
 	unsigned long page_addr;
 	int rw_flag;
@@ -1828,20 +1880,9 @@ static int scribe_page_access_replay(struct scribe_ps *scribe,
 		return PTR_ERR(event);
 	}
 
-	if (event->type == SCRIBE_EVENT_MEM_OWNED_WRITE ||
-	    event->type == SCRIBE_EVENT_MEM_OWNED_READ) {
-
-		if (event->type == SCRIBE_EVENT_MEM_OWNED_WRITE) {
-			owned_write_event = (void *)event;
-			page_addr = owned_write_event->address;
-			serial = owned_write_event->serial;
-			rw_flag = 1;
-		} else {
-			owned_read_event = (void *)event;
-			page_addr = owned_read_event->address;
-			serial = owned_read_event->serial;
-			rw_flag = 0;
-		}
+	page_addr = address & PAGE_MASK;
+	if (!get_owned_event_info(scribe, event,
+				  &rw_flag, &page_addr, &serial)) {
 		scribe_free_event(event);
 
 		if (unlikely(page_addr != (address & PAGE_MASK) ||
@@ -1864,7 +1905,7 @@ static int scribe_page_access_replay(struct scribe_ps *scribe,
 		spin_unlock(&page->owners_lock);
 		return 0;
 	}
-	
+
 	if (event->type == SCRIBE_EVENT_MEM_ALONE) {
 		scribe_free_event(event);
 
