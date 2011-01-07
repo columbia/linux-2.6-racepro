@@ -30,6 +30,9 @@
 
 /* Events */
 
+#define SCRIBE_REGION_NUM		3
+#define SCRIBE_MAX_PENDING_EVENTS	SCRIBE_REGION_NUM
+
 struct scribe_substream {
 	/*
 	 * For the master substream, @node serves as the list head.
@@ -38,6 +41,10 @@ struct scribe_substream {
 	struct list_head node;
 	struct scribe_stream *stream;
 	struct list_head events;
+
+	unsigned long clear_on_child_commit_set;
+	unsigned long pending_events_set;
+	struct scribe_event **pending_events[SCRIBE_MAX_PENDING_EVENTS];
 };
 
 /*
@@ -86,7 +93,15 @@ struct scribe_queue {
 	struct list_head node;
 	pid_t pid;
 
-	int fence_serial;
+	/*
+	 * No synchronization is done on the fence_* fields,
+	 * only the queue owner accesses them.
+	 */
+
+	unsigned long regions_set;
+	struct scribe_event_fence *fence_events[SCRIBE_REGION_NUM];
+	unsigned int fence_serial;
+
 	loff_t last_event_offset;
 };
 
@@ -264,8 +279,10 @@ static inline void scribe_free_event(void *event)
 	kfree(event);
 }
 
-#define SCRIBE_REGION_SIGNAL	(1 << 0)
-#define SCRIBE_REGION_MEM	(2 << 0)
+#define SCRIBE_REGION_SIGNAL		0
+#define SCRIBE_REGION_SIG_COOKIE	1
+#define SCRIBE_REGION_MEM		2
+/* The number of region should match SCRIBE_REGION_NUM */
 extern int scribe_enter_fenced_region(int region);
 extern void scribe_leave_fenced_region(int region);
 
@@ -598,17 +615,14 @@ static inline int should_scribe_mm(struct scribe_ps *scribe)
 {
 	return scribe->flags & SCRIBE_PS_ENABLE_MM;
 }
-static inline int should_scribe_regs(struct scribe_ps *scribe)
+
+static inline int should_scribe_fence_always(struct scribe_ps *scribe)
 {
-	return scribe->ctx->flags & SCRIBE_REGS;
+	return scribe->ctx->flags & SCRIBE_FENCE_ALWAYS;
 }
 static inline int should_scribe_sig_cookie(struct scribe_ps *scribe)
 {
 	return scribe->ctx->flags & SCRIBE_SIG_COOKIE;
-}
-static inline int should_scribe_data_det(struct scribe_ps *scribe)
-{
-	return scribe->ctx->flags & SCRIBE_DATA_DET;
 }
 static inline int should_scribe_res_extra(struct scribe_ps *scribe)
 {
@@ -617,6 +631,14 @@ static inline int should_scribe_res_extra(struct scribe_ps *scribe)
 static inline int should_scribe_data_extra(struct scribe_ps *scribe)
 {
 	return scribe->ctx->flags & SCRIBE_DATA_EXTRA;
+}
+static inline int should_scribe_data_det(struct scribe_ps *scribe)
+{
+	return scribe->ctx->flags & SCRIBE_DATA_DET;
+}
+static inline int should_scribe_regs(struct scribe_ps *scribe)
+{
+	return scribe->ctx->flags & SCRIBE_REGS;
 }
 
 extern int init_scribe(struct task_struct *p, struct scribe_context *ctx);

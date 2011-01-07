@@ -16,6 +16,8 @@ static void init_substream(struct scribe_stream *stream,
 	substream->stream = stream;
 	INIT_LIST_HEAD(&substream->events);
 	INIT_LIST_HEAD(&substream->node);
+	substream->clear_on_child_commit_set = 0;
+	substream->pending_events_set = 0;
 }
 
 void scribe_init_stream(struct scribe_stream *stream)
@@ -40,8 +42,19 @@ static void init_queue(struct scribe_queue *queue,
 	queue->ctx = ctx;
 	INIT_LIST_HEAD(&queue->node);
 	queue->pid = pid;
+	queue->regions_set = 0;
+	memset(&queue->fence_events, 0, sizeof(queue->fence_events));
 	queue->fence_serial = 0;
 	queue->last_event_offset = -1;
+}
+
+static void exit_queue(struct scribe_queue *queue)
+{
+	int i;
+	scribe_free_all_events(&queue->stream);
+
+	for (i = 0; i < ARRAY_SIZE(queue->fence_events); i++)
+		scribe_free_event(queue->fence_events[i]);
 }
 
 static struct scribe_queue *find_queue(struct scribe_context *ctx, pid_t pid)
@@ -107,7 +120,7 @@ void scribe_put_queue(struct scribe_queue *queue)
 		list_del(&queue->node);
 		spin_unlock(&ctx->queues_lock);
 		wake_up(&queue->ctx->queues_wait);
-		scribe_free_all_events(&queue->stream);
+		exit_queue(queue);
 		kfree(queue);
 	}
 }
@@ -117,7 +130,7 @@ void scribe_put_queue_locked(struct scribe_queue *queue)
 	if (atomic_dec_and_test(&queue->ref_cnt)) {
 		list_del(&queue->node);
 		wake_up(&queue->ctx->queues_wait);
-		scribe_free_all_events(&queue->stream);
+		exit_queue(queue);
 		kfree(queue);
 	}
 }
@@ -161,15 +174,107 @@ void scribe_free_all_events(struct scribe_stream *stream)
 	spin_unlock_irqrestore(&stream->lock, flags);
 }
 
+/*
+ * This is where lies the difference between an insert point and a substream.
+ */
+static struct scribe_substream *get_substream(scribe_insert_point_t *ip)
+{
+	return list_entry(ip->node.next, __typeof__(*ip), node);
+}
+
+static scribe_insert_point_t *get_parent_insert_point(scribe_insert_point_t *ip)
+{
+	return list_entry(ip->node.prev, __typeof__(*ip), node);
+}
+
+
+static void set_pending_event(struct scribe_stream *stream,
+			      scribe_insert_point_t *ip,
+			      int slot, struct scribe_event **event)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&stream->lock, flags);
+	BUG_ON(ip->pending_events_set & (1 << slot));
+	ip->clear_on_child_commit_set &= (1 << slot);
+	ip->pending_events_set |= (1 << slot);
+	ip->pending_events[slot] = event;
+	spin_unlock_irqrestore(&stream->lock, flags);
+}
+
+static void clear_pending_event(struct scribe_stream *stream,
+				scribe_insert_point_t *ip, int slot)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&stream->lock, flags);
+	ip->pending_events_set &= ~(1 << slot);
+	ip->clear_on_child_commit_set |= (1 << slot);
+	spin_unlock_irqrestore(&stream->lock, flags);
+}
+
+static void __transfert_pending_events(scribe_insert_point_t *dst,
+				       scribe_insert_point_t *src)
+{
+	dst->pending_events_set = src->pending_events_set;
+	memcpy(dst->pending_events, src->pending_events,
+	       sizeof(dst->pending_events));
+	src->pending_events_set = 0;
+}
+
+static void __transfert_pending_events_safe(scribe_insert_point_t *dst,
+					    scribe_insert_point_t *src)
+{
+	int slot;
+
+	while (src->pending_events_set) {
+		slot = ffs(src->pending_events_set)-1;
+		src->pending_events_set &= ~(1 << slot);
+		dst->pending_events_set |= (1 << slot);
+		dst->pending_events[slot] = src->pending_events[slot];
+	}
+}
+
+static void __init_ip_pending_events(scribe_insert_point_t *child,
+				     scribe_insert_point_t *parent)
+{
+	child->clear_on_child_commit_set = parent->clear_on_child_commit_set;
+	__transfert_pending_events(child, parent);
+}
+
+static void __commit_ip_pending_events(scribe_insert_point_t *child,
+				       scribe_insert_point_t *parent)
+{
+	child->pending_events_set &= ~parent->clear_on_child_commit_set;
+	__transfert_pending_events_safe(parent, child);
+}
+
+static void __insert_pending_events(scribe_insert_point_t *ip,
+				    struct scribe_substream *substream)
+{
+	struct scribe_event **pevent;
+	int slot;
+
+	while (ip->pending_events_set) {
+		slot = ffs(ip->pending_events_set)-1;
+		ip->pending_events_set &= ~(1 << slot);
+
+		pevent = ip->pending_events[slot];
+		list_add_tail(&(*pevent)->node, &substream->events);
+		*pevent = NULL;
+	}
+}
+
 static void init_insert_point(scribe_insert_point_t *ip,
 			      struct scribe_stream *stream,
 			      struct scribe_substream *where)
 {
 	unsigned long flags;
 
-	ip->stream = stream;
-	INIT_LIST_HEAD(&ip->events);
+	init_substream(stream, ip);
+
 	spin_lock_irqsave(&stream->lock, flags);
+	__init_ip_pending_events(ip, where);
 	list_add(&ip->node, &where->node);
 	spin_unlock_irqrestore(&stream->lock, flags);
 }
@@ -180,32 +285,44 @@ void scribe_create_insert_point(scribe_insert_point_t *ip,
 	init_insert_point(ip, stream, &stream->master);
 }
 
-/*
- * This is where lies the difference between an insert point and a substream.
- */
-static struct scribe_substream *get_tail_substream(scribe_insert_point_t *ip)
+static inline void __scribe_queue_at(struct scribe_stream *stream,
+				     scribe_insert_point_t *ip,
+				     struct scribe_event *event,
+				     struct list_head *events)
 {
-	return list_entry(ip->node.next, __typeof__(*ip), node);
-}
-static struct scribe_substream *get_head_substream(scribe_insert_point_t *ip)
-{
-	return ip;
+	struct scribe_substream *substream = get_substream(ip);
+
+	/*
+	 * When queuing events, we want to put them in the next
+	 * insert point event list because the current insert point is
+	 * blocked by the insert point.
+	 * when the next insert point is committed, those events will be
+	 * merge into the current insert point with
+	 * scribe_commit_insert_point().
+	 */
+	if (likely(event)) {
+		__insert_pending_events(ip, substream);
+		list_add_tail(&event->node, &substream->events);
+	}
+	if (events && !list_empty(events)) {
+		__insert_pending_events(ip, substream);
+		list_splice_tail_init(events, &substream->events);
+	}
+
+	if (substream == &stream->master)
+		wake_up(stream->wait);
 }
 
 void scribe_commit_insert_point(scribe_insert_point_t *ip)
 {
 	struct scribe_stream *stream = ip->stream;
-	struct scribe_substream *substream;
 	unsigned long flags;
 
 	spin_lock_irqsave(&stream->lock, flags);
-	substream = get_tail_substream(ip);
-	list_splice_tail(&ip->events, &substream->events);
+	__scribe_queue_at(stream, ip, NULL, &ip->events);
+	__commit_ip_pending_events(ip, get_parent_insert_point(ip));
 	list_del(&ip->node);
 	spin_unlock_irqrestore(&stream->lock, flags);
-
-	if (substream == &stream->master)
-		wake_up(stream->wait);
 }
 
 static void commit_pending_insert_points(struct scribe_stream *stream)
@@ -216,43 +333,26 @@ static void commit_pending_insert_points(struct scribe_stream *stream)
 		scribe_commit_insert_point(ip);
 }
 
-static inline void __scribe_queue_events_at(struct scribe_stream *stream,
-					    scribe_insert_point_t *ip,
-					    struct scribe_event *event,
-					    struct list_head *events)
+static inline void scribe_queue_at(struct scribe_stream *stream,
+				   scribe_insert_point_t *ip,
+				   struct scribe_event *event,
+				   struct list_head *events)
 {
-	struct scribe_substream *substream;
 	unsigned long flags;
 
 	spin_lock_irqsave(&stream->lock, flags);
-	substream = get_tail_substream(ip);
-
-	/*
-	 * When queuing events, we want to put them in the next
-	 * insert point event list because the current insert point is
-	 * blocked by the insert point.
-	 * when the next insert point is committed, those events will be
-	 * merge into the current insert point with
-	 * scribe_commit_insert_point().
-	 */
-	if (likely(event))
-		list_add_tail(&event->node, &substream->events);
-	if (events)
-		list_splice_tail_init(events, &substream->events);
+	__scribe_queue_at(stream, ip, event, events);
 	spin_unlock_irqrestore(&stream->lock, flags);
-
-	if (substream == &stream->master)
-		wake_up(stream->wait);
 }
 
 void scribe_queue_event_at(scribe_insert_point_t *ip, void *event)
 {
-	__scribe_queue_events_at(ip->stream, ip, event, NULL);
+	scribe_queue_at(ip->stream, ip, event, NULL);
 }
 
 void scribe_queue_event_stream(struct scribe_stream *stream, void *event)
 {
-	__scribe_queue_events_at(stream, &stream->master, event, NULL);
+	scribe_queue_at(stream, &stream->master, event, NULL);
 }
 
 void scribe_queue_event(struct scribe_queue *queue, void *event)
@@ -263,7 +363,7 @@ void scribe_queue_event(struct scribe_queue *queue, void *event)
 void scribe_queue_events_stream(struct scribe_stream *stream,
 				struct list_head *events)
 {
-	__scribe_queue_events_at(stream, &stream->master, NULL, events);
+	scribe_queue_at(stream, &stream->master, NULL, events);
 }
 
 static struct scribe_event *__scribe_peek_event(struct scribe_stream *stream,
@@ -287,7 +387,11 @@ retry:
 		       stream->sealed);
 
 	spin_lock_irqsave(&stream->lock, flags);
-	substream = get_head_substream(ip);
+	/*
+	 * We are not using get_substream() because we are reaching events on
+	 * the head of the stream.
+	 */
+	substream = ip;
 	if (list_empty(&substream->events)) {
 		spin_unlock_irqrestore(&stream->lock, flags);
 		/*
@@ -389,22 +493,26 @@ void *__scribe_alloc_event(int type, gfp_t flags)
 	return __scribe_alloc_event_const(type, flags);
 }
 
-int scribe_enter_fenced_region(int region)
+static int realloc_fence_event(struct scribe_queue *queue, int region,
+			       unsigned int serial)
 {
-	struct scribe_ps *scribe = current->scribe;
+	struct scribe_event_fence **pfence_event;
+
+	pfence_event = &queue->fence_events[region];
+	if (!*pfence_event) {
+		*pfence_event = scribe_alloc_event(SCRIBE_EVENT_FENCE);
+		if (!*pfence_event)
+			return -ENOMEM;
+	}
+	(*pfence_event)->serial = serial;
+	return 0;
+}
+
+static int scribe_enter_fenced_region_always(struct scribe_ps *scribe,
+					     int region, unsigned int serial)
+{
 	struct scribe_event_fence *event;
-	int serial;
 	int ret;
-
-	if (!is_scribed(scribe))
-		return 0;
-
-	/*
-	 * TODO This is a trivial and very inefficient implementation of fences.
-	 * We record a serial number just for extra safety while we're at it.
-	 */
-
-	serial = scribe->queue->fence_serial++;
 
 	if (is_recording(scribe)) {
 		return scribe_queue_new_event(scribe->queue, SCRIBE_EVENT_FENCE,
@@ -426,6 +534,72 @@ int scribe_enter_fenced_region(int region)
 	return ret;
 }
 
+int scribe_enter_fenced_region(int region)
+{
+	struct scribe_ps *scribe = current->scribe;
+	struct scribe_event *event;
+	struct scribe_event_fence *fence_event;
+	struct scribe_event_fence **pfence_event;
+	struct scribe_queue *queue;
+	unsigned int serial;
+
+	if (!is_scribed(scribe))
+		return 0;
+
+	WARN_ON(scribe->queue->regions_set & (1 << region));
+	scribe->queue->regions_set |= (1 << region);
+
+	serial = scribe->queue->fence_serial++;
+
+	if (should_scribe_fence_always(scribe)) {
+		return scribe_enter_fenced_region_always(scribe,
+							 region, serial);
+	}
+
+	queue = scribe->queue;
+
+	if (is_recording(scribe)) {
+		if (realloc_fence_event(queue, region, serial))
+			return -ENOMEM;
+
+		pfence_event = &queue->fence_events[region];
+		set_pending_event(&queue->stream, &queue->stream.master, region,
+				  (struct scribe_event **)pfence_event);
+		return 0;
+	}
+
+	/* is_replaying() == true */
+	event = scribe_peek_event(scribe->queue, SCRIBE_WAIT);
+	if (IS_ERR(event) || event->type != SCRIBE_EVENT_FENCE)
+		return 0;
+
+	fence_event = (struct scribe_event_fence *)event;
+	if (fence_event->serial == serial) {
+		/* That's the right fence event, dequeuing it */
+		event = scribe_dequeue_event(queue, SCRIBE_NO_WAIT);
+		scribe_free_event(event);
+	}
+
+	return 0;
+}
+
 void scribe_leave_fenced_region(int region)
 {
+	struct scribe_ps *scribe = current->scribe;
+	struct scribe_queue *queue;
+
+	if (!is_scribed(scribe))
+		return;
+
+	WARN_ON(scribe->queue->regions_set & ~(1 << region));
+	scribe->queue->regions_set &= ~(1 << region);
+
+	if (should_scribe_fence_always(scribe))
+		return;
+
+	queue = scribe->queue;
+	if (is_recording(scribe)) {
+		clear_pending_event(&queue->stream, &queue->stream.master,
+				    region);
+	}
 }
