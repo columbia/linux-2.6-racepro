@@ -784,7 +784,7 @@ void scribe_signal_leave_sync_point(void)
 
 	if (!is_scribed(scribe) || !should_scribe_signals(scribe))
 		return;
-	
+
 	if (is_recording(scribe))
 		scribe_signal_leave_sync_point_record(scribe);
 }

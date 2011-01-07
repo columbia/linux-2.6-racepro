@@ -25,9 +25,8 @@ static int scribe_regs(struct scribe_ps *scribe, struct pt_regs *regs)
 	int ret;
 
 	if (is_recording(scribe)) {
-		if (scribe_queue_new_event(scribe->queue,
-				       SCRIBE_EVENT_REGS,
-				       .regs = *regs)) {
+		if (scribe_queue_new_event(scribe->queue, SCRIBE_EVENT_REGS,
+					   .regs = *regs)) {
 			scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
 			return -ENOMEM;
 		}
@@ -78,7 +77,7 @@ static void scribe_enter_syscall_replay(struct scribe_ps *scribe)
 	if (syscall_extra)
 		event.extra = scribe_dequeue_event_specific(scribe,
 				      SCRIBE_EVENT_SYSCALL_EXTRA);
-	else 
+	else
 		event.regular = scribe_dequeue_event_specific(scribe,
 				      SCRIBE_EVENT_SYSCALL);
 
@@ -140,9 +139,9 @@ void scribe_enter_syscall(struct pt_regs *regs)
 	if (!should_scribe_syscalls(scribe))
 		return;
 
-	if (is_recording(scribe)) {
+	if (is_recording(scribe))
 		scribe_enter_syscall_record(scribe);
-	} else
+	else
 		scribe_enter_syscall_replay(scribe);
 
 	scribe->in_syscall = 1;
