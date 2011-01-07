@@ -16,8 +16,8 @@ static void init_substream(struct scribe_stream *stream,
 	substream->stream = stream;
 	INIT_LIST_HEAD(&substream->events);
 	INIT_LIST_HEAD(&substream->node);
-	substream->clear_on_child_commit_set = 0;
-	substream->pending_events_set = 0;
+	substream->clear_region_on_commit_set = 0;
+	substream->region_set = 0;
 }
 
 void scribe_init_stream(struct scribe_stream *stream)
@@ -182,86 +182,69 @@ static struct scribe_substream *get_substream(scribe_insert_point_t *ip)
 	return list_entry(ip->node.next, __typeof__(*ip), node);
 }
 
-static scribe_insert_point_t *get_parent_insert_point(scribe_insert_point_t *ip)
+static void set_region(struct scribe_stream *stream,
+		       scribe_insert_point_t *ip, int region)
 {
-	return list_entry(ip->node.prev, __typeof__(*ip), node);
-}
-
-
-static void set_pending_event(struct scribe_stream *stream,
-			      scribe_insert_point_t *ip,
-			      int slot, struct scribe_event **event)
-{
+	struct scribe_substream *substream;
 	unsigned long flags;
 
 	spin_lock_irqsave(&stream->lock, flags);
-	BUG_ON(ip->pending_events_set & (1 << slot));
-	ip->clear_on_child_commit_set &= (1 << slot);
-	ip->pending_events_set |= (1 << slot);
-	ip->pending_events[slot] = event;
+	substream = get_substream(ip);
+	if (substream != ip)
+		substream->clear_region_on_commit_set &= ~(1 << region);
+	BUG_ON(substream->region_set & (1 << region));
+	substream->region_set |= (1 << region);
 	spin_unlock_irqrestore(&stream->lock, flags);
 }
 
-static void clear_pending_event(struct scribe_stream *stream,
-				scribe_insert_point_t *ip, int slot)
+static void clear_region(struct scribe_stream *stream,
+			 scribe_insert_point_t *ip, int region)
 {
+	struct scribe_substream *substream;
 	unsigned long flags;
 
 	spin_lock_irqsave(&stream->lock, flags);
-	ip->pending_events_set &= ~(1 << slot);
-	ip->clear_on_child_commit_set |= (1 << slot);
+	substream = get_substream(ip);
+	if (ip == substream)
+		substream->region_set &= ~(1 << region);
+	else
+		substream->clear_region_on_commit_set |= (1 << region);
 	spin_unlock_irqrestore(&stream->lock, flags);
 }
 
-static void __transfert_pending_events(scribe_insert_point_t *dst,
-				       scribe_insert_point_t *src)
+static void __clear_regions_on_commit(scribe_insert_point_t *ip,
+				      struct scribe_substream *substream)
 {
-	dst->pending_events_set = src->pending_events_set;
-	memcpy(dst->pending_events, src->pending_events,
-	       sizeof(dst->pending_events));
-	src->pending_events_set = 0;
+	substream->region_set &= ~ip->clear_region_on_commit_set;
 }
 
-static void __transfert_pending_events_safe(scribe_insert_point_t *dst,
-					    scribe_insert_point_t *src)
+static void __insert_fences(struct scribe_stream *stream,
+			    struct scribe_substream *substream)
 {
-	int slot;
+	struct scribe_queue *queue;
+	int num_regions;
+	int region;
 
-	while (src->pending_events_set) {
-		slot = ffs(src->pending_events_set)-1;
-		src->pending_events_set &= ~(1 << slot);
-		dst->pending_events_set |= (1 << slot);
-		dst->pending_events[slot] = src->pending_events[slot];
+	if (!substream->region_set)
+		return;
+
+	num_regions = 0;
+	queue = container_of(stream, struct scribe_queue, stream);
+
+	while (substream->region_set) {
+		region = ffs(substream->region_set)-1;
+		substream->region_set &= ~(1 << region);
+
+		list_add_tail(&queue->fence_events[region]->h.node,
+			      &substream->events);
+		queue->fence_events[region] = NULL;
+		num_regions++;
 	}
-}
 
-static void __init_ip_pending_events(scribe_insert_point_t *child,
-				     scribe_insert_point_t *parent)
-{
-	child->clear_on_child_commit_set = parent->clear_on_child_commit_set;
-	__transfert_pending_events(child, parent);
-}
-
-static void __commit_ip_pending_events(scribe_insert_point_t *child,
-				       scribe_insert_point_t *parent)
-{
-	child->pending_events_set &= ~parent->clear_on_child_commit_set;
-	__transfert_pending_events_safe(parent, child);
-}
-
-static void __insert_pending_events(scribe_insert_point_t *ip,
-				    struct scribe_substream *substream)
-{
-	struct scribe_event **pevent;
-	int slot;
-
-	while (ip->pending_events_set) {
-		slot = ffs(ip->pending_events_set)-1;
-		ip->pending_events_set &= ~(1 << slot);
-
-		pevent = ip->pending_events[slot];
-		list_add_tail(&(*pevent)->node, &substream->events);
-		*pevent = NULL;
+	if (num_regions > 1) {
+		/* We don't want to get a performance hit on sorting */
+		WARN(1, "Need to sort the events by serial number\n");
+		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOSYS));
 	}
 }
 
@@ -274,7 +257,6 @@ static void init_insert_point(scribe_insert_point_t *ip,
 	init_substream(stream, ip);
 
 	spin_lock_irqsave(&stream->lock, flags);
-	__init_ip_pending_events(ip, where);
 	list_add(&ip->node, &where->node);
 	spin_unlock_irqrestore(&stream->lock, flags);
 }
@@ -301,11 +283,11 @@ static inline void __scribe_queue_at(struct scribe_stream *stream,
 	 * scribe_commit_insert_point().
 	 */
 	if (likely(event)) {
-		__insert_pending_events(ip, substream);
+		__insert_fences(stream, substream);
 		list_add_tail(&event->node, &substream->events);
 	}
-	if (events && !list_empty(events)) {
-		__insert_pending_events(ip, substream);
+	if (likely(events) && !list_empty(events)) {
+		__insert_fences(stream, substream);
 		list_splice_tail_init(events, &substream->events);
 	}
 
@@ -319,8 +301,8 @@ void scribe_commit_insert_point(scribe_insert_point_t *ip)
 	unsigned long flags;
 
 	spin_lock_irqsave(&stream->lock, flags);
+	__clear_regions_on_commit(ip, get_substream(ip));
 	__scribe_queue_at(stream, ip, NULL, &ip->events);
-	__commit_ip_pending_events(ip, get_parent_insert_point(ip));
 	list_del(&ip->node);
 	spin_unlock_irqrestore(&stream->lock, flags);
 }
@@ -539,7 +521,6 @@ int scribe_enter_fenced_region(int region)
 	struct scribe_ps *scribe = current->scribe;
 	struct scribe_event *event;
 	struct scribe_event_fence *fence_event;
-	struct scribe_event_fence **pfence_event;
 	struct scribe_queue *queue;
 	unsigned int serial;
 
@@ -562,9 +543,7 @@ int scribe_enter_fenced_region(int region)
 		if (realloc_fence_event(queue, region, serial))
 			return -ENOMEM;
 
-		pfence_event = &queue->fence_events[region];
-		set_pending_event(&queue->stream, &queue->stream.master, region,
-				  (struct scribe_event **)pfence_event);
+		set_region(&queue->stream, &queue->stream.master, region);
 		return 0;
 	}
 
@@ -599,7 +578,7 @@ void scribe_leave_fenced_region(int region)
 
 	queue = scribe->queue;
 	if (is_recording(scribe)) {
-		clear_pending_event(&queue->stream, &queue->stream.master,
+		clear_region(&queue->stream, &queue->stream.master,
 				    region);
 	}
 }

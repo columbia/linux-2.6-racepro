@@ -42,9 +42,8 @@ struct scribe_substream {
 	struct scribe_stream *stream;
 	struct list_head events;
 
-	unsigned long clear_on_child_commit_set;
-	unsigned long pending_events_set;
-	struct scribe_event **pending_events[SCRIBE_MAX_PENDING_EVENTS];
+	unsigned long clear_region_on_commit_set;
+	unsigned long region_set;
 };
 
 /*
@@ -97,7 +96,6 @@ struct scribe_queue {
 	 * No synchronization is done on the fence_* fields,
 	 * only the queue owner accesses them.
 	 */
-
 	unsigned long regions_set;
 	struct scribe_event_fence *fence_events[SCRIBE_REGION_NUM];
 	unsigned int fence_serial;

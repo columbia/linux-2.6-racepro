@@ -2368,9 +2368,10 @@ relock:
 		}
 
 		spin_unlock_irq(&sighand->siglock);
+
+		scribe_forbid_uaccess();
 		while (scribe_signal_enter_sync_point())
 			{}
-		scribe_forbid_uaccess();
 		/*
 		 * Anything else is fatal, maybe with a core dump.
 		 */
@@ -2397,6 +2398,7 @@ relock:
 		/* NOTREACHED */
 	}
 	spin_unlock_irq(&sighand->siglock);
+
 	/* That's a hint for all the do_signal() user accesses */
 	scribe_data_det();
 	return signr;
