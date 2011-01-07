@@ -687,7 +687,6 @@ static bool put_back_lock_region(struct scribe_resource_cache *cache,
 	return true;
 }
 
-
 static void __lock_object(struct scribe_ps *scribe, void *object,
 			  struct scribe_resource *res, int flags)
 {
@@ -742,6 +741,22 @@ static inline struct inode *file_inode(struct file *file)
 	return file->f_path.dentry->d_inode;
 }
 
+static inline bool can_skip_files_struct_sync(struct files_struct *files)
+{
+	/*
+	 * We can skip the synchronization on the files_struct and also on the
+	 * file pointer only when we have a single owner on the files_struct.
+	 * It wouldn't be as trivial to do it for inodes since the number of
+	 * users on an inode can change anywhere.
+	 */
+	return atomic_read(&files->count) <= 1;
+}
+
+static inline bool can_skip_file_sync(struct file *file)
+{
+	return atomic_read(&file->scribe_ref_cnt) <= 1;
+}
+
 void scribe_unlock_err(void *object, int err)
 {
 	struct scribe_ps *scribe = current->scribe;
@@ -752,7 +767,8 @@ void scribe_unlock_err(void *object, int err)
 		return;
 
 	lock_region = get_lock_region(&scribe->res_cache, object);
-	BUG_ON(!lock_region);
+	if (!lock_region)
+		return;
 
 	if (lock_region->flags & (SCRIBE_INODE_READ | SCRIBE_INODE_WRITE)) {
 		file = object;
@@ -980,6 +996,7 @@ static void __lock_file(struct file *file, int flags)
 {
 	struct scribe_ps *scribe = current->scribe;
 	struct inode *inode;
+	void *inode_lock_obj;
 
 	if (!should_handle_resources(scribe))
 		return;
@@ -988,7 +1005,12 @@ static void __lock_file(struct file *file, int flags)
 	if (inode_need_explicit_locking(inode))
 		flags &= ~(SCRIBE_INODE_READ | SCRIBE_INODE_WRITE);
 
-	__lock_object(scribe, file, &file->scribe_resource, flags);
+	if (!can_skip_file_sync(file)) {
+		__lock_object(scribe, file, &file->scribe_resource, flags);
+		inode_lock_obj = inode;
+	} else
+		inode_lock_obj = file;
+
 
 	if (flags & SCRIBE_INODE_READ)
 		flags = SCRIBE_READ;
@@ -997,7 +1019,13 @@ static void __lock_file(struct file *file, int flags)
 	else
 		return;
 
-	__lock_object_handle(scribe, inode, &inode->i_scribe_resource, flags);
+	/*
+	 * We may associate the inode_lock_obj with the file, because this is
+	 * what gets passed to the scribe_unlock() function.
+	 * This is how the inode will get unlocked.
+	 */
+	__lock_object_handle(scribe, inode_lock_obj,
+			     &inode->i_scribe_resource, flags);
 }
 
 void scribe_lock_file_no_inode(struct file *file)
@@ -1226,11 +1254,15 @@ void scribe_close_files(struct files_struct *files)
 
 void scribe_lock_files_read(struct files_struct *files)
 {
+	if (can_skip_files_struct_sync(files))
+		return;
 	scribe_lock_object_handle(files, &files->scribe_resource, SCRIBE_READ);
 }
 
 void scribe_lock_files_write(struct files_struct *files)
 {
+	if (can_skip_files_struct_sync(files))
+		return;
 	scribe_lock_object_handle(files, &files->scribe_resource, SCRIBE_WRITE);
 }
 
