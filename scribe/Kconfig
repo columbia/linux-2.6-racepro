@@ -6,6 +6,7 @@ menuconfig SCRIBE
 	bool "Scribe record/replay support"
 	depends on EXPERIMENTAL
 	select PID_NS
+	select IPC_NS
 	select MM_OWNER
 	default y
 

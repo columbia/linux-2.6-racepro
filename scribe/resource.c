@@ -13,6 +13,7 @@
 #include <linux/fs.h>
 #include <linux/fdtable.h>
 #include <linux/sched.h>
+#include <linux/ipc_namespace.h>
 
 /*
  * A few notes:
@@ -1285,4 +1286,15 @@ void scribe_lock_task_read(struct task_struct *task)
 void scribe_lock_task_write(struct task_struct *task)
 {
 	lock_task(task, SCRIBE_WRITE);
+}
+
+void scribe_lock_ipc(struct ipc_namespace *ns)
+{
+	struct scribe_ps *scribe = current->scribe;
+
+	if (!should_handle_resources(scribe))
+		return;
+
+	/* For now all IPC things are synchronized on the same resource */
+	__lock_object(scribe, ns, &ns->scribe_resource, SCRIBE_WRITE);
 }

@@ -5,6 +5,7 @@
 #include <linux/idr.h>
 #include <linux/rwsem.h>
 #include <linux/notifier.h>
+#include <linux/scribe_resource.h>
 
 /*
  * ipc namespace events
@@ -56,6 +57,14 @@ struct ipc_namespace {
 	unsigned int    mq_msg_max;      /* initialized to DFLT_MSGMAX */
 	unsigned int    mq_msgsize_max;  /* initialized to DFLT_MSGSIZEMAX */
 
+#ifdef CONFIG_SCRIBE
+	/*
+	 * We dont need a scribe_resource_container because we won't need
+	 * multiple resources since we have one ipc namespace per scribe
+	 * context.
+	 */
+	struct scribe_resource scribe_resource;
+#endif
 };
 
 extern struct ipc_namespace init_ipc_ns;

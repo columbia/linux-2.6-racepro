@@ -86,6 +86,7 @@
 #include <linux/rwsem.h>
 #include <linux/nsproxy.h>
 #include <linux/ipc_namespace.h>
+#include <linux/scribe.h>
 
 #include <asm/uaccess.h>
 #include "util.h"
@@ -326,6 +327,7 @@ SYSCALL_DEFINE3(semget, key_t, key, int, nsems, int, semflg)
 
 	ns = current->nsproxy->ipc_ns;
 
+	/* FIXME reading ns->sc_semmsl needs the scribe resource lock */
 	if (nsems < 0 || nsems > ns->sc_semmsl)
 		return -EINVAL;
 
@@ -1083,8 +1085,17 @@ SYSCALL_DEFINE(semctl)(int semid, int semnum, int cmd, union semun arg)
 	if (semid < 0)
 		return -EINVAL;
 
+	if (scribe_resource_prepare()) {
+		/* Userspace may not expect ENOMEM */
+		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		return -ENOMEM;
+	}
+
 	version = ipc_parse_version(&cmd);
 	ns = current->nsproxy->ipc_ns;
+
+	/* FIXME Avoid a global lock for the whole IPC mechanism */
+	scribe_lock_ipc(ns);
 
 	switch(cmd) {
 	case IPC_INFO:
@@ -1092,7 +1103,7 @@ SYSCALL_DEFINE(semctl)(int semid, int semnum, int cmd, union semun arg)
 	case IPC_STAT:
 	case SEM_STAT:
 		err = semctl_nolock(ns, semid, cmd, version, arg);
-		return err;
+		break;
 	case GETALL:
 	case GETVAL:
 	case GETPID:
@@ -1101,14 +1112,16 @@ SYSCALL_DEFINE(semctl)(int semid, int semnum, int cmd, union semun arg)
 	case SETVAL:
 	case SETALL:
 		err = semctl_main(ns,semid,semnum,cmd,version,arg);
-		return err;
+		break;
 	case IPC_RMID:
 	case IPC_SET:
 		err = semctl_down(ns, semid, cmd, version, arg);
-		return err;
-	default:
-		return -EINVAL;
+		break;
 	}
+
+	scribe_unlock(ns);
+
+	return err;
 }
 #ifdef CONFIG_HAVE_SYSCALL_WRAPPERS
 asmlinkage long SyS_semctl(int semid, int semnum, int cmd, union semun arg)
@@ -1282,9 +1295,9 @@ static int get_queue_result(struct sem_queue *q)
 	return error;
 }
 
-
-SYSCALL_DEFINE4(semtimedop, int, semid, struct sembuf __user *, tsops,
-		unsigned, nsops, const struct timespec __user *, timeout)
+static int do_semtimedop(struct ipc_namespace *ns, int semid,
+			struct sembuf __user * tsops, unsigned nsops,
+			const struct timespec __user * timeout)
 {
 	int error = -EINVAL;
 	struct sem_array *sma;
@@ -1294,10 +1307,7 @@ SYSCALL_DEFINE4(semtimedop, int, semid, struct sembuf __user *, tsops,
 	int undos = 0, alter = 0, max;
 	struct sem_queue queue;
 	unsigned long jiffies_left = 0;
-	struct ipc_namespace *ns;
 	struct list_head tasks;
-
-	ns = current->nsproxy->ipc_ns;
 
 	if (nsops < 1 || semid < 0)
 		return -EINVAL;
@@ -1482,6 +1492,27 @@ out_free:
 	if(sops != fast_sops)
 		kfree(sops);
 	return error;
+}
+
+SYSCALL_DEFINE4(semtimedop, int, semid, struct sembuf __user *, tsops,
+		unsigned, nsops, const struct timespec __user *, timeout)
+{
+	struct ipc_namespace *ns;
+	int ret;
+
+	if (scribe_resource_prepare()) {
+		/* Userspace may not expect ENOMEM */
+		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		return -ENOMEM;
+	}
+
+	ns = current->nsproxy->ipc_ns;
+
+	scribe_lock_ipc(ns);
+	ret = do_semtimedop(ns, semid, tsops, nsops, timeout);
+	scribe_unlock(ns);
+
+	return ret;
 }
 
 SYSCALL_DEFINE3(semop, int, semid, struct sembuf __user *, tsops,

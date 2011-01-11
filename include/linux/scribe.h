@@ -461,6 +461,9 @@ extern void scribe_lock_files_write(struct files_struct *files);
 extern void scribe_lock_task_read(struct task_struct *task);
 extern void scribe_lock_task_write(struct task_struct *task);
 
+struct ipc_namespace;
+extern void scribe_lock_ipc(struct ipc_namespace *ns);
+
 extern void scribe_unlock(void *object);
 extern void scribe_unlock_discard(void *object);
 extern void scribe_unlock_err(void *object, int err);

@@ -39,6 +39,7 @@
 #include <linux/nsproxy.h>
 #include <linux/mount.h>
 #include <linux/ipc_namespace.h>
+#include <linux/scribe.h>
 
 #include <asm/uaccess.h>
 
@@ -638,13 +639,20 @@ SYSCALL_DEFINE3(shmctl, int, shmid, int, cmd, struct shmid_ds __user *, buf)
 	int err, version;
 	struct ipc_namespace *ns;
 
-	if (cmd < 0 || shmid < 0) {
-		err = -EINVAL;
-		goto out;
+	if (cmd < 0 || shmid < 0)
+		return -EINVAL;
+
+	if (scribe_resource_prepare()) {
+		/* Userspace may not expect ENOMEM */
+		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		return -ENOMEM;
 	}
 
 	version = ipc_parse_version(&cmd);
 	ns = current->nsproxy->ipc_ns;
+
+	/* FIXME Avoid a global lock for the whole IPC mechanism */
+	scribe_lock_ipc(ns);
 
 	switch (cmd) { /* replace with proc interface ? */
 	case IPC_INFO:
@@ -653,7 +661,7 @@ SYSCALL_DEFINE3(shmctl, int, shmid, int, cmd, struct shmid_ds __user *, buf)
 
 		err = security_shm_shmctl(NULL, cmd);
 		if (err)
-			return err;
+			goto out;
 
 		memset(&shminfo, 0, sizeof(shminfo));
 		shminfo.shmmni = shminfo.shmseg = ns->shm_ctlmni;
@@ -661,8 +669,9 @@ SYSCALL_DEFINE3(shmctl, int, shmid, int, cmd, struct shmid_ds __user *, buf)
 		shminfo.shmall = ns->shm_ctlall;
 
 		shminfo.shmmin = SHMMIN;
+		err = -EFAULT;
 		if(copy_shminfo_to_user (buf, &shminfo, version))
-			return -EFAULT;
+			goto out;
 
 		down_read(&shm_ids(ns).rw_mutex);
 		err = ipc_get_maxid(&shm_ids(ns));
@@ -678,7 +687,7 @@ SYSCALL_DEFINE3(shmctl, int, shmid, int, cmd, struct shmid_ds __user *, buf)
 
 		err = security_shm_shmctl(NULL, cmd);
 		if (err)
-			return err;
+			goto out;
 
 		memset(&shm_info, 0, sizeof(shm_info));
 		down_read(&shm_ids(ns).rw_mutex);
@@ -789,14 +798,16 @@ SYSCALL_DEFINE3(shmctl, int, shmid, int, cmd, struct shmid_ds __user *, buf)
 	case IPC_RMID:
 	case IPC_SET:
 		err = shmctl_down(ns, shmid, cmd, buf, version);
-		return err;
+		goto out;
 	default:
-		return -EINVAL;
+		err = -EINVAL;
+		goto out;
 	}
 
 out_unlock:
 	shm_unlock(shp);
 out:
+	scribe_unlock(ns);
 	return err;
 }
 
@@ -954,10 +965,17 @@ out_put_dentry:
 
 SYSCALL_DEFINE3(shmat, int, shmid, char __user *, shmaddr, int, shmflg)
 {
+	struct ipc_namespace *ns;
 	unsigned long ret;
 	long err;
 
+	if (scribe_resource_prepare())
+		return -ENOMEM;
+
+	ns = current->nsproxy->ipc_ns;
+	scribe_lock_ipc(ns);
 	err = do_shmat(shmid, shmaddr, shmflg, &ret);
+	scribe_unlock(ns);
 	if (err)
 		return err;
 	force_successful_syscall_return();
@@ -968,7 +986,7 @@ SYSCALL_DEFINE3(shmat, int, shmid, char __user *, shmaddr, int, shmflg)
  * detach and kill segment if marked destroyed.
  * The work is done in shm_close.
  */
-SYSCALL_DEFINE1(shmdt, char __user *, shmaddr)
+static int do_shmdt(char __user * shmaddr)
 {
 	struct mm_struct *mm = current->mm;
 	struct vm_area_struct *vma;
@@ -1065,6 +1083,27 @@ SYSCALL_DEFINE1(shmdt, char __user *, shmaddr)
 	up_write(&mm->mmap_sem);
 	return retval;
 }
+
+SYSCALL_DEFINE1(shmdt, char __user *, shmaddr)
+{
+	struct ipc_namespace *ns;
+	int ret;
+
+	if (scribe_resource_prepare()) {
+		/* Userspace may not expect ENOMEM */
+		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		return -ENOMEM;
+	}
+
+	ns = current->nsproxy->ipc_ns;
+
+	scribe_lock_ipc(ns);
+	ret = do_shmdt(shmaddr);
+	scribe_unlock(ns);
+
+	return ret;
+}
+
 
 #ifdef CONFIG_PROC_FS
 static int sysvipc_shm_proc_show(struct seq_file *s, void *it)

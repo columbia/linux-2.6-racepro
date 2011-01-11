@@ -61,6 +61,7 @@ extern void scribe_init_resource_container(
 #define SCRIBE_RES_TYPE_FILES_STRUCT	3
 #define SCRIBE_RES_TYPE_TASK		4
 #define SCRIBE_RES_TYPE_FUTEX		5
+#define SCRIBE_RES_TYPE_IPC		6
 #define SCRIBE_RES_TYPE_SPINLOCK	0x40
 #define SCRIBE_RES_TYPE_REGISTRATION	0x80
 

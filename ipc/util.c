@@ -35,6 +35,7 @@
 #include <linux/rwsem.h>
 #include <linux/memory.h>
 #include <linux/ipc_namespace.h>
+#include <linux/scribe.h>
 
 #include <asm/unistd.h>
 
@@ -744,10 +745,19 @@ struct kern_ipc_perm *ipc_lock_check(struct ipc_ids *ids, int id)
 int ipcget(struct ipc_namespace *ns, struct ipc_ids *ids,
 			struct ipc_ops *ops, struct ipc_params *params)
 {
+	int ret;
+
+	if (scribe_resource_prepare())
+		return -ENOMEM;
+
+	scribe_lock_ipc(ns);
 	if (params->key == IPC_PRIVATE)
-		return ipcget_new(ns, ids, ops, params);
+		ret = ipcget_new(ns, ids, ops, params);
 	else
-		return ipcget_public(ns, ids, ops, params);
+		ret = ipcget_public(ns, ids, ops, params);
+	scribe_unlock(ns);
+
+	return ret;
 }
 
 /**

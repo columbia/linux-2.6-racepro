@@ -37,6 +37,7 @@
 #include <linux/rwsem.h>
 #include <linux/nsproxy.h>
 #include <linux/ipc_namespace.h>
+#include <linux/scribe.h>
 
 #include <asm/current.h>
 #include <asm/uaccess.h>
@@ -475,8 +476,16 @@ SYSCALL_DEFINE3(msgctl, int, msqid, int, cmd, struct msqid_ds __user *, buf)
 	if (msqid < 0 || cmd < 0)
 		return -EINVAL;
 
+	if (scribe_resource_prepare()) {
+		/* Userspace may not expect ENOMEM */
+		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		return -ENOMEM;
+	}
+
 	version = ipc_parse_version(&cmd);
 	ns = current->nsproxy->ipc_ns;
+
+	scribe_lock_ipc(ns);
 
 	switch (cmd) {
 	case IPC_INFO:
@@ -485,8 +494,9 @@ SYSCALL_DEFINE3(msgctl, int, msqid, int, cmd, struct msqid_ds __user *, buf)
 		struct msginfo msginfo;
 		int max_id;
 
+		err = -EFAULT;
 		if (!buf)
-			return -EFAULT;
+			goto out;
 		/*
 		 * We must not return kernel stack data.
 		 * due to padding, it's not enough
@@ -494,7 +504,7 @@ SYSCALL_DEFINE3(msgctl, int, msqid, int, cmd, struct msqid_ds __user *, buf)
 		 */
 		err = security_msg_queue_msgctl(NULL, cmd);
 		if (err)
-			return err;
+			goto out;
 
 		memset(&msginfo, 0, sizeof(msginfo));
 		msginfo.msgmni = ns->msg_ctlmni;
@@ -514,9 +524,11 @@ SYSCALL_DEFINE3(msgctl, int, msqid, int, cmd, struct msqid_ds __user *, buf)
 		}
 		max_id = ipc_get_maxid(&msg_ids(ns));
 		up_read(&msg_ids(ns).rw_mutex);
+		err = -EFAULT;
 		if (copy_to_user(buf, &msginfo, sizeof(struct msginfo)))
-			return -EFAULT;
-		return (max_id < 0) ? 0 : max_id;
+			goto out;
+		err = (max_id < 0) ? 0 : max_id;
+		goto out;
 	}
 	case MSG_STAT:	/* msqid is an index rather than a msg queue id */
 	case IPC_STAT:
@@ -524,18 +536,23 @@ SYSCALL_DEFINE3(msgctl, int, msqid, int, cmd, struct msqid_ds __user *, buf)
 		struct msqid64_ds tbuf;
 		int success_return;
 
+		err = -EFAULT;
 		if (!buf)
-			return -EFAULT;
+			goto out;
 
 		if (cmd == MSG_STAT) {
 			msq = msg_lock(ns, msqid);
-			if (IS_ERR(msq))
-				return PTR_ERR(msq);
+			if (IS_ERR(msq)) {
+				err = PTR_ERR(msq);
+				goto out;
+			}
 			success_return = msq->q_perm.id;
 		} else {
 			msq = msg_lock_check(ns, msqid);
-			if (IS_ERR(msq))
-				return PTR_ERR(msq);
+			if (IS_ERR(msq)) {
+				err = PTR_ERR(msq);
+				goto out;
+			}
 			success_return = 0;
 		}
 		err = -EACCES;
@@ -558,20 +575,25 @@ SYSCALL_DEFINE3(msgctl, int, msqid, int, cmd, struct msqid_ds __user *, buf)
 		tbuf.msg_lspid  = msq->q_lspid;
 		tbuf.msg_lrpid  = msq->q_lrpid;
 		msg_unlock(msq);
+		err = -EFAULT;
 		if (copy_msqid_to_user(buf, &tbuf, version))
-			return -EFAULT;
-		return success_return;
+			goto out;
+		err = success_return;
+		goto out;
 	}
 	case IPC_SET:
 	case IPC_RMID:
 		err = msgctl_down(ns, msqid, cmd, buf, version);
-		return err;
+		goto out;
 	default:
-		return  -EINVAL;
+		err = -EINVAL;
+		goto out;
 	}
 
 out_unlock:
 	msg_unlock(msq);
+out:
+	scribe_unlock(ns);
 	return err;
 }
 
@@ -726,11 +748,23 @@ out_free:
 SYSCALL_DEFINE4(msgsnd, int, msqid, struct msgbuf __user *, msgp, size_t, msgsz,
 		int, msgflg)
 {
+	struct ipc_namespace *ns;
+	int ret;
 	long mtype;
 
 	if (get_user(mtype, &msgp->mtype))
 		return -EFAULT;
-	return do_msgsnd(msqid, mtype, msgp->mtext, msgsz, msgflg);
+
+	if (scribe_resource_prepare())
+		return -ENOMEM;
+
+	ns = current->nsproxy->ipc_ns;
+
+	scribe_lock_ipc(ns);
+	ret = do_msgsnd(msqid, mtype, msgp->mtext, msgsz, msgflg);
+	scribe_unlock(ns);
+
+	return ret;
 }
 
 static inline int convert_mode(long *msgtyp, int msgflg)
@@ -907,9 +941,21 @@ out_unlock:
 SYSCALL_DEFINE5(msgrcv, int, msqid, struct msgbuf __user *, msgp, size_t, msgsz,
 		long, msgtyp, int, msgflg)
 {
+	struct ipc_namespace *ns;
 	long err, mtype;
 
+	if (scribe_resource_prepare()) {
+		/* Userspace may not expect ENOMEM */
+		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		return -ENOMEM;
+	}
+
+	ns = current->nsproxy->ipc_ns;
+
+	scribe_lock_ipc(ns);
 	err =  do_msgrcv(msqid, &mtype, msgp->mtext, msgsz, msgtyp, msgflg);
+	scribe_unlock(ns);
+
 	if (err < 0)
 		goto out;
 
