@@ -158,6 +158,7 @@ struct scribe_lock_region {
 	union {
 		struct scribe_event *generic;
 		struct scribe_event_resource_lock *regular;
+		struct scribe_event_resource_intr *intr;
 		struct scribe_event_resource_lock_extra *extra;
 	} lock_event;
 	struct scribe_event_resource_unlock *unlock_event;
@@ -419,12 +420,40 @@ static void lock_record(struct scribe_ps *scribe,
 	scribe_create_insert_point(&lock_region->ip, &scribe->queue->stream);
 }
 
+static inline struct scribe_lock_region *get_lock_region(
+		struct scribe_resource_cache *cache, void *object);
+
+static void lock_record_intr(struct scribe_ps *scribe,
+			     struct scribe_resource_cache *cache,
+			     struct scribe_lock_region *lock_region)
+{
+	lock_region->lock_event.generic->type = SCRIBE_EVENT_RESOURCE_LOCK_INTR;
+	scribe_queue_event_at(&lock_region->ip, lock_region->lock_event.intr);
+	scribe_commit_insert_point(&lock_region->ip);
+	lock_region->lock_event.intr = NULL;
+
+	get_lock_region(cache, lock_region->object);
+	exit_lock_region(lock_region);
+	kfree(lock_region);
+}
+
 static int lock_replay(struct scribe_ps *scribe,
 		       struct scribe_lock_region *lock_region,
 		       struct scribe_resource *res)
 {
+	struct scribe_event *intr_event;
 	int type;
 	int serial;
+
+	intr_event = scribe_peek_event(scribe->queue, SCRIBE_WAIT);
+	if (IS_ERR(intr_event))
+		return PTR_ERR(intr_event);
+
+	if (intr_event->type == SCRIBE_EVENT_RESOURCE_LOCK_INTR) {
+		intr_event = scribe_dequeue_event(scribe->queue, SCRIBE_WAIT);
+		scribe_free_event(intr_event);
+		return -EINTR;
+	}
 
 	if (should_scribe_res_extra(scribe)) {
 		struct scribe_event_resource_lock_extra *event;
@@ -464,33 +493,73 @@ static int lock_replay(struct scribe_ps *scribe,
 	return 0;
 }
 
-static void lock(struct scribe_lock_region *lock_region)
+static int __lock(struct scribe_ps *scribe,
+		  struct scribe_lock_region *lock_region,
+		  struct scribe_resource *res)
 {
-	struct scribe_resource *res;
+	int class;
+	int intr;
+
+	class = get_lockdep_subclass(res->type);
+
+	if (use_spinlock(res)) {
+		spin_lock_nested(&res->slock, class);
+		return 0;
+	}
+
+	if (!(lock_region->flags & SCRIBE_INTERRUPTIBLE)) {
+		mutex_lock_nested(&res->lock, class);
+		return 0;
+	}
+
+	intr = mutex_lock_interruptible_nested(&res->lock, class);
+	scribe->locking_was_interrupted = !!intr;
+	return intr;
+
+}
+
+static int lock(struct scribe_resource_cache *cache,
+		struct scribe_lock_region *lock_region)
+{
 	struct scribe_ps *scribe = current->scribe;
+	struct scribe_resource *res;
 
 	might_sleep();
 
 	res = lock_region->res;
 
-	if (unlikely(is_detaching(scribe)))
-		goto out;
+	if (unlikely(is_detaching(scribe))) {
+		if (lock_region->flags & SCRIBE_INTERRUPTIBLE)
+			return -EINTR;
+		return __lock(scribe, lock_region, res);
+	}
 
 	if (is_recording(scribe))
 		lock_record(scribe, lock_region, res);
 	else {
 		/*
-		 * Even in case of replay errors, we want to take the lock, so
-		 * that we stay consistent.
+		 * Even in case of replay errors while trying to pump events,
+		 * we want to take the lock if we cannot fail with EINT, so
+		 * that we stay consistent with the paired unlock().
 		 */
-		lock_replay(scribe, lock_region, res);
+		if (lock_replay(scribe, lock_region, res)) {
+			if (lock_region->flags & SCRIBE_INTERRUPTIBLE) {
+				scribe->locking_was_interrupted = true;
+				return -EINTR;
+			}
+		}
+		scribe->locking_was_interrupted = false;
+
+		/* During the replay we never wait in a interruptible state */
+		lock_region->flags &= ~SCRIBE_INTERRUPTIBLE;
 	}
 
-out:
-	if (use_spinlock(res))
-		spin_lock_nested(&res->slock, get_lockdep_subclass(res->type));
-	else
-		mutex_lock_nested(&res->lock, get_lockdep_subclass(res->type));
+	if (__lock(scribe, lock_region, res)) {
+		/* Reached only when recording */
+		lock_record_intr(scribe, cache, lock_region);
+		return -EINTR;
+	}
+	return 0;
 }
 
 static void wake_up_for_serial(struct scribe_resource *res)
@@ -688,7 +757,7 @@ static bool put_back_lock_region(struct scribe_resource_cache *cache,
 	return true;
 }
 
-static void __lock_object(struct scribe_ps *scribe, void *object,
+static int __lock_object(struct scribe_ps *scribe, void *object,
 			  struct scribe_resource *res, int flags)
 {
 	struct scribe_lock_region *lock_region;
@@ -700,7 +769,7 @@ static void __lock_object(struct scribe_ps *scribe, void *object,
 	lock_region->object = object;
 	lock_region->flags = flags;
 
-	lock(lock_region);
+	return lock(&scribe->res_cache, lock_region);
 }
 
 void scribe_lock_object(void *object, struct scribe_resource *res, int flags)
@@ -713,7 +782,7 @@ void scribe_lock_object(void *object, struct scribe_resource *res, int flags)
 	__lock_object(scribe, object, res, flags);
 }
 
-static void __lock_object_handle(struct scribe_ps *scribe, void *object,
+static int __lock_object_handle(struct scribe_ps *scribe, void *object,
 				 struct scribe_resource_container *container,
 				 int flags)
 {
@@ -721,9 +790,10 @@ static void __lock_object_handle(struct scribe_ps *scribe, void *object,
 
 	hres = find_resource_handle(scribe->ctx->res_ctx, container);
 	if (likely(hres))
-		__lock_object(scribe, object, &hres->res, flags);
-	else
-		scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOENT));
+		return __lock_object(scribe, object, &hres->res, flags);
+
+	scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOENT));
+	return -ENOENT;
 }
 
 void scribe_lock_object_handle(void *object,
@@ -838,8 +908,9 @@ void scribe_open_resource(struct scribe_resource_context *ctx,
 
 		open_lock_region->res = sync_res;
 		open_lock_region->object = sync_res;
+		open_lock_region->flags = SCRIBE_WRITE;
 
-		lock(open_lock_region);
+		lock(cache, open_lock_region);
 	}
 
 	hres = get_resource_handle(ctx, container, type, created, &cache->hres);
@@ -860,6 +931,7 @@ void scribe_open_resource(struct scribe_resource_context *ctx,
 
 		close_lock_region->res = sync_res;
 		close_lock_region->object = sync_res;
+		close_lock_region->flags = SCRIBE_WRITE;
 
 		spin_lock(&hres->lock);
 		list_add(&close_lock_region->node, &hres->close_lock_regions);
@@ -898,7 +970,7 @@ void scribe_close_resource(struct scribe_resource_context *ctx,
 		list_del(&close_lock_region->node);
 		spin_unlock(&hres->lock);
 
-		lock(close_lock_region);
+		lock(cache, close_lock_region);
 	}
 
 	*destroyed = atomic_dec_and_test(&hres->ref_cnt);
@@ -993,40 +1065,49 @@ void scribe_close_file(struct file *file)
 		file->scribe_context = NULL;
 }
 
-static void __lock_file(struct file *file, int flags)
+static int __lock_file(struct file *file, int flags)
 {
 	struct scribe_ps *scribe = current->scribe;
 	struct inode *inode;
-	void *inode_lock_obj;
+	bool file_locked;
+	int intr;
 
 	if (!should_handle_resources(scribe))
-		return;
+		return 0;
 
 	inode = file_inode(file);
 	if (inode_need_explicit_locking(inode))
 		flags &= ~(SCRIBE_INODE_READ | SCRIBE_INODE_WRITE);
 
+	file_locked = false;
 	if (!can_skip_file_sync(file)) {
-		__lock_object(scribe, file, &file->scribe_resource, flags);
-		inode_lock_obj = inode;
-	} else
-		inode_lock_obj = file;
-
+		if (__lock_object(scribe, file, &file->scribe_resource, flags))
+			return -EINTR;
+		file_locked = true;
+	}
 
 	if (flags & SCRIBE_INODE_READ)
 		flags = SCRIBE_READ;
 	else if (flags & SCRIBE_INODE_WRITE)
 		flags = SCRIBE_WRITE;
 	else
-		return;
+		return 0;
 
 	/*
 	 * We may associate the inode_lock_obj with the file, because this is
 	 * what gets passed to the scribe_unlock() function.
 	 * This is how the inode will get unlocked.
 	 */
-	__lock_object_handle(scribe, inode_lock_obj,
-			     &inode->i_scribe_resource, flags);
+	intr = __lock_object_handle(scribe,
+				    file_locked ? (void *)inode : (void *)file,
+				    &inode->i_scribe_resource, flags);
+
+	if (intr && file_locked) {
+		unlock_discard(&scribe->res_cache,
+			       get_lock_region(&scribe->res_cache, file));
+	}
+
+	return intr;
 }
 
 void scribe_lock_file_no_inode(struct file *file)
@@ -1042,6 +1123,18 @@ void scribe_lock_file_read(struct file *file)
 void scribe_lock_file_write(struct file *file)
 {
 	__lock_file(file, SCRIBE_WRITE | SCRIBE_INODE_WRITE);
+}
+
+int scribe_lock_file_read_interruptible(struct file *file)
+{
+	return __lock_file(file, SCRIBE_INTERRUPTIBLE |
+				 SCRIBE_WRITE | SCRIBE_INODE_READ);
+}
+
+int scribe_lock_file_write_interruptible(struct file *file)
+{
+	return __lock_file(file, SCRIBE_INTERRUPTIBLE |
+				 SCRIBE_WRITE | SCRIBE_INODE_WRITE);
 }
 
 static void __lock_inode(struct inode *inode, int flags)
@@ -1093,6 +1186,18 @@ int scribe_track_next_file_write(void)
 	return __track_next_file(SCRIBE_WRITE | SCRIBE_INODE_WRITE);
 }
 
+int scribe_track_next_file_read_interruptible(void)
+{
+	return __track_next_file(SCRIBE_INTERRUPTIBLE |
+				 SCRIBE_WRITE | SCRIBE_INODE_READ);
+}
+
+int scribe_track_next_file_write_interruptible(void)
+{
+	return __track_next_file(SCRIBE_INTERRUPTIBLE |
+				 SCRIBE_WRITE | SCRIBE_INODE_WRITE);
+}
+
 void scribe_pre_fget(struct files_struct *files, int *lock_flags)
 {
 	struct scribe_ps *scribe = current->scribe;
@@ -1114,17 +1219,24 @@ void scribe_pre_fget(struct files_struct *files, int *lock_flags)
 	}
 }
 
-void scribe_post_fget(struct files_struct *files, struct file *file,
+int scribe_post_fget(struct files_struct *files, struct file *file,
 		      int lock_flags)
 {
 	if (!lock_flags)
-		return;
+		return 0;
 
 	scribe_unlock(files);
-	if (file) {
-		current->scribe->locked_file = file;
-		__lock_file(file, lock_flags);
+
+	if (!file) {
+		current->scribe->locking_was_interrupted = false;
+		return 0;
 	}
+
+	if (__lock_file(file, lock_flags))
+		return -EINTR;
+
+	current->scribe->locked_file = file;
+	return 0;
 }
 
 void scribe_pre_fput(struct file *file)
@@ -1297,4 +1409,9 @@ void scribe_lock_ipc(struct ipc_namespace *ns)
 
 	/* For now all IPC things are synchronized on the same resource */
 	__lock_object(scribe, ns, &ns->scribe_resource, SCRIBE_WRITE);
+}
+
+bool scribe_was_locking_interrupted(void)
+{
+	return current->scribe->locking_was_interrupted;
 }

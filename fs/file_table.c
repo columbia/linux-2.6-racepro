@@ -287,14 +287,15 @@ struct file *fget(unsigned int fd)
 	if (file) {
 		if (!atomic_long_inc_not_zero(&file->f_count)) {
 			/* File object ref couldn't be taken */
-			rcu_read_unlock();
-			scribe_post_fget(files, NULL, lock_flags);
-			return NULL;
+			file = NULL;
 		}
 	}
 	rcu_read_unlock();
 
-	scribe_post_fget(files, file, lock_flags);
+	if (unlikely(scribe_post_fget(files, file, lock_flags))) {
+		fput(file);
+		file = NULL;
+	}
 
 	return file;
 }
@@ -332,7 +333,10 @@ struct file *fget_light(unsigned int fd, int *fput_needed)
 		rcu_read_unlock();
 	}
 
-	scribe_post_fget(files, file, lock_flags);
+	if (unlikely(scribe_post_fget(files, file, lock_flags))) {
+		fput_light(file, *fput_needed);
+		file = NULL;
+	}
 
 	return file;
 }

@@ -512,7 +512,7 @@ SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
 	ssize_t ret = -EBADF;
 	int fput_needed;
 
-	if (scribe_track_next_file_read())
+	if (scribe_track_next_file_read_interruptible())
 		return -ENOMEM;
 
 	file = fget_light(fd, &fput_needed);
@@ -521,7 +521,8 @@ SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
 		ret = vfs_read(file, buf, count, &pos);
 		file_pos_write(file, pos);
 		fput_light(file, fput_needed);
-	}
+	} else if (scribe_was_locking_interrupted())
+		ret = -ERESTARTSYS;
 
 	return ret;
 }
@@ -533,7 +534,7 @@ SYSCALL_DEFINE3(write, unsigned int, fd, const char __user *, buf,
 	ssize_t ret = -EBADF;
 	int fput_needed;
 
-	if (scribe_track_next_file_write())
+	if (scribe_track_next_file_write_interruptible())
 		return -ENOMEM;
 
 	file = fget_light(fd, &fput_needed);
@@ -542,7 +543,8 @@ SYSCALL_DEFINE3(write, unsigned int, fd, const char __user *, buf,
 		ret = vfs_write(file, buf, count, &pos);
 		file_pos_write(file, pos);
 		fput_light(file, fput_needed);
-	}
+	} else if (scribe_was_locking_interrupted())
+		ret = -ERESTARTSYS;
 
 	return ret;
 }
@@ -557,7 +559,7 @@ SYSCALL_DEFINE(pread64)(unsigned int fd, char __user *buf,
 	if (pos < 0)
 		return -EINVAL;
 
-	if (scribe_track_next_file_read())
+	if (scribe_track_next_file_read_interruptible())
 		return -ENOMEM;
 
 	file = fget_light(fd, &fput_needed);
@@ -566,7 +568,8 @@ SYSCALL_DEFINE(pread64)(unsigned int fd, char __user *buf,
 		if (file->f_mode & FMODE_PREAD)
 			ret = vfs_read(file, buf, count, &pos);
 		fput_light(file, fput_needed);
-	}
+	} else if (scribe_was_locking_interrupted())
+		ret = -ERESTARTSYS;
 
 	return ret;
 }
@@ -589,7 +592,7 @@ SYSCALL_DEFINE(pwrite64)(unsigned int fd, const char __user *buf,
 	if (pos < 0)
 		return -EINVAL;
 
-	if (scribe_track_next_file_write())
+	if (scribe_track_next_file_write_interruptible())
 		return -ENOMEM;
 
 	file = fget_light(fd, &fput_needed);
@@ -598,7 +601,8 @@ SYSCALL_DEFINE(pwrite64)(unsigned int fd, const char __user *buf,
 		if (file->f_mode & FMODE_PWRITE)  
 			ret = vfs_write(file, buf, count, &pos);
 		fput_light(file, fput_needed);
-	}
+	} else if (scribe_was_locking_interrupted())
+		ret = -ERESTARTSYS;
 
 	return ret;
 }
@@ -845,7 +849,7 @@ SYSCALL_DEFINE3(readv, unsigned long, fd, const struct iovec __user *, vec,
 	ssize_t ret = -EBADF;
 	int fput_needed;
 
-	if (scribe_track_next_file_read())
+	if (scribe_track_next_file_read_interruptible())
 		return -ENOMEM;
 
 	file = fget_light(fd, &fput_needed);
@@ -854,7 +858,8 @@ SYSCALL_DEFINE3(readv, unsigned long, fd, const struct iovec __user *, vec,
 		ret = vfs_readv(file, vec, vlen, &pos);
 		file_pos_write(file, pos);
 		fput_light(file, fput_needed);
-	}
+	} else if (scribe_was_locking_interrupted())
+		ret = -ERESTARTSYS;
 
 	if (ret > 0)
 		add_rchar(current, ret);
@@ -869,7 +874,7 @@ SYSCALL_DEFINE3(writev, unsigned long, fd, const struct iovec __user *, vec,
 	ssize_t ret = -EBADF;
 	int fput_needed;
 
-	if (scribe_track_next_file_write())
+	if (scribe_track_next_file_write_interruptible())
 		return -ENOMEM;
 
 	file = fget_light(fd, &fput_needed);
@@ -878,7 +883,8 @@ SYSCALL_DEFINE3(writev, unsigned long, fd, const struct iovec __user *, vec,
 		ret = vfs_writev(file, vec, vlen, &pos);
 		file_pos_write(file, pos);
 		fput_light(file, fput_needed);
-	}
+	} else if (scribe_was_locking_interrupted())
+		ret = -ERESTARTSYS;
 
 	if (ret > 0)
 		add_wchar(current, ret);
@@ -903,7 +909,7 @@ SYSCALL_DEFINE5(preadv, unsigned long, fd, const struct iovec __user *, vec,
 	if (pos < 0)
 		return -EINVAL;
 
-	if (scribe_track_next_file_read())
+	if (scribe_track_next_file_read_interruptible())
 		return -ENOMEM;
 
 	file = fget_light(fd, &fput_needed);
@@ -912,7 +918,8 @@ SYSCALL_DEFINE5(preadv, unsigned long, fd, const struct iovec __user *, vec,
 		if (file->f_mode & FMODE_PREAD)
 			ret = vfs_readv(file, vec, vlen, &pos);
 		fput_light(file, fput_needed);
-	}
+	} else if (scribe_was_locking_interrupted())
+		ret = -ERESTARTSYS;
 
 	if (ret > 0)
 		add_rchar(current, ret);
@@ -931,7 +938,7 @@ SYSCALL_DEFINE5(pwritev, unsigned long, fd, const struct iovec __user *, vec,
 	if (pos < 0)
 		return -EINVAL;
 
-	if (scribe_track_next_file_write())
+	if (scribe_track_next_file_write_interruptible())
 		return -ENOMEM;
 
 	file = fget_light(fd, &fput_needed);
@@ -940,7 +947,8 @@ SYSCALL_DEFINE5(pwritev, unsigned long, fd, const struct iovec __user *, vec,
 		if (file->f_mode & FMODE_PWRITE)
 			ret = vfs_writev(file, vec, vlen, &pos);
 		fput_light(file, fput_needed);
-	}
+	} else if (scribe_was_locking_interrupted())
+		ret = -ERESTARTSYS;
 
 	if (ret > 0)
 		add_wchar(current, ret);

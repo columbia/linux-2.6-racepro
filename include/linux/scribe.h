@@ -427,10 +427,11 @@ extern void scribe_close_resource(struct scribe_resource_context *ctx,
 				  int do_close_sync, int *destroyed,
 				  struct scribe_resource_cache *cache);
 
-#define SCRIBE_READ		0x01
-#define SCRIBE_WRITE		0x02
-#define SCRIBE_INODE_READ	0x04
-#define SCRIBE_INODE_WRITE	0x08
+#define SCRIBE_INTERRUPTIBLE	0x01
+#define SCRIBE_READ		0x02
+#define SCRIBE_WRITE		0x04
+#define SCRIBE_INODE_READ	0x08
+#define SCRIBE_INODE_WRITE	0x10
 extern void scribe_lock_object(void *object, struct scribe_resource *res,
 			       int flags);
 extern void scribe_lock_object_handle(void *object,
@@ -441,6 +442,8 @@ extern void scribe_close_file(struct file *file);
 extern void scribe_lock_file_no_inode(struct file *file);
 extern void scribe_lock_file_read(struct file *file);
 extern void scribe_lock_file_write(struct file *file);
+extern int scribe_lock_file_read_interruptible(struct file *file);
+extern int scribe_lock_file_write_interruptible(struct file *file);
 
 extern void scribe_lock_inode_read(struct inode *inode);
 extern void scribe_lock_inode_write(struct inode *inode);
@@ -448,9 +451,11 @@ extern void scribe_lock_inode_write(struct inode *inode);
 extern int scribe_track_next_file_no_inode(void);
 extern int scribe_track_next_file_read(void);
 extern int scribe_track_next_file_write(void);
+extern int scribe_track_next_file_read_interruptible(void);
+extern int scribe_track_next_file_write_interruptible(void);
 extern void scribe_pre_fget(struct files_struct *files, int *lock_flags);
-extern void scribe_post_fget(struct files_struct *files, struct file *file,
-			     int lock_flags);
+extern int scribe_post_fget(struct files_struct *files, struct file *file,
+			    int lock_flags);
 extern void scribe_pre_fput(struct file *file);
 
 extern void scribe_open_files(struct files_struct *files);
@@ -468,6 +473,8 @@ extern void scribe_unlock(void *object);
 extern void scribe_unlock_discard(void *object);
 extern void scribe_unlock_err(void *object, int err);
 extern void scribe_assert_locked(void *object);
+
+extern bool scribe_was_locking_interrupted(void);
 
 /* Signals */
 
@@ -540,6 +547,7 @@ struct scribe_ps {
 	struct scribe_resource_cache res_cache;
 	int lock_next_file;
 	struct file *locked_file;
+	bool locking_was_interrupted;
 
 	struct scribe_ps_arch arch;
 
