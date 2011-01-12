@@ -45,6 +45,7 @@
 #include <linux/debugobjects.h>
 #include <linux/sched.h>
 #include <linux/timer.h>
+#include <linux/scribe.h>
 
 #include <asm/uaccess.h>
 
@@ -1498,6 +1499,13 @@ EXPORT_SYMBOL_GPL(hrtimer_init_sleeper);
 
 static int __sched do_nanosleep(struct hrtimer_sleeper *t, enum hrtimer_mode mode)
 {
+	struct scribe_ps *scribe = current->scribe;
+
+	scribe_need_syscall_ret(scribe);
+
+	if (is_replaying(scribe))
+		return !scribe->orig_ret;
+
 	hrtimer_init_sleeper(t, current);
 
 	do {
@@ -1528,6 +1536,8 @@ static int update_rmtp(struct hrtimer *timer, struct timespec __user *rmtp)
 	if (rem.tv64 <= 0)
 		return 0;
 	rmt = ktime_to_timespec(rem);
+
+	scribe_data_non_det();
 
 	if (copy_to_user(rmtp, &rmt, sizeof(*rmtp)))
 		return -EFAULT;
