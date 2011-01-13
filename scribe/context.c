@@ -552,9 +552,12 @@ static bool should_detach(struct scribe_ps *scribe)
 bool scribe_maybe_detach(struct scribe_ps *scribe)
 {
 	struct scribe_context *ctx = scribe->ctx;
+	struct task_struct *p;
 
 	if (!should_detach(scribe))
 		return false;
+
+	p = scribe->p;
 
 	scribe_get_context(ctx);
 	scribe_detach(scribe);
@@ -566,7 +569,7 @@ bool scribe_maybe_detach(struct scribe_ps *scribe)
 	 * have started again, and other tasks might have joined the context.
 	 */
 	if (ctx->last_error)
-		do_send_sig_info(SIGKILL, SEND_SIG_PRIV, scribe->p, 1);
+		do_send_sig_info(SIGKILL, SEND_SIG_PRIV, p, 1);
 	scribe_put_context(ctx);
 
 	return true;
