@@ -279,6 +279,7 @@ void scribe_emergency_stop(struct scribe_context *ctx,
 	 * details.
 	 */
 	context_idle(ctx, reason);
+	wake_up(&ctx->tasks_wait);
 
 	/*
 	 * The tasks list is most likely to be empty by now.
