@@ -1246,7 +1246,10 @@ static struct task_struct *copy_process(unsigned long long clone_flags,
 		goto bad_fork_cleanup_scribe;
 
 	if (pid != &init_struct_pid) {
+		scribe_lock_task_write(SCRIBE_ALL_TASKS);
 		pid = alloc_pid(p->nsproxy->pid_ns, target_pids);
+		scribe_unlock(SCRIBE_ALL_TASKS);
+
 		if (IS_ERR(pid)) {
 			retval = PTR_ERR(pid);
 			goto bad_fork_cleanup_scribe;

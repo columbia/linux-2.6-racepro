@@ -959,11 +959,12 @@ static void scribe_exit_notify(struct task_struct *tsk, int group_dead)
 	 * Also all those calls are done with the tasklist locked, and we need
 	 * to sleep to get the resource lock, so would get quite horrible to
 	 * go the "proper" way.
-	 * Instead we'll lock the whole tree (init_task) and be done with it.
+	 * Instead we'll lock all the tasks (SCRIBE_ALL_TASKS) and be done
+	 * with it.
 	 */
-	scribe_lock_task_write(&init_task);
+	scribe_lock_task_write(SCRIBE_ALL_TASKS);
 	exit_notify(tsk, group_dead);
-	scribe_unlock(&init_task);
+	scribe_unlock(SCRIBE_ALL_TASKS);
 	return;
 
 no_sync:
@@ -1710,7 +1711,7 @@ static long do_wait(struct wait_opts *wo)
 	wo->child_wait.private = current;
 	add_wait_queue(&current->signal->wait_chldexit, &wo->child_wait);
 repeat:
-	scribe_lock_task_write(&init_task);
+	scribe_lock_task_write(SCRIBE_ALL_TASKS);
 	/*
 	 * If there is nothing that can match our critiera just get out.
 	 * We will clear ->notask_error to zero if we see any child that
@@ -1744,13 +1745,13 @@ notask:
 	if (!retval && !(wo->wo_flags & WNOHANG)) {
 		retval = -ERESTARTSYS;
 		if (!signal_pending(current)) {
-			scribe_unlock_discard(&init_task);
+			scribe_unlock_discard(SCRIBE_ALL_TASKS);
 			schedule();
 			goto repeat;
 		}
 	}
 end:
-	scribe_unlock(&init_task);
+	scribe_unlock(SCRIBE_ALL_TASKS);
 	__set_current_state(TASK_RUNNING);
 	remove_wait_queue(&current->signal->wait_chldexit, &wo->child_wait);
 	return retval;

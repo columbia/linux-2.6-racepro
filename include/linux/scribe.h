@@ -463,6 +463,7 @@ extern void scribe_close_files(struct files_struct *files);
 extern void scribe_lock_files_read(struct files_struct *files);
 extern void scribe_lock_files_write(struct files_struct *files);
 
+#define SCRIBE_ALL_TASKS (&init_task)
 extern void scribe_lock_task_read(struct task_struct *task);
 extern void scribe_lock_task_write(struct task_struct *task);
 
