@@ -486,21 +486,26 @@ static void event_pump_replay(struct scribe_context *ctx, char *buf,
 	 * emergency_stop() is called before kill_queue() to avoid races with
 	 * scribe_maybe_detach().
 	 */
-retry:
-	if (ret)
+	if (ret < 0)
 		scribe_emergency_stop(ctx, ERR_PTR(ret));
 
+retry:
 	spin_lock(&ctx->queues_lock);
 	list_for_each_entry(queue, &ctx->queues, node) {
 		/*
 		 * If some queue were left open, that means that we didn't
 		 * have the entire event stream, we need to kill the context.
 		 */
-		if (!ret && !queue->stream.sealed)
+		if (ret >= 0 && !queue->stream.sealed)
 			ret = -EPIPE;
-		if (ret) {
+		if (ret < 0) {
 			if (ctx->flags != SCRIBE_IDLE) {
 				spin_unlock(&ctx->queues_lock);
+				scribe_emergency_stop(ctx, ERR_PTR(ret));
+				/*
+				 * after the emergency stop we are now idle,
+				 * so this goto will only occur once.
+				 */
 				goto retry;
 			}
 
