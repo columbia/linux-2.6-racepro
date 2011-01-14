@@ -259,7 +259,7 @@ static __always_inline void *scribe_alloc_event_sized_flags(
 	event_size = size + sizeof_event_from_type(type);
 
 	WARN(event_size > PAGE_SIZE*4,
-	     "This event (%d) is quite big (%ld)...\n", type, size);
+	     "This event (%d) is quite big (%zd)...\n", type, size);
 
 	event = kmalloc(event_size, flags);
 
