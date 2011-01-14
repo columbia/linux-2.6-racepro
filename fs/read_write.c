@@ -300,15 +300,18 @@ ssize_t do_sync_read(struct file *filp, char __user *buf, size_t len, loff_t *pp
 
 EXPORT_SYMBOL(do_sync_read);
 
-static ssize_t __do_read(struct file *file, char __user *buf,
+static ssize_t do_read(struct file *file, char __user *buf,
 			 size_t len, loff_t *ppos, int force_block)
 {
-	ssize_t ret;
 	unsigned int saved_flags;
+	int had_pending;
+	ssize_t ret;
 
 	if (force_block) {
 		saved_flags = file->f_flags;
 		file->f_flags &= ~O_NONBLOCK;
+		had_pending = test_thread_flag(TIF_SIGPENDING);
+		clear_thread_flag(TIF_SIGPENDING);
 	}
 
 	if (file->f_op->read)
@@ -316,8 +319,11 @@ static ssize_t __do_read(struct file *file, char __user *buf,
 	else
 		ret = do_sync_read(file, buf, len, ppos);
 
-	if (force_block)
+	if (force_block) {
+		if (had_pending)
+			set_thread_flag(TIF_SIGPENDING);
 		file->f_flags = saved_flags;
+	}
 
 	return ret;
 }
@@ -346,7 +352,7 @@ static int is_deterministic(struct file *file)
 }
 
 static ssize_t scribe_do_read(struct file *file, char __user *buf,
-			      size_t len, loff_t *ppos)
+			      ssize_t len, loff_t *ppos)
 {
 	struct scribe_ps *scribe = current->scribe;
 	union scribe_event_data_union data_event;
@@ -356,28 +362,30 @@ static ssize_t scribe_do_read(struct file *file, char __user *buf,
 	int force_block = 0;
 
 	if (!is_scribed(scribe))
-		goto std_read;
+		goto bypass;
 
 	if (is_kernel_copy())
-		goto std_read;
+		goto bypass;
 
 	if (!should_scribe_data(scribe))
-		goto std_read;
+		goto bypass;
 
 	if (is_deterministic(file)) {
 		scribe_need_syscall_ret(scribe);
 
 		if (is_replaying(scribe)) {
 			len = scribe->orig_ret;
+			if (len <= 0)
+				return len;
 			force_block = 1;
 		}
-		goto std_read;
+		goto bypass;
 	}
 
 	scribe_data_non_det();
 
 	if (is_recording(scribe))
-		goto std_read;
+		goto bypass;
 
 	/* Replaying on a non-deterministic stream */
 	ret = 0;
@@ -400,14 +408,14 @@ static ssize_t scribe_do_read(struct file *file, char __user *buf,
 	}
 	return ret;
 
-std_read:
-	return __do_read(file, buf, len, ppos, force_block);
+bypass:
+	return do_read(file, buf, len, ppos, force_block);
 }
 #else
 static inline ssize_t scribe_do_read(struct file *file, char __user *buf,
-				 size_t len, loff_t *ppos)
+				     size_t len, loff_t *ppos)
 {
-	return __do_read(file, buf, len, ppos, 0);
+	return do_read(file, buf, len, ppos, 0);
 }
 #endif /* CONFIG_SCRIBE */
 
@@ -425,9 +433,7 @@ ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
 	ret = rw_verify_area(READ, file, pos, count);
 	if (ret >= 0) {
 		count = ret;
-
 		ret = scribe_do_read(file, buf, count, pos);
-
 		if (ret > 0) {
 			fsnotify_access(file->f_path.dentry);
 			add_rchar(current, ret);
@@ -466,6 +472,70 @@ ssize_t do_sync_write(struct file *filp, const char __user *buf, size_t len, lof
 
 EXPORT_SYMBOL(do_sync_write);
 
+static ssize_t do_write(struct file *file, const char __user *buf,
+			size_t count, loff_t *ppos, int force_block)
+{
+	unsigned int saved_flags;
+	int had_pending;
+	ssize_t ret;
+
+	if (force_block) {
+		saved_flags = file->f_flags;
+		file->f_flags &= ~O_NONBLOCK;
+		had_pending = test_thread_flag(TIF_SIGPENDING);
+		clear_thread_flag(TIF_SIGPENDING);
+	}
+
+	if (file->f_op->write)
+		ret = file->f_op->write(file, buf, count, ppos);
+	else
+		ret = do_sync_write(file, buf, count, ppos);
+
+	if (force_block) {
+		if (had_pending)
+			set_thread_flag(TIF_SIGPENDING);
+		file->f_flags = saved_flags;
+	}
+
+	return ret;
+}
+
+#ifdef CONFIG_SCRIBE
+static ssize_t scribe_do_write(struct file *file, const char __user *buf,
+			       ssize_t count, loff_t *ppos)
+{
+	struct scribe_ps *scribe = current->scribe;
+	int force_block = 0;
+
+	if (!is_scribed(scribe))
+		goto bypass;
+
+	if (is_kernel_copy())
+		goto bypass;
+
+	if (!should_scribe_data(scribe))
+		goto bypass;
+
+	scribe_need_syscall_ret(scribe);
+
+	if (is_replaying(scribe)) {
+		count = scribe->orig_ret;
+		if (count <= 0)
+			return count;
+		force_block = 1;
+	}
+
+bypass:
+	return do_write(file, buf, count, ppos, force_block);
+}
+#else
+static inline ssize_t scribe_do_write(struct file *file, const char __user *buf,
+				      ssize_t count, loff_t *ppos)
+{
+	return do_write(file, buf, count, ppos, 0);
+}
+#endif /* CONFIG_SCRIBE */
+
 ssize_t vfs_write(struct file *file, const char __user *buf, size_t count, loff_t *pos)
 {
 	ssize_t ret;
@@ -480,10 +550,7 @@ ssize_t vfs_write(struct file *file, const char __user *buf, size_t count, loff_
 	ret = rw_verify_area(WRITE, file, pos, count);
 	if (ret >= 0) {
 		count = ret;
-		if (file->f_op->write)
-			ret = file->f_op->write(file, buf, count, pos);
-		else
-			ret = do_sync_write(file, buf, count, pos);
+		ret = scribe_do_write(file, buf, count, pos);
 		if (ret > 0) {
 			fsnotify_modify(file->f_path.dentry);
 			add_wchar(current, ret);
