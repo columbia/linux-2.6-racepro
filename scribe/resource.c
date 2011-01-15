@@ -15,6 +15,7 @@
 #include <linux/sched.h>
 #include <linux/pid_namespace.h>
 #include <linux/ipc_namespace.h>
+#include <linux/sunrpc/svcauth.h> /* For hash_str() */
 
 /*
  * A few notes:
@@ -49,6 +50,9 @@
 #define INODE_HASH_BITS 8
 #define INODE_HASH_SIZE (1 << INODE_HASH_BITS)
 
+#define FS_HASH_BITS 10
+#define FS_HASH_SIZE (1 << FS_HASH_BITS)
+
 static inline int should_handle_resources(struct scribe_ps *scribe)
 {
 	if (!is_scribed(scribe))
@@ -63,6 +67,7 @@ struct scribe_resource_context {
 	 * using 256 registration resources to decrease contention on SMP.
 	 */
 	struct scribe_resource registration_res_inode[INODE_HASH_SIZE];
+	struct scribe_resource fs_res[FS_HASH_SIZE];
 };
 
 struct scribe_resource_context *scribe_alloc_resource_context(void)
@@ -81,6 +86,9 @@ struct scribe_resource_context *scribe_alloc_resource_context(void)
 				     SCRIBE_RES_TYPE_SPINLOCK);
 	}
 
+	for (i = 0; i < FS_HASH_SIZE; i++)
+		scribe_init_resource(&ctx->fs_res[i], SCRIBE_RES_TYPE_FS);
+
 	return ctx;
 }
 
@@ -89,6 +97,8 @@ void scribe_reset_resource_context(struct scribe_resource_context *ctx)
 	int i;
 	for (i = 0; i < INODE_HASH_SIZE; i++)
 		scribe_reset_resource(&ctx->registration_res_inode[i]);
+	for (i = 0; i < FS_HASH_SIZE; i++)
+		scribe_reset_resource(&ctx->fs_res[i]);
 }
 
 void scribe_free_resource_context(struct scribe_resource_context *ctx)
@@ -111,6 +121,13 @@ static struct scribe_resource *find_registration_res_inode(
 	 */
 	int index = hash_long(inode->i_ino, INODE_HASH_BITS);
 	return &ctx->registration_res_inode[index];
+}
+
+static struct scribe_resource *find_fs_res(
+		struct scribe_resource_context *ctx, const char *name)
+{
+	int index = hash_str((char *)name, FS_HASH_BITS);
+	return &ctx->fs_res[index];
 }
 
 struct scribe_resource_handle {
@@ -235,7 +252,7 @@ void scribe_resource_init_user(struct scribe_res_user *user)
  * Two for the open/close region on the inode registration, and one for the
  * files_struct.
  */
-#define MAX_PRE_ALLOC_REGIONS 3
+#define MAX_PRE_ALLOC_REGIONS 4
 
 int scribe_resource_pre_alloc(struct scribe_res_user *user,
 			      int doing_recording, int res_extra)
@@ -1453,6 +1470,17 @@ void scribe_lock_ipc(struct ipc_namespace *ns)
 
 	/* For now all IPC things are synchronized on the same resource */
 	__lock_object(scribe, ns, &ns->scribe_resource, SCRIBE_WRITE);
+}
+
+void scribe_lock_fs(const char *name)
+{
+	struct scribe_ps *scribe = current->scribe;
+
+	if (!should_handle_resources(scribe))
+		return;
+
+	__lock_object(scribe, (void *)name,
+		      find_fs_res(scribe->ctx->res_ctx, name), SCRIBE_WRITE);
 }
 
 bool scribe_was_locking_interrupted(void)
