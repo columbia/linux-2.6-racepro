@@ -641,10 +641,14 @@ static void do_unlock(struct scribe_ps *scribe,
 		      struct scribe_lock_region *lock_region)
 {
 	struct scribe_resource *res;
-	int serial;
+	int serial = 0;
+	int detaching;
+
+	detaching = is_detaching(scribe);
 
 	res = lock_region->res;
-	serial = res->serial++;
+	if (likely(!detaching))
+		serial = res->serial++;
 
 	if (use_spinlock(res))
 		spin_unlock(&res->slock);
@@ -653,7 +657,7 @@ static void do_unlock(struct scribe_ps *scribe,
 
 	might_sleep();
 
-	if (unlikely(is_detaching(scribe)))
+	if (unlikely(detaching))
 		return;
 
 	if (is_recording(scribe))
