@@ -394,38 +394,32 @@ extern int scribe_golive_on_next_bookmark(struct scribe_bookmark *bmark);
 
 /* Resources */
 
-struct scribe_resource_cache {
-	struct scribe_resource_handle *hres;
-	/*
-	 * We need at most 3 lock_regions pre allocated upfront, e.g in
-	 * fd_install(): Two for the open/close region on the inode
-	 * registration, and one for the files_struct.
-	 */
-	struct scribe_lock_region *lock_regions[3];
+struct scribe_res_user {
+	struct scribe_resource_handle *pre_alloc_hres;
+
+	struct list_head pre_alloc_regions;
+	int num_pre_alloc_regions;
+
+	struct list_head locked_regions;
 };
 
 extern struct scribe_resource_context *scribe_alloc_resource_context(void);
 extern void scribe_reset_resource_context(struct scribe_resource_context *ctx);
 extern void scribe_free_resource_context(struct scribe_resource_context *);
 
-extern void scribe_resource_init_cache(struct scribe_resource_cache *cache);
-extern void scribe_resource_exit_cache(struct scribe_resource_cache *cache);
-extern int scribe_resource_pre_alloc(struct scribe_resource_cache *cache,
+extern void scribe_resource_init_user(struct scribe_res_user *user);
+extern void scribe_resource_exit_user(struct scribe_res_user *user);
+extern int scribe_resource_pre_alloc(struct scribe_res_user *user,
 				     int doing_recording, int res_extra);
 extern int scribe_resource_prepare(void);
 
 #define SCRIBE_NO_SYNC	0
 #define SCRIBE_SYNC	1
-extern void scribe_open_resource(struct scribe_resource_context *ctx,
-				 struct scribe_resource_container *container,
-				 int type, struct scribe_resource *sync_res,
-				 int do_sync_open, int do_sync_close,
-				 int *created,
-				 struct scribe_resource_cache *cache);
-extern void scribe_close_resource(struct scribe_resource_context *ctx,
-				  struct scribe_resource_container *container,
-				  int do_close_sync, int *destroyed,
-				  struct scribe_resource_cache *cache);
+extern void scribe_open_resource_no_sync(struct scribe_resource_context *ctx,
+				struct scribe_resource_container *container,
+				int type, struct scribe_res_user *user);
+extern void scribe_close_resource_no_sync(struct scribe_resource_context *ctx,
+				struct scribe_resource_container *container);
 
 #define SCRIBE_INTERRUPTIBLE	0x01
 #define SCRIBE_READ		0x02
@@ -545,7 +539,7 @@ struct scribe_ps {
 	int can_uaccess;
 
 	int waiting_for_serial;
-	struct scribe_resource_cache res_cache;
+	struct scribe_res_user resources;
 	int lock_next_file;
 	struct file *locked_file;
 	bool locking_was_interrupted;

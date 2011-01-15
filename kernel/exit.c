@@ -925,7 +925,7 @@ void exit_scribe(struct task_struct *p)
 	BUG_ON(is_scribed(scribe));
 
 	kfree(scribe->pre_alloc_queue);
-	scribe_resource_exit_cache(&scribe->res_cache);
+	scribe_resource_exit_user(&scribe->resources);
 	scribe_put_context(scribe->ctx);
 	exit_scribe_arch(scribe);
 

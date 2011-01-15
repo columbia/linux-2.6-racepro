@@ -989,7 +989,7 @@ int init_scribe(struct task_struct *p, struct scribe_context *ctx)
 
 	scribe_init_signal(&scribe->signal);
 
-	scribe_resource_init_cache(&scribe->res_cache);
+	scribe_resource_init_user(&scribe->resources);
 	scribe->lock_next_file = 0;
 	scribe->locked_file = NULL;
 

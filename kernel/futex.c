@@ -2783,27 +2783,24 @@ int scribe_open_futexes(struct scribe_resource_context *ctx)
 {
 	int ret = 0;
 	int i;
-	struct scribe_resource_cache cache;
+	struct scribe_res_user user;
 
-	scribe_resource_init_cache(&cache);
+	scribe_resource_init_user(&user);
 	for (i = 0; i < ARRAY_SIZE(futex_queues); i++) {
-		if (scribe_resource_pre_alloc(&cache, 0, 0)) {
+		if (scribe_resource_pre_alloc(&user, 0, 0)) {
 			ret = -ENOMEM;
 			break;
 		}
 
-		scribe_open_resource(ctx, &futex_queues[i].scribe_resource,
-				     SCRIBE_RES_TYPE_FUTEX |
-				     SCRIBE_RES_TYPE_SPINLOCK, NULL,
-				     SCRIBE_NO_SYNC, SCRIBE_NO_SYNC,
-				     NULL, &cache);
+		scribe_open_resource_no_sync(
+		      ctx, &futex_queues[i].scribe_resource,
+		      SCRIBE_RES_TYPE_FUTEX | SCRIBE_RES_TYPE_SPINLOCK, &user);
 	}
-	scribe_resource_exit_cache(&cache);
+	scribe_resource_exit_user(&user);
 	if (ret) {
 		for (i--; i >= 0; i--) {
-			scribe_close_resource(ctx,
-					      &futex_queues[i].scribe_resource,
-					      SCRIBE_NO_SYNC, NULL, NULL);
+			scribe_close_resource_no_sync(ctx,
+					&futex_queues[i].scribe_resource);
 		}
 	}
 	return ret;
@@ -2813,8 +2810,8 @@ void scribe_close_futexes(struct scribe_resource_context *ctx)
 {
 	int i;
 	for (i = 0; i < ARRAY_SIZE(futex_queues); i++) {
-		scribe_close_resource(ctx, &futex_queues[i].scribe_resource,
-				      SCRIBE_NO_SYNC, NULL, NULL);
+		scribe_close_resource_no_sync(ctx,
+					      &futex_queues[i].scribe_resource);
 	}
 }
 #endif
