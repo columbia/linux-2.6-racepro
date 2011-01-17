@@ -631,8 +631,8 @@ static void scribe_record_signal(struct scribe_ps *scribe,
 	if (sig_kernel_synchronous(sig))
 		return;
 
-	ip = was_deferred ? &scribe->queue->stream.master :
-			    &scribe->signal.signal_ip;
+	ip = scribe->signal.should_defer ? &scribe->queue->stream.master :
+					   &scribe->signal.signal_ip;
 
 	if (q && q->scribe_cookie != NO_COOKIE) {
 		cookie_event = scribe_alloc_event_flags(
