@@ -27,6 +27,8 @@ struct scribe_context *scribe_alloc_context(void)
 	spin_lock_init(&ctx->tasks_lock);
 	INIT_LIST_HEAD(&ctx->tasks);
 	init_waitqueue_head(&ctx->tasks_wait);
+	ctx->max_num_tasks = 0;
+	ctx->num_tasks = 0;
 
 	spin_lock_init(&ctx->queues_lock);
 	INIT_LIST_HEAD(&ctx->queues);
@@ -117,6 +119,8 @@ static int context_start(struct scribe_context *ctx, unsigned long flags,
 	 * The task list might not be empty (just got an emergency_stop).
 	 */
 	wait_for_ctx_empty(ctx);
+
+	ctx->max_num_tasks = ctx->num_tasks;
 
 	ctx->queues_sealed = 0;
 
@@ -371,6 +375,13 @@ int scribe_set_attach_on_exec(struct scribe_context *ctx, int enable)
 	return 0;
 }
 
+static inline void tasks_accounting(struct scribe_context *ctx, int delta)
+{
+	ctx->num_tasks += delta;
+	if (delta > 0 && ctx->max_num_tasks < ctx->num_tasks)
+		ctx->max_num_tasks = ctx->num_tasks;
+}
+
 /*
  * scribe_attach() and scribe_detach() must only be called when
  * current == scribe->p, or when scribe->p is sleeping (and thus not accessing
@@ -431,6 +442,8 @@ void scribe_attach(struct scribe_ps *scribe)
 	}
 
 	list_add_tail(&scribe->node, &ctx->tasks);
+	tasks_accounting(ctx, +1);
+
 	spin_unlock(&ctx->tasks_lock);
 
 	wake_up(&ctx->tasks_wait);
@@ -492,7 +505,9 @@ void __scribe_detach(struct scribe_ps *scribe)
 	}
 
 	spin_lock(&ctx->tasks_lock);
+
 	list_del(&scribe->node);
+	tasks_accounting(ctx, -1);
 
 	/*
 	 * The last task in the context is detaching, it's time to set it to

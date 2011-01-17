@@ -303,6 +303,8 @@ struct scribe_context {
 	spinlock_t tasks_lock;
 	struct list_head tasks;
 	wait_queue_head_t tasks_wait;
+	int max_num_tasks;
+	int num_tasks;
 
 	int queues_sealed;
 	spinlock_t queues_lock;
