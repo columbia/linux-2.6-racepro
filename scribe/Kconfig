@@ -8,6 +8,7 @@ menuconfig SCRIBE
 	select PID_NS
 	select IPC_NS
 	select MM_OWNER
+	select DEVPTS_MULTIPLE_INSTANCES
 	default y
 
 if SCRIBE
