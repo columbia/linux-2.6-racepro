@@ -50,6 +50,18 @@ extern void scribe_pre_uaccess(const void *data, const void __user *user_ptr,
 extern void scribe_post_uaccess(const void *data, const void __user *user_ptr,
 				size_t size, int flags);
 
+extern pgd_t *scribe_get_pgd(struct mm_struct *next, struct task_struct *tsk);
+
+struct scribe_ps;
+
+#ifndef may_be_scribed
+#define may_be_scribed may_be_scribed
+static inline int may_be_scribed(struct scribe_ps *scribe)
+{
+	return scribe != NULL;
+}
+#endif /* may_be_scribed */
+
 #else /* CONFIG_SCRIBE */
 
 static inline void scribe_pre_uaccess(const void *data,
@@ -58,6 +70,20 @@ static inline void scribe_pre_uaccess(const void *data,
 static inline void scribe_post_uaccess(const void *data,
 				       const void __user *user_ptr,
 				       size_t size, int flags) {}
+
+static inline pgd_t *scribe_get_pgd(struct mm_struct *next,
+				    struct task_struct *tsk)
+{
+	return NULL;
+}
+
+#ifndef may_be_scribed
+#define may_be_scribed
+static inline int may_be_scribed(struct scribe_ps *scribe)
+{
+	return 0;
+}
+#endif /* may_be_scribed */
 
 #endif /* CONFIG_SCRIBE */
 

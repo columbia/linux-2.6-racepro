@@ -553,10 +553,14 @@ struct scribe_ps {
 	struct scribe_mm *mm;
 };
 
+#ifndef may_be_scribed
+#define may_be_scribed may_be_scribed
 static inline int may_be_scribed(struct scribe_ps *scribe)
 {
 	return scribe != NULL;
 }
+#endif /* may_be_scribed */
+
 static inline int is_scribed(struct scribe_ps *scribe)
 {
 	return scribe != NULL &&
@@ -731,8 +735,6 @@ extern void scribe_mem_exit_st(struct scribe_ps *scribe);
 extern void scribe_mem_sync_point(struct scribe_ps *scribe, int mode);
 extern void scribe_disable_sync_sleep(void);
 extern void scribe_enable_sync_sleep(void);
-
-extern pgd_t *scribe_get_pgd(struct mm_struct *next, struct task_struct *tsk);
 
 extern int do_scribe_page(struct scribe_ps *scribe, struct mm_struct *mm,
 			  struct vm_area_struct *vma, unsigned long address,
