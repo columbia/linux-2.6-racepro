@@ -479,6 +479,9 @@ sysenter_exit:
 	TRACE_IRQS_ON
 1:	mov  PT_FS(%esp), %fs
 	PTGS_TO_GS
+	/* Reset eflags for determinism */
+	pushl $0
+	popf
 	ENABLE_INTERRUPTS_SYSEXIT
 
 #ifdef CONFIG_AUDITSYSCALL
