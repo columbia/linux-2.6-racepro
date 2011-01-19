@@ -653,6 +653,10 @@ static inline int should_scribe_data_det(struct scribe_ps *scribe)
 {
 	return scribe->ctx->flags & SCRIBE_DATA_DET;
 }
+static inline int should_scribe_res_always(struct scribe_ps *scribe)
+{
+	return scribe->ctx->flags & SCRIBE_RES_ALWAYS;
+}
 static inline int should_scribe_fence_always(struct scribe_ps *scribe)
 {
 	return scribe->ctx->flags & SCRIBE_FENCE_ALWAYS;

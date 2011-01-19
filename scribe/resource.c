@@ -13,6 +13,7 @@
 #include <linux/fs.h>
 #include <linux/fdtable.h>
 #include <linux/sched.h>
+#include <linux/pid_namespace.h>
 #include <linux/ipc_namespace.h>
 
 /*
@@ -390,6 +391,36 @@ static struct scribe_resource_handle *find_resource_handle(
 	return NULL;
 }
 
+static bool is_locking_necessary(struct scribe_ps *scribe,
+				 struct scribe_resource *res)
+{
+	if (should_scribe_res_always(scribe))
+		return true;
+
+	/*
+	 * It is assumed that the init process won't do anything racy with the
+	 * first child, this way when the number of processes is equal to 2,
+	 * we can disable resource tracking.
+	 * When the number of processes is equal to 3, we need resource
+	 * tracking, but we cannot go back to the disabled resource tracking
+	 * easily. We would need a MEM_ALONE event or something to
+	 * deterministically switch back to this state.
+	 * In our case, we are lazy and stay in that mode.
+	 * TODO send a RES_ALONE event when necessary.
+	 */
+	if (scribe->ctx->max_num_tasks > 2)
+		return true;
+
+	/*
+	 * The only resource we need for the init process is the task one.
+	 * Forcing the synchronization on it is an easy way to avoid races
+	 */
+	if (res->type == SCRIBE_RES_TYPE_TASK)
+		return true;
+
+	return false;
+}
+
 static int serial_match(struct scribe_ps *scribe,
 			struct scribe_resource *res, int serial)
 {
@@ -533,11 +564,11 @@ static int __do_lock(struct scribe_ps *scribe,
 static int do_lock(struct scribe_ps *scribe,
 		   struct scribe_lock_region *lock_region)
 {
-	struct scribe_resource *res;
-
+	struct scribe_resource *res = lock_region->res;
 	might_sleep();
 
-	res = lock_region->res;
+	if (!is_locking_necessary(scribe, res))
+		return 0;
 
 	if (unlikely(is_detaching(scribe))) {
 		if (lock_region->flags & SCRIBE_INTERRUPTIBLE)
@@ -640,13 +671,15 @@ static void do_unlock_replay(struct scribe_ps *scribe,
 static void do_unlock(struct scribe_ps *scribe,
 		      struct scribe_lock_region *lock_region)
 {
-	struct scribe_resource *res;
+	struct scribe_resource *res = lock_region->res;
 	int serial = 0;
 	int detaching;
 
+	if (!is_locking_necessary(scribe, res))
+		return;
+
 	detaching = is_detaching(scribe);
 
-	res = lock_region->res;
 	if (likely(!detaching))
 		serial = res->serial++;
 
@@ -669,9 +702,11 @@ static void do_unlock(struct scribe_ps *scribe,
 static void do_unlock_discard(struct scribe_ps *scribe,
 			      struct scribe_lock_region *lock_region)
 {
-	struct scribe_resource *res;
+	struct scribe_resource *res = lock_region->res;
 
-	res = lock_region->res;
+	if (!is_locking_necessary(scribe, res))
+		return;
+
 	if (use_spinlock(res))
 		spin_unlock(&res->slock);
 	else
@@ -735,8 +770,8 @@ void scribe_lock_object(void *object, struct scribe_resource *res, int flags)
 }
 
 static int __lock_object_handle(struct scribe_ps *scribe, void *object,
-				 struct scribe_resource_container *container,
-				 int flags)
+				struct scribe_resource_container *container,
+				int flags)
 {
 	struct scribe_resource_handle *hres;
 
@@ -764,21 +799,18 @@ static inline struct inode *file_inode(struct file *file)
 	return file->f_path.dentry->d_inode;
 }
 
-static inline bool can_skip_files_struct_sync(struct files_struct *files)
+static inline bool can_skip_files_struct_sync(struct scribe_ps *scribe,
+					      struct files_struct *files)
 {
-	/*
-	 * We can skip the synchronization on the files_struct and also on the
-	 * file pointer only when we have a single owner on the files_struct.
-	 * It wouldn't be as trivial to do it for inodes since the number of
-	 * users on an inode can change anywhere.
-	 */
-	return atomic_read(&files->count) <= 1;
+	/* TODO */
+	return false;
 }
 
-static inline bool can_skip_file_sync(struct file *file)
+static inline bool can_skip_file_sync(struct scribe_ps *scribe,
+				      struct file *file)
 {
-	return  atomic_read(&current->files->count) <= 1 &&
-		atomic_read(&file->scribe_ref_cnt) <= 1;
+	/* TODO */
+	return false;
 }
 
 static struct scribe_lock_region *find_locked_region(
@@ -1076,7 +1108,7 @@ static int __lock_file(struct file *file, int flags)
 		flags &= ~(SCRIBE_INODE_READ | SCRIBE_INODE_WRITE);
 
 	file_locked = false;
-	if (!can_skip_file_sync(file)) {
+	if (!can_skip_file_sync(scribe, file)) {
 		if (__lock_object(scribe, file, &file->scribe_resource, flags))
 			return -EINTR;
 		file_locked = true;
@@ -1365,16 +1397,30 @@ void scribe_close_files(struct files_struct *files)
 
 void scribe_lock_files_read(struct files_struct *files)
 {
-	if (can_skip_files_struct_sync(files))
+	struct scribe_ps *scribe = current->scribe;
+
+	if (!should_handle_resources(scribe))
 		return;
-	scribe_lock_object_handle(files, &files->scribe_resource, SCRIBE_READ);
+
+	if (can_skip_files_struct_sync(scribe, files))
+		return;
+
+	__lock_object_handle(scribe, files,
+			     &files->scribe_resource, SCRIBE_READ);
 }
 
 void scribe_lock_files_write(struct files_struct *files)
 {
-	if (can_skip_files_struct_sync(files))
+	struct scribe_ps *scribe = current->scribe;
+
+	if (!should_handle_resources(scribe))
 		return;
-	scribe_lock_object_handle(files, &files->scribe_resource, SCRIBE_WRITE);
+
+	if (can_skip_files_struct_sync(scribe, files))
+		return;
+
+	__lock_object_handle(scribe, files,
+			     &files->scribe_resource, SCRIBE_WRITE);
 }
 
 static void lock_task(struct task_struct *task, int flags)
