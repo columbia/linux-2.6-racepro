@@ -391,6 +391,12 @@ static ssize_t scribe_do_read(struct file *file, char __user *buf,
 	ret = 0;
 	for (;;) {
 		/* Replaying on a non-deterministic stream */
+
+		/*
+		 * We are peeking events without a regular fence, but that's
+		 * okey since the syscall return value event will act like a
+		 * fence.
+		 */
 		event = scribe_peek_event(scribe->queue, SCRIBE_WAIT);
 		if (IS_ERR(event))
 			break;

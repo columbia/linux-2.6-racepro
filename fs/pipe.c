@@ -496,10 +496,8 @@ pipe_write(struct kiocb *iocb, const struct iovec *_iov,
 		 * If we failed during the recording, we have to fail during
 		 * the replay. But if we didn't, we must not fail.
 		 */
-		if (current->scribe->orig_ret == -EPIPE) {
-			send_sig(SIGPIPE, current, 0);
+		if (current->scribe->orig_ret == -EPIPE)
 			return -EPIPE;
-		}
 	}
 
 	do_wakeup = 0;
