@@ -374,45 +374,42 @@ static ssize_t scribe_do_read(struct file *file, char __user *buf,
 	struct scribe_ps *scribe = current->scribe;
 	union scribe_event_data_union data_event;
 	struct scribe_event *event;
-	size_t data_size;
-	size_t ret;
+	size_t data_size, ret;
 	int force_block = 0;
 
 	if (!is_scribed(scribe))
-		goto bypass;
+		goto out;
 
 	if (is_kernel_copy())
-		goto bypass;
+		goto out;
 
 	if (!should_scribe_data(scribe))
-		goto bypass;
+		goto out;
 
-	if (is_deterministic(file)) {
-		scribe_need_syscall_ret(scribe);
+	scribe_need_syscall_ret(scribe);
 
-		if (is_replaying(scribe)) {
-			len = scribe->orig_ret;
-			if (len <= 0)
-				return len;
-			force_block = 1;
-		}
-		goto bypass;
+	if (is_replaying(scribe)) {
+		len = scribe->orig_ret;
+		if (len <= 0)
+			return len;
+		force_block = 1;
 	}
+
+	if (is_deterministic(file))
+		goto out;
 
 	scribe_data_non_det();
 
 	if (is_recording(scribe))
-		goto bypass;
+		goto out;
 
 	/* Replaying on a non-deterministic stream */
-	ret = 0;
-	for (;;) {
+	for (ret = 0; ret < len; ret += data_size, buf += data_size) {
 		/* Replaying on a non-deterministic stream */
 
 		/*
 		 * We are peeking events without a regular fence, but that's
-		 * okey since the syscall return value event will act like a
-		 * fence.
+		 * okey since we'll stop once ret >= len.
 		 */
 		event = scribe_peek_event(scribe->queue, SCRIBE_WAIT);
 		if (IS_ERR(event))
@@ -426,12 +423,10 @@ static ssize_t scribe_do_read(struct file *file, char __user *buf,
 		data_size = data_event.generic->size;
 
 		scribe_copy_to_user_recorded(buf, data_size, NULL);
-		ret += data_size;
-		buf += data_size;
 	}
 	return ret;
 
-bypass:
+out:
 	return do_read(file, buf, len, ppos, force_block);
 }
 #else
