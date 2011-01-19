@@ -300,30 +300,47 @@ ssize_t do_sync_read(struct file *filp, char __user *buf, size_t len, loff_t *pp
 
 EXPORT_SYMBOL(do_sync_read);
 
+static ssize_t __do_read(struct file *file, char __user *buf,
+			 size_t len, loff_t *ppos)
+{
+	if (file->f_op->read)
+		return file->f_op->read(file, buf, len, ppos);
+	else
+		return do_sync_read(file, buf, len, ppos);
+}
+
 static ssize_t do_read(struct file *file, char __user *buf,
-			 size_t len, loff_t *ppos, int force_block)
+		       size_t len, loff_t *ppos, int force_block)
 {
 	unsigned int saved_flags;
 	int had_pending;
-	ssize_t ret;
+	ssize_t ret, count;
 
-	if (force_block) {
-		saved_flags = file->f_flags;
-		file->f_flags &= ~O_NONBLOCK;
-		had_pending = test_thread_flag(TIF_SIGPENDING);
-		clear_thread_flag(TIF_SIGPENDING);
+	if (!force_block)
+		return __do_read(file, buf, len, ppos);
+
+	saved_flags = file->f_flags;
+	file->f_flags &= ~O_NONBLOCK;
+	had_pending = test_thread_flag(TIF_SIGPENDING);
+	clear_thread_flag(TIF_SIGPENDING);
+
+	ret = 0;
+	while (len > 0) {
+		count = __do_read(file, buf, len, ppos);
+		if (count == 0)
+			break;
+		if (count < 0) {
+			ret = count;
+			break;
+		}
+		len -= count;
+		buf += count;
+		ret += count;
 	}
 
-	if (file->f_op->read)
-		ret = file->f_op->read(file, buf, len, ppos);
-	else
-		ret = do_sync_read(file, buf, len, ppos);
-
-	if (force_block) {
-		if (had_pending)
-			set_thread_flag(TIF_SIGPENDING);
-		file->f_flags = saved_flags;
-	}
+	if (had_pending)
+		set_thread_flag(TIF_SIGPENDING);
+	file->f_flags = saved_flags;
 
 	return ret;
 }
@@ -478,30 +495,48 @@ ssize_t do_sync_write(struct file *filp, const char __user *buf, size_t len, lof
 
 EXPORT_SYMBOL(do_sync_write);
 
+static ssize_t __do_write(struct file *file, const char __user *buf,
+			  size_t len, loff_t *ppos)
+{
+	if (file->f_op->write)
+		return file->f_op->write(file, buf, len, ppos);
+	else
+		return do_sync_write(file, buf, len, ppos);
+}
+
 static ssize_t do_write(struct file *file, const char __user *buf,
-			size_t count, loff_t *ppos, int force_block)
+			size_t len, loff_t *ppos, int force_block)
 {
 	unsigned int saved_flags;
 	int had_pending;
-	ssize_t ret;
+	ssize_t ret, count;
 
-	if (force_block) {
-		saved_flags = file->f_flags;
-		file->f_flags &= ~O_NONBLOCK;
-		had_pending = test_thread_flag(TIF_SIGPENDING);
-		clear_thread_flag(TIF_SIGPENDING);
+	if (!force_block)
+		return __do_write(file, buf, len, ppos);
+
+	/* Pretty much a copy of do_read() */
+	saved_flags = file->f_flags;
+	file->f_flags &= ~O_NONBLOCK;
+	had_pending = test_thread_flag(TIF_SIGPENDING);
+	clear_thread_flag(TIF_SIGPENDING);
+
+	ret = 0;
+	while (len > 0) {
+		count = __do_write(file, buf, len, ppos);
+		if (count == 0)
+			break;
+		if (count < 0) {
+			ret = count;
+			break;
+		}
+		len -= count;
+		buf += count;
+		ret += count;
 	}
 
-	if (file->f_op->write)
-		ret = file->f_op->write(file, buf, count, ppos);
-	else
-		ret = do_sync_write(file, buf, count, ppos);
-
-	if (force_block) {
-		if (had_pending)
-			set_thread_flag(TIF_SIGPENDING);
-		file->f_flags = saved_flags;
-	}
+	if (had_pending)
+		set_thread_flag(TIF_SIGPENDING);
+	file->f_flags = saved_flags;
 
 	return ret;
 }
