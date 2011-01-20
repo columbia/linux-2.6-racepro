@@ -19,6 +19,7 @@
 #include <linux/security.h>
 #include <linux/syscalls.h>
 #include <linux/mmu_notifier.h>
+#include <linux/scribe.h>
 
 #include <asm/uaccess.h>
 #include <asm/cacheflush.h>
@@ -111,6 +112,7 @@ static void move_ptes(struct vm_area_struct *vma, pmd_t *old_pmd,
 				   new_pte++, new_addr += PAGE_SIZE) {
 		if (pte_none(*old_pte))
 			continue;
+		scribe_clear_shadow_pte_locked(mm, vma, old_pte, old_addr);
 		pte = ptep_clear_flush(vma, old_addr, old_pte);
 		pte = move_pte(pte, new_vma->vm_page_prot, old_addr, new_addr);
 		set_pte_at(mm, new_addr, new_pte, pte);

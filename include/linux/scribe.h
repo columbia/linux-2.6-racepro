@@ -745,8 +745,6 @@ extern void scribe_enable_sync_sleep(void);
 extern int do_scribe_page(struct scribe_ps *scribe, struct mm_struct *mm,
 			  struct vm_area_struct *vma, unsigned long address,
 			  pte_t *pte, pmd_t *pmd, unsigned int flags);
-extern void scribe_do_cow(struct mm_struct *mm, struct vm_area_struct *vma,
-			  unsigned long address);
 extern void scribe_split_vma(struct vm_area_struct *vma);
 extern void scribe_vma_link(struct vm_area_struct *vma);
 extern void scribe_change_protection(struct vm_area_struct *vma,
@@ -754,6 +752,9 @@ extern void scribe_change_protection(struct vm_area_struct *vma,
 		int dirty_accountable);
 extern void scribe_unmap_vmas(struct mm_struct *mm, struct vm_area_struct *vma,
 		unsigned long start_addr, unsigned long end_addr);
+extern void scribe_clear_shadow_pte_locked(struct mm_struct *mm,
+					   struct vm_area_struct *vma,
+					   pte_t *real_pte, unsigned long addr);
 
 extern void scribe_mem_schedule_in(struct scribe_ps *scribe);
 extern void scribe_mem_schedule_out(struct scribe_ps *scribe);

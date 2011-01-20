@@ -33,6 +33,7 @@
 #include <linux/mmu_notifier.h>
 #include <linux/swap.h>
 #include <linux/ksm.h>
+#include <linux/scribe.h>
 
 #include <asm/tlbflush.h>
 #include "internal.h"
@@ -745,6 +746,7 @@ static int write_protect_page(struct vm_area_struct *vma, struct page *page,
 		 * this assure us that no O_DIRECT can happen after the check
 		 * or in the middle of the check.
 		 */
+		scribe_clear_shadow_pte_locked(mm, vma, ptep, addr);
 		entry = ptep_clear_flush(vma, addr, ptep);
 		/*
 		 * Check that no O_DIRECT or similar I/O is in progress on the
@@ -812,6 +814,7 @@ static int replace_page(struct vm_area_struct *vma, struct page *page,
 	get_page(kpage);
 	page_add_anon_rmap(kpage, vma, addr);
 
+	scribe_clear_shadow_pte_locked(mm, vma, ptep, addr);
 	flush_cache_page(vma, addr, pte_pfn(*ptep));
 	ptep_clear_flush(vma, addr, ptep);
 	set_pte_at_notify(mm, addr, ptep, mk_pte(kpage, vma->vm_page_prot));

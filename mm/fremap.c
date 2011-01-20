@@ -16,6 +16,7 @@
 #include <linux/module.h>
 #include <linux/syscalls.h>
 #include <linux/mmu_notifier.h>
+#include <linux/scribe.h>
 
 #include <asm/mmu_context.h>
 #include <asm/cacheflush.h>
@@ -31,6 +32,7 @@ static void zap_pte(struct mm_struct *mm, struct vm_area_struct *vma,
 	if (pte_present(pte)) {
 		struct page *page;
 
+		scribe_clear_shadow_pte_locked(mm, vma, ptep, addr);
 		flush_cache_page(vma, addr, pte_pfn(pte));
 		pte = ptep_clear_flush(vma, addr, ptep);
 		page = vm_normal_page(vma, addr, pte);

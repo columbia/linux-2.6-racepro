@@ -898,7 +898,7 @@ static void free_own_pgd(struct scribe_ps *scribe)
 
 static void update_private_pte_locked(struct scribe_ps *scribe,
 		struct mm_struct *mm, struct vm_area_struct *vma,
-		unsigned long address, int write_access)
+		pte_t *real_pte, unsigned long address, int write_access)
 {
 	pgd_t *own_pgd;
 	pud_t *own_pud;
@@ -918,14 +918,44 @@ static void update_private_pte_locked(struct scribe_ps *scribe,
 	own_pte = pte_offset_map_nested(own_pmd, address);
 	if (pte_present(*own_pte)) {
 		flush_cache_page(vma, address, pte_pfn(*own_pte));
+
 		if (write_access)
 			pte_clear(mm, address, own_pte);
 		else
 			ptep_set_wrprotect(mm, address, own_pte);
+
 		flush_tlb_page(vma, address);
 		update_mmu_cache(vma, address, own_pte);
+
+		if (pte_dirty(*own_pte)) {
+			/* Propagating the dirty flag to the real pte */
+			ptep_set_access_flags(vma, address, real_pte,
+					      pte_mkdirty(*real_pte), 1);
+		}
+
 	}
 	pte_unmap_nested(own_pte);
+}
+
+void scribe_clear_shadow_pte_locked(struct mm_struct *mm,
+				    struct vm_area_struct *vma,
+				    pte_t *real_pte, unsigned long addr)
+{
+	struct scribe_ps *scribe = current->scribe;
+	struct scribe_mm *scribe_mm;
+	struct scribe_obj_ref *mm_ref;
+
+	if (!should_handle_mm(scribe))
+		return;
+
+	XMEM_DEBUG(scribe, "clear shadow ptes called on (page = %p)",
+		   (void *)addr, (void *)(addr & PAGE_MASK));
+
+	mm_ref = find_mm_ref(scribe);
+	list_for_each_entry(scribe_mm, &mm_ref->mm_list, mm_ref_node) {
+		update_private_pte_locked(scribe_mm->scribe, mm, vma,
+					  real_pte, addr, 1);
+	}
 }
 
 static void update_private_pte(struct scribe_ps *scribe,
@@ -935,6 +965,7 @@ static void update_private_pte(struct scribe_ps *scribe,
 	pgd_t *pgd;
 	pud_t *pud;
 	pmd_t *pmd;
+	pte_t *pte;
 	spinlock_t *ptl;
 
 	pgd = pgd_offset(mm, address);
@@ -947,10 +978,9 @@ static void update_private_pte(struct scribe_ps *scribe,
 	if (pmd_none(*pmd))
 		return;
 
-	ptl = pte_lockptr(mm, pmd);
-	spin_lock(ptl);
-	update_private_pte_locked(scribe, mm, vma, address, write_access);
-	spin_unlock(ptl);
+	pte = pte_offset_map_lock(mm, pmd, address, &ptl);
+	update_private_pte_locked(scribe, mm, vma, pte, address, write_access);
+	pte_unmap_unlock(pte, ptl);
 }
 
 /********************************************************
@@ -2046,6 +2076,11 @@ set_pte:
 		entry = pte_mkdirty(entry);
 		set_pte_at(mm, address, pte, entry);
 	}
+	/*
+	 * In case of a READ then WRITE access, the shadow pte will be marked
+	 * as dirty, but not the real one. It will get propagated in
+	 * update_private_pte_locked().
+	 */
 	if (page && !page->write_access)
 		entry = pte_wrprotect(entry);
 	set_pte_at(mm, address, own_pte, entry);
@@ -2057,26 +2092,6 @@ set_pte:
 }
 
 /******************************************************************************/
-
-void scribe_do_cow(struct mm_struct *mm, struct vm_area_struct *vma,
-		   unsigned long address)
-{
-	struct scribe_ps *scribe = current->scribe;
-	struct scribe_mm *scribe_mm;
-	struct scribe_obj_ref *mm_ref;
-
-	if (!should_handle_mm(scribe))
-		return;
-
-	XMEM_DEBUG(scribe, "COWing on %p (page = %p)",
-		   (void*)address, (void*)(address & PAGE_MASK));
-
-	mm_ref = find_mm_ref(scribe);
-	list_for_each_entry(scribe_mm, &mm_ref->mm_list, mm_ref_node) {
-		update_private_pte_locked(scribe_mm->scribe,
-					  mm, vma, address, 1);
-	}
-}
 
 void scribe_split_vma(struct vm_area_struct *vma)
 {

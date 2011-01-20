@@ -56,6 +56,7 @@
 #include <linux/memcontrol.h>
 #include <linux/mmu_notifier.h>
 #include <linux/migrate.h>
+#include <linux/scribe.h>
 
 #include <asm/tlbflush.h>
 
@@ -645,6 +646,7 @@ static int page_mkclean_one(struct page *page, struct vm_area_struct *vma,
 	if (pte_dirty(*pte) || pte_write(*pte)) {
 		pte_t entry;
 
+		scribe_clear_shadow_pte_locked(mm, vma, pte, address);
 		flush_cache_page(vma, address, pte_pfn(*pte));
 		entry = ptep_clear_flush_notify(vma, address, pte);
 		entry = pte_wrprotect(entry);
@@ -928,6 +930,7 @@ int try_to_unmap_one(struct page *page, struct vm_area_struct *vma,
   	}
 
 	/* Nuke the page table entry. */
+	scribe_clear_shadow_pte_locked(mm, vma, pte, address);
 	flush_cache_page(vma, address, page_to_pfn(page));
 	pteval = ptep_clear_flush_notify(vma, address, pte);
 
@@ -1109,6 +1112,7 @@ static int try_to_unmap_cluster(unsigned long cursor, unsigned int *mapcount,
 			continue;
 
 		/* Nuke the page table entry. */
+		scribe_clear_shadow_pte_locked(mm, vma, pte, address);
 		flush_cache_page(vma, address, pte_pfn(*pte));
 		pteval = ptep_clear_flush_notify(vma, address, pte);
 
