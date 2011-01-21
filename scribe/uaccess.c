@@ -121,6 +121,7 @@ void scribe_prepare_data_event(size_t pre_alloc_size)
 	if (!IS_ERR(event.generic))
 		scribe->prepared_data_event = event;
 }
+EXPORT_SYMBOL(scribe_prepare_data_event);
 
 void scribe_pre_uaccess(const void *data, const void __user *user_ptr,
 			size_t size, int flags)
@@ -426,6 +427,7 @@ void scribe_allow_uaccess(void)
 
 	__scribe_allow_uaccess(scribe);
 }
+EXPORT_SYMBOL(scribe_allow_uaccess);
 
 void scribe_forbid_uaccess(void)
 {
@@ -435,6 +437,7 @@ void scribe_forbid_uaccess(void)
 
 	__scribe_forbid_uaccess(scribe);
 }
+EXPORT_SYMBOL(scribe_forbid_uaccess);
 
 void scribe_pre_schedule(void)
 {
