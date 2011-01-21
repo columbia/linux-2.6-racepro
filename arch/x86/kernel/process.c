@@ -261,6 +261,14 @@ int sys_fork(struct pt_regs *regs)
  */
 int sys_vfork(struct pt_regs *regs)
 {
+	if (is_ps_scribed(current)) {
+		/*
+		 * vfork() is generate memory sharing events: doing a regular
+		 * fork() to avoid that.
+		 */
+		return sys_fork(regs);
+	}
+
 	return do_fork(CLONE_VFORK | CLONE_VM | SIGCHLD, regs->sp, regs, 0,
 		       NULL, NULL);
 }
