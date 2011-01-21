@@ -18,6 +18,7 @@
 #include <linux/seqlock.h>
 #include <linux/mutex.h>
 #include <linux/gfp.h>
+#include <linux/scribe.h>
 #include <asm/tlbflush.h>
 #include <asm/io.h>
 
@@ -192,6 +193,7 @@ retry:
 		pte = page_check_address(page, mm, address, &ptl, 1);
 		if (pte) {
 			/* Nuke the page table entry. */
+			scribe_clear_shadow_pte_locked(mm, vma, pte, address);
 			flush_cache_page(vma, address, pte_pfn(*pte));
 			pteval = ptep_clear_flush_notify(vma, address, pte);
 			page_remove_rmap(page);

@@ -941,14 +941,14 @@ void scribe_clear_shadow_pte_locked(struct mm_struct *mm,
 				    struct vm_area_struct *vma,
 				    pte_t *real_pte, unsigned long addr)
 {
-	struct scribe_ps *scribe = current->scribe;
+	struct scribe_ps *scribe = mm->owner->scribe;
 	struct scribe_mm *scribe_mm;
 	struct scribe_obj_ref *mm_ref;
 
 	if (!should_handle_mm(scribe))
 		return;
 
-	XMEM_DEBUG(scribe, "clear shadow ptes called on (page = %p)",
+	XMEM_DEBUG(scribe, "clear shadow ptes called on %p (page = %p)",
 		   (void *)addr, (void *)(addr & PAGE_MASK));
 
 	mm_ref = find_mm_ref(scribe);
@@ -2095,7 +2095,7 @@ set_pte:
 
 void scribe_split_vma(struct vm_area_struct *vma)
 {
-	struct scribe_ps *scribe = current->scribe;
+	struct scribe_ps *scribe = vma->vm_mm->owner->scribe;
 	void *object;
 
 	if (!should_handle_mm(scribe))
@@ -2113,7 +2113,7 @@ void scribe_split_vma(struct vm_area_struct *vma)
 
 void scribe_vma_link(struct vm_area_struct *vma)
 {
-	struct scribe_ps *scribe = current->scribe;
+	struct scribe_ps *scribe = vma->vm_mm->owner->scribe;
 	struct scribe_obj_ref *ref;
 	void *object;
 
@@ -2140,7 +2140,7 @@ void scribe_change_protection(struct vm_area_struct *vma,
 		int dirty_accountable)
 {
 	struct mm_struct *mm = vma->vm_mm;
-	struct scribe_ps *scribe = current->scribe;
+	struct scribe_ps *scribe = mm->owner->scribe;
 	struct scribe_mm *scribe_mm;
 	struct scribe_obj_ref *mm_ref;
 
@@ -2172,7 +2172,7 @@ void scribe_change_protection(struct vm_area_struct *vma,
 void scribe_unmap_vmas(struct mm_struct *mm, struct vm_area_struct *vma,
 		       unsigned long start_addr, unsigned long end_addr)
 {
-	struct scribe_ps *scribe = current->scribe;
+	struct scribe_ps *scribe = mm->owner->scribe;
 	if (!should_handle_mm(scribe))
 		return;
 
