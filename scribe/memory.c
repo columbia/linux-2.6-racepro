@@ -935,7 +935,10 @@ static void update_private_pte_locked(struct scribe_ps *scribe,
 	pmd_t *own_pmd;
 	pte_t *own_pte;
 
-	own_pgd = scribe->mm->own_pgd+pgd_index(address);
+	own_pgd = scribe->mm->own_pgd;
+	BUG_ON(!own_pgd);
+
+	own_pgd += pgd_index(address);
 	if (pgd_none(*own_pgd))
 		return;
 	own_pud = pud_offset(own_pgd, address);
@@ -1118,10 +1121,11 @@ void scribe_mem_exit_st(struct scribe_ps *scribe)
 	/* set back the real pgd */
 	if (current->scribe == scribe)
 		load_cr3(tsk->mm->pgd);
-	free_own_pgd(scribe);
 
 	rm_shadow_mm(mm, scribe->p->mm);
 	put_all_objects(scribe);
+
+	free_own_pgd(scribe);
 
 	scribe->mm = NULL;
 	kfree(mm);
