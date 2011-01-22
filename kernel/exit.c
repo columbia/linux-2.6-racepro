@@ -547,7 +547,8 @@ void exit_files(struct task_struct *tsk)
 	struct files_struct * files = tsk->files;
 
 	if (files) {
-		scribe_close_files(files);
+		if (is_ps_scribed(tsk))
+			scribe_close_files(files);
 
 		task_lock(tsk);
 		tsk->files = NULL;
