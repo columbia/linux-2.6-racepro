@@ -871,7 +871,7 @@ extern unsigned long do_mremap(unsigned long addr,
 extern int mprotect_fixup(struct vm_area_struct *vma,
 			  struct vm_area_struct **pprev, unsigned long start,
 			  unsigned long end, unsigned long newflags);
-extern void change_protection(struct mm_struct *mm, pgd_t *pgd,
+extern void change_protection(struct vm_area_struct *vma,
 			      unsigned long addr, unsigned long end,
 			      pgprot_t newprot, int dirty_accountable);
 

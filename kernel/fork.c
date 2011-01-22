@@ -473,6 +473,16 @@ static void mm_init_aio(struct mm_struct *mm)
 #endif
 }
 
+static void mm_init_scribe(struct mm_struct *mm)
+{
+#ifdef CONFIG_SCRIBE
+	spin_lock_init(&mm->scribe_lock);
+	INIT_LIST_HEAD(&mm->scribe_list);
+	mm->scribe_cnt = 0;
+	init_waitqueue_head(&mm->scribe_wait);
+#endif
+}
+
 static struct mm_struct * mm_init(struct mm_struct * mm, struct task_struct *p)
 {
 	atomic_set(&mm->mm_users, 1);
@@ -489,6 +499,7 @@ static struct mm_struct * mm_init(struct mm_struct * mm, struct task_struct *p)
 	mm->cached_hole_size = ~0UL;
 	mm_init_aio(mm);
 	mm_init_owner(mm, p);
+	mm_init_scribe(mm);
 
 	if (likely(!mm_alloc_pgd(mm))) {
 		mm->def_flags = 0;

@@ -310,6 +310,13 @@ struct mm_struct {
 #ifdef CONFIG_MMU_NOTIFIER
 	struct mmu_notifier_mm *mmu_notifier_mm;
 #endif
+
+#ifdef CONFIG_SCRIBE
+	spinlock_t scribe_lock;
+	struct list_head scribe_list;
+	int scribe_cnt;
+	wait_queue_head_t scribe_wait;
+#endif
 };
 
 /* Future-safe accessor for struct mm_struct's cpu_vm_mask. */

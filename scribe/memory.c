@@ -61,7 +61,6 @@ struct scribe_obj_ref {
 	 * underlying mm->mmap_sem. It allows iterating trough scribetasks
 	 */
 	struct list_head	mm_list;
-	wait_queue_head_t	wait;
 };
 
 #define SCRIBE_MEM_HASH_BITS	14
@@ -137,6 +136,9 @@ struct scribe_page {
 };
 
 struct scribe_mm {
+	/* node for mm_struct->scribe_list */
+	struct list_head node;
+
 	/* the scribe_mm struct is per task */
 	struct scribe_ps	*scribe;
 
@@ -145,9 +147,6 @@ struct scribe_mm {
 	 * shared pages to be able to fault on them.
 	 */
 	pgd_t		*own_pgd;
-
-	/* node for scribe_obj_ref->mm_list */
-	struct list_head	mm_ref_node;
 
 	int is_alone;
 
@@ -392,7 +391,6 @@ static struct scribe_obj_ref *get_obj_ref(struct scribe_context *ctx, void *obje
 			ref->object = object;
 			atomic_set(&ref->counter, 0);
 			INIT_LIST_HEAD(&ref->mm_list);
-			init_waitqueue_head(&ref->wait);
 			list_add(&ref->node, &ctx->mem_list);
 		}
 	}
@@ -430,8 +428,6 @@ static void put_obj_ref(struct scribe_context *ctx, struct scribe_obj_ref *ref)
 		/* the object is not used anymore, let's clean the hash table */
 		scribe_remove_page(ctx, &key);
 	}
-	else
-		wake_up(&ref->wait);
 }
 
 static inline void put_obj(struct scribe_context *ctx, void *object)
@@ -443,17 +439,62 @@ static inline void put_obj(struct scribe_context *ctx, void *object)
 	put_obj_ref(ctx, ref);
 }
 
-static inline struct scribe_obj_ref *find_mm_ref(struct scribe_ps *scribe) {
-	return find_obj_ref(scribe->ctx, scribe->p->mm);
-}
-
 static inline int num_obj_ref(struct scribe_obj_ref *ref) {
 	if (!ref)
 		return 0;
 	return atomic_read(&ref->counter);
 }
 
-#define IS_SHARING_MM(scribe) (num_obj_ref(find_mm_ref(scribe)) > 1)
+static inline int get_scribe_cnt(struct mm_struct *mm)
+{
+	int ret;
+	spin_lock(&mm->scribe_lock);
+	ret = mm->scribe_cnt;
+	spin_unlock(&mm->scribe_lock);
+	return ret;
+}
+
+static int is_sharing_mm(struct scribe_ps *scribe)
+{
+	return get_scribe_cnt(scribe->p->mm) > 1;
+}
+
+static int is_sharing_mm_biased(struct scribe_ps *scribe)
+{
+	/*
+	 * This one is used when the scribe_mm struct isn't on the mm_struct
+	 * list.
+	 */
+	return get_scribe_cnt(scribe->p->mm) > 0;
+}
+
+static void add_shadow_mm(struct scribe_mm *scribe_mm, struct mm_struct *mm)
+{
+	spin_lock(&mm->scribe_lock);
+	list_add(&scribe_mm->node, &mm->scribe_list);
+	mm->scribe_cnt++;
+	spin_unlock(&mm->scribe_lock);
+	wake_up(&mm->scribe_wait);
+}
+
+static void rm_shadow_mm(struct scribe_mm *scribe_mm, struct mm_struct *mm)
+{
+	struct scribe_page_key key;
+	int cnt;
+
+	spin_lock(&mm->scribe_lock);
+	list_del(&scribe_mm->node);
+	cnt = --mm->scribe_cnt;
+	spin_unlock(&mm->scribe_lock);
+	wake_up(&mm->scribe_wait);
+
+	if (!cnt)  {
+		key.object = mm;
+		key.offset = OFFSET_ALL;
+		scribe_remove_page(scribe_mm->scribe->ctx, &key);
+	}
+}
+
 
 /* get_all_objects() bumps the (private) reference counter of the mm_struct, and
  * the inode counters (only if the mm_struct counter was 0)
@@ -465,12 +506,7 @@ static int get_all_objects(struct scribe_ps *scribe)
 	struct vm_area_struct *vma;
 	struct mm_struct *mm = scribe->p->mm;
 
-	ref = get_obj_ref(scribe->ctx, mm);
-	if (IS_ERR(ref))
-		return PTR_ERR(ref);
-	list_add(&scribe->mm->mm_ref_node, &ref->mm_list);
-
-	if (IS_SHARING_MM(scribe))
+	if (is_sharing_mm_biased(scribe))
 		return 0;
 
 	for (vma = mm->mmap; vma; vma = vma->vm_next) {
@@ -497,8 +533,8 @@ static void put_all_objects(struct scribe_ps *scribe)
 	struct vm_area_struct *vma;
 	struct mm_struct *mm = scribe->p->mm;
 
-	if (IS_SHARING_MM(scribe))
-		goto skip_vmas;
+	if (is_sharing_mm_biased(scribe))
+		return;
 
 	for (vma = mm->mmap; vma; vma = vma->vm_next) {
 		if (!(vma->vm_flags & VM_SHARED))
@@ -507,10 +543,6 @@ static void put_all_objects(struct scribe_ps *scribe)
 		if (vma->vm_flags & VM_SCRIBED)
 			put_obj(scribe->ctx, vma->vm_file->f_dentry->d_inode);
 	}
-
-skip_vmas:
-	list_del(&scribe->mm->mm_ref_node);
-	put_obj(scribe->ctx, scribe->p->mm);
 }
 
 /********************************************************
@@ -541,7 +573,7 @@ void scribe_free_mem_hash(struct hlist_head *hash)
 			page = hlist_entry(hash[i].first,
 					    struct scribe_page, node);
 
-			printk("warning, freeing mem page %p(%p, %p)",
+			printk("warning, freeing mem page %p(%p, %p)\n",
 			       page, page->key.object, (void*)page->key.offset);
 
 			hlist_del(&page->node);
@@ -854,18 +886,16 @@ static inline void dec_waiters(struct scribe_page *page, int write_access)
     private page table management
 *********************************************************/
 
-static int alloc_own_pgd(struct scribe_ps *scribe)
+static int alloc_own_pgd(struct scribe_ps *scribe,
+			 struct scribe_mm *scribe_mm, struct mm_struct *mm)
 {
-	struct scribe_mm *mm = scribe->mm;
-	struct mm_struct *mm_struct = scribe->p->mm;
+	BUG_ON(scribe_mm->own_pgd);
 
-	BUG_ON(mm->own_pgd);
-
-	mm->own_pgd = pgd_alloc(mm_struct);
-	if (!mm->own_pgd)
+	scribe_mm->own_pgd = pgd_alloc(mm);
+	if (!scribe_mm->own_pgd)
 		return -ENOMEM;
 
-	XMEM_DEBUG(scribe, "own pgd is at %p", mm->own_pgd);
+	XMEM_DEBUG(scribe, "own pgd is at %p", scribe_mm->own_pgd);
 	return 0;
 }
 
@@ -943,7 +973,6 @@ void scribe_clear_shadow_pte_locked(struct mm_struct *mm,
 {
 	struct scribe_ps *scribe = mm->owner->scribe;
 	struct scribe_mm *scribe_mm;
-	struct scribe_obj_ref *mm_ref;
 
 	if (!should_handle_mm(scribe))
 		return;
@@ -951,11 +980,12 @@ void scribe_clear_shadow_pte_locked(struct mm_struct *mm,
 	XMEM_DEBUG(scribe, "clear shadow ptes called on %p (page = %p)",
 		   (void *)addr, (void *)(addr & PAGE_MASK));
 
-	mm_ref = find_mm_ref(scribe);
-	list_for_each_entry(scribe_mm, &mm_ref->mm_list, mm_ref_node) {
+	spin_lock(&mm->scribe_lock);
+	list_for_each_entry(scribe_mm, &mm->scribe_list, node) {
 		update_private_pte_locked(scribe_mm->scribe, mm, vma,
 					  real_pte, addr, 1);
 	}
+	spin_unlock(&mm->scribe_lock);
 }
 
 static void update_private_pte(struct scribe_ps *scribe,
@@ -995,7 +1025,7 @@ int scribe_mem_init_st(struct scribe_ps *scribe)
 
 	if (is_ps_scribed(current) &&
 	    tsk->mm != current->mm &&
-	    IS_SHARING_MM(current->scribe))
+	    is_sharing_mm(current->scribe))
 		MEM_DEBUG(current->scribe, "forked from multithreaded process");
 
 	MEM_DEBUG(scribe, "scribe_mem_init_st()");
@@ -1013,25 +1043,23 @@ int scribe_mem_init_st(struct scribe_ps *scribe)
 	mm->disable_sync_sleep = 0;
 
 	down_write(&tsk->mm->mmap_sem);
-	scribe->mm = mm;
 
 	ret = get_all_objects(scribe);
-
 	if (ret) {
 		kfree(mm);
-		scribe->mm = NULL;
 		goto out_up;
 	}
 
-	mm->is_alone = !IS_SHARING_MM(scribe); /* needs get_all_objects() */
-
-	ret = alloc_own_pgd(scribe);
+	ret = alloc_own_pgd(scribe, mm, tsk->mm);
 	if (ret) {
 		put_all_objects(scribe);
 		kfree(mm);
-		scribe->mm = NULL;
 		goto out_up;
 	}
+
+	scribe->mm = mm;
+	add_shadow_mm(mm, tsk->mm);
+	mm->is_alone = !is_sharing_mm(scribe);
 
 	if (current->scribe == scribe)
 		load_cr3(mm->own_pgd);
@@ -1046,11 +1074,11 @@ int scribe_mem_init_st(struct scribe_ps *scribe)
 		MEM_DEBUG(current->scribe, "adjusting pte's");
 
 		for (vma = current->mm->mmap; vma; vma = vma->vm_next) {
-			scribe_change_protection(vma, vma->vm_start,
-				vma->vm_end, vma->vm_page_prot, 0);
+			change_protection(vma, vma->vm_start,
+					  vma->vm_end, vma->vm_page_prot, 0);
 		}
 
-		current->scribe->mm->is_alone = !IS_SHARING_MM(scribe);
+		current->scribe->mm->is_alone = !is_sharing_mm(scribe);
 	}
 
 	scribe_mem_sync_point(scribe, MEM_SYNC_IN);
@@ -1092,6 +1120,7 @@ void scribe_mem_exit_st(struct scribe_ps *scribe)
 		load_cr3(tsk->mm->pgd);
 	free_own_pgd(scribe);
 
+	rm_shadow_mm(mm, scribe->p->mm);
 	put_all_objects(scribe);
 
 	scribe->mm = NULL;
@@ -1582,7 +1611,7 @@ static inline int is_vma_scribed(struct scribe_ps *scribe, struct vm_area_struct
 	if (!(vm_flags & VM_WRITE))
 		return 0;
 
-	/* threaded ? -- note that using IS_SHARING_MM() is incorrect, because
+	/* threaded ? -- note that using is_sharing_mm() is incorrect, because
 	 * the value during replay must match the one during logging
 	 */
 	if (scribe->mm->is_alone)
@@ -1594,7 +1623,7 @@ static inline int is_vma_scribed(struct scribe_ps *scribe, struct vm_area_struct
 /* Returns 1 if we went alone, 0 if not, -ENOMEM if the allocation failed */
 static int check_for_aloneness(struct scribe_ps *scribe)
 {
-	if (IS_SHARING_MM(scribe))
+	if (is_sharing_mm(scribe))
 		return 0;
 
 	if (scribe->mm->is_alone)
@@ -1940,7 +1969,7 @@ static int scribe_page_access_replay(struct scribe_ps *scribe,
 		scribe_free_event(event);
 
 		MEM_DEBUG(scribe, "waiting for threads to die");
-		wait_event(find_mm_ref(scribe)->wait, !IS_SHARING_MM(scribe));
+		wait_event(mm->scribe_wait, !is_sharing_mm(scribe));
 		MEM_DEBUG(scribe, "threads are dead :)");
 		scribe->mm->is_alone = 1;
 
@@ -2135,34 +2164,6 @@ void scribe_vma_link(struct vm_area_struct *vma)
 	WARN(IS_ERR(ref), "Cannot get_obj_ref()\n");
 }
 
-void scribe_change_protection(struct vm_area_struct *vma,
-		unsigned long addr, unsigned long end, pgprot_t newprot,
-		int dirty_accountable)
-{
-	struct mm_struct *mm = vma->vm_mm;
-	struct scribe_ps *scribe = mm->owner->scribe;
-	struct scribe_mm *scribe_mm;
-	struct scribe_obj_ref *mm_ref;
-
-	flush_cache_range(vma, addr, end);
-	change_protection(mm, mm->pgd, addr, end, newprot, dirty_accountable);
-	if (should_handle_mm(scribe)) {
-		mm_ref = find_mm_ref(scribe);
-		/*
-		 * We must clear all the private page tables, so they can page
-		 * fault again and copy the shadow's table pte
-		 */
-		XMEM_DEBUG(scribe, "changed protection called on range %p -> %p",
-			  (void*)addr, (void*)end);
-		list_for_each_entry(scribe_mm, &mm_ref->mm_list, mm_ref_node) {
-			change_protection(mm, scribe_mm->own_pgd,
-					  addr, end, PAGE_NONE, 0);
-		}
-	}
-	flush_tlb_range(vma, addr, end);
-}
-
-
 /*
  * Okey this is dirty: when unmaping a region, we must clear the corresponding
  * pte's in the private page table, this does the trick.
@@ -2190,8 +2191,6 @@ void scribe_unmap_vmas(struct mm_struct *mm, struct vm_area_struct *vma,
 			continue;
 
 		BUG_ON(start != (start & PAGE_MASK));
-
-		scribe_change_protection(vma, start, end, vma->vm_page_prot, 0);
 
 		/* FIXME we should call, is_vma_could_be_scribed or something
 		 * if scribe->mm->alone == 1, is_vma_scribed() returns true ...
