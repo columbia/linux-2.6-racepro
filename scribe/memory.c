@@ -970,11 +970,20 @@ static void update_private_pte_locked(struct scribe_ps *scribe,
 	pte_unmap_nested(own_pte);
 }
 
+static struct scribe_ps *get_scribe_from_mm(struct mm_struct *mm)
+{
+	struct task_struct *p = mm->owner;
+
+	if (!p)
+		return NULL;
+	return p->scribe;
+}
+
 void scribe_clear_shadow_pte_locked(struct mm_struct *mm,
 				    struct vm_area_struct *vma,
 				    pte_t *real_pte, unsigned long addr)
 {
-	struct scribe_ps *scribe = mm->owner->scribe;
+	struct scribe_ps *scribe = get_scribe_from_mm(mm);
 	struct scribe_mm *scribe_mm;
 
 	if (!should_handle_mm(scribe))
@@ -2128,7 +2137,7 @@ set_pte:
 
 void scribe_split_vma(struct vm_area_struct *vma)
 {
-	struct scribe_ps *scribe = vma->vm_mm->owner->scribe;
+	struct scribe_ps *scribe = get_scribe_from_mm(vma->vm_mm);
 	void *object;
 
 	if (!should_handle_mm(scribe))
@@ -2146,7 +2155,7 @@ void scribe_split_vma(struct vm_area_struct *vma)
 
 void scribe_vma_link(struct vm_area_struct *vma)
 {
-	struct scribe_ps *scribe = vma->vm_mm->owner->scribe;
+	struct scribe_ps *scribe = get_scribe_from_mm(vma->vm_mm);
 	struct scribe_obj_ref *ref;
 	void *object;
 
@@ -2177,7 +2186,7 @@ void scribe_vma_link(struct vm_area_struct *vma)
 void scribe_unmap_vmas(struct mm_struct *mm, struct vm_area_struct *vma,
 		       unsigned long start_addr, unsigned long end_addr)
 {
-	struct scribe_ps *scribe = mm->owner->scribe;
+	struct scribe_ps *scribe = get_scribe_from_mm(mm);
 	if (!should_handle_mm(scribe))
 		return;
 
