@@ -948,7 +948,7 @@ static void update_private_pte_locked(struct scribe_ps *scribe,
 	if (pmd_none(*own_pmd))
 		return;
 
-	own_pte = pte_offset_map_nested(own_pmd, address);
+	own_pte = pte_offset_map_nested2(own_pmd, address);
 	if (pte_present(*own_pte)) {
 		flush_cache_page(vma, address, pte_pfn(*own_pte));
 
@@ -965,9 +965,8 @@ static void update_private_pte_locked(struct scribe_ps *scribe,
 			ptep_set_access_flags(vma, address, real_pte,
 					      pte_mkdirty(*real_pte), 1);
 		}
-
 	}
-	pte_unmap_nested(own_pte);
+	pte_unmap_nested2(own_pte);
 }
 
 static struct scribe_ps *get_scribe_from_mm(struct mm_struct *mm)
@@ -1075,8 +1074,7 @@ int scribe_mem_init_st(struct scribe_ps *scribe)
 
 	if (current->scribe == scribe)
 		load_cr3(mm->own_pgd);
-	else if ((tsk->mm == current->mm && current->scribe->mm->is_alone) ||
-		  (tsk->mm != current->mm && is_ps_scribed(current))) {
+	else if (tsk->mm == current->mm && current->scribe->mm->is_alone) {
 		/*
 		 * Two cases where we want to flush the private pte's:
 		 * - We are going from singlethreaded to multithreaded and the
@@ -2102,7 +2100,7 @@ retry:
 set_pte:
 	/* pte and own_pte are both protected with the same spinlock. */
 	pte = pte_offset_map_lock(mm, pmd, address, &ptl);
-	own_pte = pte_offset_map_nested(own_pmd, address);
+	own_pte = pte_offset_map_nested2(own_pmd, address);
 
 	XMEM_DEBUG(scribe, "do_scribe_page() %s (real=%s%s own=%s%s) addr = %p, vpage = %p (%p)",
 		(flags & FAULT_FLAG_WRITE) ? "w" : "r",
@@ -2128,7 +2126,7 @@ set_pte:
 	set_pte_at(mm, address, own_pte, entry);
 	update_mmu_cache(vma, address, own_pte);
 
-	pte_unmap_nested(own_pte);
+	pte_unmap_nested2(own_pte);
 	pte_unmap_unlock(pte, ptl);
 	return VM_FAULT_SCRIBE;
 }

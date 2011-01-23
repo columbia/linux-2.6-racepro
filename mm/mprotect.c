@@ -50,6 +50,8 @@ static void change_pte_range(struct mm_struct *mm, struct vm_area_struct *vma,
 		if (pte_present(oldpte)) {
 			pte_t ptent;
 
+			scribe_clear_shadow_pte_locked(mm, vma, pte, addr);
+
 			ptent = ptep_modify_prot_start(mm, addr, pte);
 			ptent = pte_modify(ptent, newprot);
 
@@ -59,8 +61,6 @@ static void change_pte_range(struct mm_struct *mm, struct vm_area_struct *vma,
 			 */
 			if (dirty_accountable && pte_dirty(ptent))
 				ptent = pte_mkwrite(ptent);
-
-			scribe_clear_shadow_pte_locked(mm, vma, pte, addr);
 
 			ptep_modify_prot_commit(mm, addr, pte, ptent);
 		} else if (PAGE_MIGRATION && !pte_file(oldpte)) {
