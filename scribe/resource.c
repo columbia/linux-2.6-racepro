@@ -467,6 +467,11 @@ static int get_lockdep_subclass(int type)
 		return SCRIBE_RES_TYPE_RESERVED;
 	return type & 0x07;
 }
+#else
+static inline int get_lockdep_subclass(int type)
+{
+	return 0;
+}
 #endif
 
 static inline int use_spinlock(struct scribe_resource *res)
