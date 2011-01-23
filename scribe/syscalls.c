@@ -127,6 +127,40 @@ int scribe_need_syscall_ret(struct scribe_ps *scribe)
 	return __scribe_need_syscall_ret(scribe);
 }
 
+static bool is_interruptible_syscall(int nr_syscall)
+{
+	/*
+	 * FIXME Only do that for interruptible system calls (with
+	 * nr_syscall).
+	 */
+	return true;
+}
+
+static void adjust_sigpending_flag_enter(struct scribe_ps *scribe)
+{
+	if (!is_interruptible_syscall(scribe->nr_syscall))
+		return;
+
+	if (scribe_need_syscall_ret(scribe) < 0)
+		return;
+
+	if (is_replaying(scribe)) {
+		if (is_interruption(scribe->orig_ret))
+			set_thread_flag(TIF_SIGPENDING);
+		else
+			clear_thread_flag(TIF_SIGPENDING);
+	}
+}
+
+static void adjust_sigpending_flag_exit(struct scribe_ps *scribe)
+{
+	if (!is_interruptible_syscall(scribe->nr_syscall))
+		return;
+
+	if (is_replaying(scribe))
+		recalc_sigpending();
+}
+
 void scribe_enter_syscall(struct pt_regs *regs)
 {
 	struct scribe_ps *scribe = current->scribe;
@@ -165,6 +199,8 @@ void scribe_enter_syscall(struct pt_regs *regs)
 
 	if (should_scribe_syscall_ret(scribe))
 		__scribe_need_syscall_ret(scribe);
+
+	adjust_sigpending_flag_enter(scribe);
 }
 
 static void scribe_commit_syscall_record(struct scribe_ps *scribe,
@@ -232,6 +268,8 @@ void scribe_commit_syscall(struct scribe_ps *scribe, struct pt_regs *regs,
 		scribe_commit_syscall_record(scribe, regs, ret_value);
 	else
 		scribe_commit_syscall_replay(scribe, regs, ret_value);
+
+	adjust_sigpending_flag_exit(scribe);
 }
 
 void scribe_exit_syscall(struct pt_regs *regs)

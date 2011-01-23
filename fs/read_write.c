@@ -313,7 +313,6 @@ static ssize_t do_read(struct file *file, char __user *buf,
 		       size_t len, loff_t *ppos, int force_block)
 {
 	unsigned int saved_flags;
-	int had_pending;
 	ssize_t ret, count;
 
 	if (!force_block)
@@ -321,8 +320,6 @@ static ssize_t do_read(struct file *file, char __user *buf,
 
 	saved_flags = file->f_flags;
 	file->f_flags &= ~O_NONBLOCK;
-	had_pending = test_thread_flag(TIF_SIGPENDING);
-	clear_thread_flag(TIF_SIGPENDING);
 
 	ret = 0;
 	while (len > 0) {
@@ -338,8 +335,6 @@ static ssize_t do_read(struct file *file, char __user *buf,
 		ret += count;
 	}
 
-	if (had_pending)
-		set_thread_flag(TIF_SIGPENDING);
 	file->f_flags = saved_flags;
 
 	return ret;
@@ -503,7 +498,6 @@ static ssize_t do_write(struct file *file, const char __user *buf,
 			size_t len, loff_t *ppos, int force_block)
 {
 	unsigned int saved_flags;
-	int had_pending;
 	ssize_t ret, count;
 
 	if (!force_block)
@@ -512,8 +506,6 @@ static ssize_t do_write(struct file *file, const char __user *buf,
 	/* Pretty much a copy of do_read() */
 	saved_flags = file->f_flags;
 	file->f_flags &= ~O_NONBLOCK;
-	had_pending = test_thread_flag(TIF_SIGPENDING);
-	clear_thread_flag(TIF_SIGPENDING);
 
 	ret = 0;
 	while (len > 0) {
@@ -529,8 +521,6 @@ static ssize_t do_write(struct file *file, const char __user *buf,
 		ret += count;
 	}
 
-	if (had_pending)
-		set_thread_flag(TIF_SIGPENDING);
 	file->f_flags = saved_flags;
 
 	return ret;
