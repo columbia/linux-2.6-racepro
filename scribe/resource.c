@@ -120,6 +120,7 @@ static struct scribe_resource *find_registration_res_inode(
 	 * registration resources.
 	 */
 	int index = hash_long(inode->i_ino, INODE_HASH_BITS);
+	index = 0;
 	return &ctx->registration_res_inode[index];
 }
 
