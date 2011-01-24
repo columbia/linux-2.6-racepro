@@ -2779,7 +2779,7 @@ SYSCALL_DEFINE6(futex, u32 __user *, uaddr, int, op, u32, val,
 }
 
 #ifdef CONFIG_SCRIBE
-int scribe_open_futexes(struct scribe_resource_context *ctx)
+int scribe_open_futexes(struct scribe_context *ctx)
 {
 	int ret = 0;
 	int i;
@@ -2806,7 +2806,7 @@ int scribe_open_futexes(struct scribe_resource_context *ctx)
 	return ret;
 }
 
-void scribe_close_futexes(struct scribe_resource_context *ctx)
+void scribe_close_futexes(struct scribe_context *ctx)
 {
 	int i;
 	for (i = 0; i < ARRAY_SIZE(futex_queues); i++) {

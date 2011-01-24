@@ -43,14 +43,12 @@ struct scribe_context *scribe_alloc_context(void)
 	spin_lock_init(&ctx->backtrace_lock);
 	ctx->backtrace = NULL;
 
-	ctx->res_ctx = scribe_alloc_resource_context(ctx);
-	if (!ctx->res_ctx)
+	ctx->resources = scribe_alloc_resources();
+	if (!ctx->resources)
 		goto err_ctx;
 
-	if (scribe_open_futexes(ctx->res_ctx))
-		goto err_res_ctx;
-
-	scribe_init_resource(&ctx->tasks_res, SCRIBE_RES_TYPE_TASK);
+	if (scribe_open_futexes(ctx))
+		goto err_resources;
 
 	ctx->bmark = scribe_bookmark_alloc(ctx);
 	if (!ctx->bmark)
@@ -68,9 +66,9 @@ struct scribe_context *scribe_alloc_context(void)
 err_bmark:
 	scribe_bookmark_free(ctx->bmark);
 err_futex:
-	scribe_close_futexes(ctx->res_ctx);
-err_res_ctx:
-	scribe_free_resource_context(ctx->res_ctx);
+	scribe_close_futexes(ctx);
+err_resources:
+	scribe_free_resources(ctx->resources);
 err_ctx:
 	kfree(ctx);
 	return NULL;
@@ -98,8 +96,8 @@ void scribe_exit_context(struct scribe_context *ctx)
 
 	scribe_free_all_events(&ctx->notifications);
 	scribe_free_mem_hash(ctx->mem_hash);
-	scribe_close_futexes(ctx->res_ctx);
-	scribe_free_resource_context(ctx->res_ctx);
+	scribe_close_futexes(ctx);
+	scribe_free_resources(ctx->resources);
 	scribe_bookmark_free(ctx->bmark);
 
 	scribe_put_context(ctx);
@@ -134,8 +132,7 @@ static int context_start(struct scribe_context *ctx, unsigned long flags,
 	 * TODO reset only when context_start() isn't called for the first
 	 * time.
 	 */
-	scribe_reset_resource_context(ctx->res_ctx);
-	scribe_reset_resource(&ctx->tasks_res);
+	scribe_reset_resources(ctx->resources);
 
 	atomic_set(&ctx->signal_cookie, 0);
 

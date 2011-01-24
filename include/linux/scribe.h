@@ -321,8 +321,7 @@ struct scribe_context {
 	spinlock_t backtrace_lock;
 	struct scribe_backtrace *backtrace;
 
-	struct scribe_resource_context *res_ctx;
-	struct scribe_resource tasks_res;
+	struct scribe_resources *resources;
 
 	atomic_t signal_cookie;
 
@@ -406,10 +405,9 @@ struct scribe_res_user {
 	struct list_head locked_regions;
 };
 
-extern struct scribe_resource_context *scribe_alloc_resource_context(
-						struct scribe_context *ctx);
-extern void scribe_reset_resource_context(struct scribe_resource_context *ctx);
-extern void scribe_free_resource_context(struct scribe_resource_context *);
+extern struct scribe_resources *scribe_alloc_resources(void);
+extern void scribe_reset_resources(struct scribe_resources *ctx);
+extern void scribe_free_resources(struct scribe_resources *);
 
 extern void scribe_resource_init_user(struct scribe_res_user *user);
 extern void scribe_resource_exit_user(struct scribe_res_user *user);
@@ -419,10 +417,11 @@ extern int scribe_resource_prepare(void);
 
 #define SCRIBE_NO_SYNC	0
 #define SCRIBE_SYNC	1
-extern void scribe_open_resource_no_sync(struct scribe_resource_context *ctx,
+extern void scribe_open_resource_no_sync(
+				struct scribe_context *ctx,
 				struct scribe_container *container,
 				int type, struct scribe_res_user *user);
-extern void scribe_close_resource_no_sync(struct scribe_resource_context *ctx,
+extern void scribe_close_resource_no_sync(struct scribe_context *ctx,
 				struct scribe_container *container);
 
 #define SCRIBE_INTERRUPTIBLE	0x01

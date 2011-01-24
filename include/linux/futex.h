@@ -187,14 +187,15 @@ static inline void exit_pi_state_list(struct task_struct *curr)
 #endif
 
 #if defined(CONFIG_FUTEX) && defined(CONFIG_SCRIBE)
-extern int scribe_open_futexes(struct scribe_resource_context *ctx);
-extern void scribe_close_futexes(struct scribe_resource_context *ctx);
+struct scribe_context;
+extern int scribe_open_futexes(struct scribe_context *ctx);
+extern void scribe_close_futexes(struct scribe_context *ctx);
 #else
-static inline int scribe_open_futexes(struct scribe_resource_context *ctx)
+static inline int scribe_open_futexes(struct scribe_context *ctx)
 {
 	return 0;
 }
-static inline void scribe_close_futexes(struct scribe_resource_context *ctx)
+static inline void scribe_close_futexes(struct scribe_context *ctx)
 {
 }
 #endif
