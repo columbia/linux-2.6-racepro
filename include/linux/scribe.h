@@ -397,7 +397,8 @@ extern int scribe_golive_on_next_bookmark(struct scribe_bookmark *bmark);
 /* Resources */
 
 struct scribe_res_user {
-	struct scribe_resource_handle *pre_alloc_hres;
+	struct list_head pre_alloc_hres;
+	int num_pre_alloc_hres;
 
 	struct list_head pre_alloc_regions;
 	int num_pre_alloc_regions;

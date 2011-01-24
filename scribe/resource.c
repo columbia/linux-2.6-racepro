@@ -131,6 +131,7 @@ static struct scribe_resource *find_fs_res(
 
 struct scribe_resource_handle {
 	struct scribe_handle handle;
+	struct list_head node;
 
 	struct scribe_resource res;
 	/*
@@ -158,6 +159,7 @@ void scribe_reset_resource(struct scribe_resource *res)
 
 static void init_resource_handle(struct scribe_resource_handle *hres, int type)
 {
+	INIT_LIST_HEAD(&hres->node);
 	scribe_init_resource(&hres->res, type);
 	spin_lock_init(&hres->lock);
 	INIT_LIST_HEAD(&hres->close_lock_regions);
@@ -173,19 +175,20 @@ static void free_resource_handle(struct scribe_handle *handle)
 struct get_new_arg {
 	int type;
 	int *created;
-	struct scribe_resource_handle **pre_alloc_hres;
+	struct scribe_res_user *user;
 };
 
+
+static struct scribe_resource_handle *get_pre_alloc_hres(
+						struct scribe_res_user *user);
 static struct scribe_handle *get_new_resource_handle(void *_arg)
 {
 	struct get_new_arg *arg = _arg;
 	struct scribe_resource_handle *hres;
 
-	hres = *arg->pre_alloc_hres;
-	BUG_ON(!hres);
-	*arg->pre_alloc_hres = NULL;
-	*arg->created = 1;
+	hres = get_pre_alloc_hres(arg->user);
 	init_resource_handle(hres, arg->type);
+	*arg->created = 1;
 	return &hres->handle;
 }
 
@@ -193,7 +196,7 @@ static struct scribe_resource_handle *get_resource_handle(
 		struct scribe_resource_context *ctx,
 		struct scribe_container *container,
 		int type, int *created,
-		struct scribe_resource_handle **pre_alloc_hres)
+		struct scribe_res_user *user)
 {
 	struct scribe_handle *handle;
 	struct scribe_handle_ctor ctor;
@@ -202,7 +205,7 @@ static struct scribe_resource_handle *get_resource_handle(
 	arg.type = type;
 	*created = 0;
 	arg.created = created;
-	arg.pre_alloc_hres = pre_alloc_hres;
+	arg.user = user;
 
 	ctor.get_new = get_new_resource_handle;
 	ctor.arg = &arg;
@@ -297,32 +300,36 @@ static void free_lock_region(struct scribe_lock_region *lock_region)
 
 void scribe_resource_init_user(struct scribe_res_user *user)
 {
-	user->pre_alloc_hres = NULL;
+	INIT_LIST_HEAD(&user->pre_alloc_hres);
+	user->num_pre_alloc_hres = 0;
 	INIT_LIST_HEAD(&user->pre_alloc_regions);
 	user->num_pre_alloc_regions = 0;
 	INIT_LIST_HEAD(&user->locked_regions);
 }
 
 /*
- * We need at most 3 lock_regions pre allocated upfront, e.g in fd_install():
+ * We need at most 4 lock_regions pre allocated upfront, e.g in fd_install():
  * Two for the open/close region on the inode registration, and one for the
  * files_struct.
  */
-#define MAX_PRE_ALLOC_REGIONS 4
+#define MAX_PRE_ALLOC 4
 
 int scribe_resource_pre_alloc(struct scribe_res_user *user,
 			      int doing_recording, int res_extra)
 {
 	struct scribe_lock_region *lock_region;
+	struct scribe_resource_handle *hres;
 
-	if (!user->pre_alloc_hres) {
-		user->pre_alloc_hres = kmalloc(sizeof(*user->pre_alloc_hres),
-					       GFP_KERNEL);
-		if (!user->pre_alloc_hres)
+	while (user->num_pre_alloc_hres < MAX_PRE_ALLOC) {
+		hres = kmalloc(sizeof(*hres), GFP_KERNEL);
+		if (!hres)
 			return -ENOMEM;
+
+		list_add(&hres->node, &user->pre_alloc_hres);
+		user->num_pre_alloc_hres++;
 	}
 
-	while (user->num_pre_alloc_regions <= MAX_PRE_ALLOC_REGIONS) {
+	while (user->num_pre_alloc_regions < MAX_PRE_ALLOC) {
 		lock_region = alloc_lock_region(doing_recording, res_extra);
 		if (!lock_region)
 			return -ENOMEM;
@@ -357,18 +364,35 @@ int scribe_resource_prepare(void)
 
 void scribe_resource_exit_user(struct scribe_res_user *user)
 {
-	struct scribe_lock_region *lock_region, *tmp;
-
-	kfree(user->pre_alloc_hres);
-
-	list_for_each_entry_safe(lock_region, tmp,
-				 &user->pre_alloc_regions, node) {
-		list_del(&lock_region->node);
-		free_lock_region(lock_region);
-	}
+	struct scribe_lock_region *lockr, *ltmp;
+	struct scribe_resource_handle *hres, *htmp;
 
 	WARN(!list_empty(&user->locked_regions),
 	     "Some regions are left unlocked\n");
+
+	list_for_each_entry_safe(hres, htmp, &user->pre_alloc_hres, node) {
+		list_del(&hres->node);
+		kfree(hres);
+	}
+
+	list_for_each_entry_safe(lockr, ltmp, &user->pre_alloc_regions, node) {
+		list_del(&lockr->node);
+		free_lock_region(lockr);
+	}
+}
+
+static struct scribe_resource_handle *get_pre_alloc_hres(
+						struct scribe_res_user *user)
+{
+	struct scribe_resource_handle *hres;
+
+	BUG_ON(list_empty(&user->pre_alloc_hres));
+	hres = list_first_entry(&user->pre_alloc_hres,
+				struct scribe_resource_handle, node);
+	list_del(&hres->node);
+	user->num_pre_alloc_hres--;
+
+	return hres;
 }
 
 static bool is_locking_necessary(struct scribe_ps *scribe,
@@ -873,8 +897,7 @@ void scribe_open_resource_no_sync(struct scribe_resource_context *ctx,
 				  int type, struct scribe_res_user *user)
 {
 	int created;
-	get_resource_handle(ctx, container, type, &created,
-			    &user->pre_alloc_hres);
+	get_resource_handle(ctx, container, type, &created, user);
 }
 
 /*
@@ -918,8 +941,7 @@ static void scribe_open_resource(struct scribe_ps *scribe,
 		do_lock(scribe, open_lock_region);
 	}
 
-	hres = get_resource_handle(ctx, container, type, created,
-				   &user->pre_alloc_hres);
+	hres = get_resource_handle(ctx, container, type, created, user);
 
 	if (do_sync_open) {
 		do_unlock(scribe, open_lock_region);
