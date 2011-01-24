@@ -16,6 +16,7 @@
 #include <linux/security.h>
 #include <linux/syscalls.h>
 #include <linux/unistd.h>
+#include <linux/scribe.h>
 
 #include <asm/uaccess.h>
 
@@ -109,6 +110,11 @@ SYSCALL_DEFINE3(old_readdir, unsigned int, fd,
 	struct file * file;
 	struct readdir_callback buf;
 
+	if (scribe_track_next_file_read()) {
+		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		return -ENOMEM;
+	}
+
 	error = -EBADF;
 	file = fget(fd);
 	if (!file)
@@ -200,6 +206,11 @@ SYSCALL_DEFINE3(getdents, unsigned int, fd,
 	if (!access_ok(VERIFY_WRITE, dirent, count))
 		goto out;
 
+	if (scribe_track_next_file_read()) {
+		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		return -ENOMEM;
+	}
+
 	error = -EBADF;
 	file = fget(fd);
 	if (!file)
@@ -281,6 +292,11 @@ SYSCALL_DEFINE3(getdents64, unsigned int, fd,
 	error = -EFAULT;
 	if (!access_ok(VERIFY_WRITE, dirent, count))
 		goto out;
+
+	if (scribe_track_next_file_read()) {
+		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		return -ENOMEM;
+	}
 
 	error = -EBADF;
 	file = fget(fd);
