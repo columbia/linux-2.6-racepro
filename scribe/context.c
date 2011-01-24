@@ -43,7 +43,7 @@ struct scribe_context *scribe_alloc_context(void)
 	spin_lock_init(&ctx->backtrace_lock);
 	ctx->backtrace = NULL;
 
-	ctx->res_ctx = scribe_alloc_resource_context();
+	ctx->res_ctx = scribe_alloc_resource_context(ctx);
 	if (!ctx->res_ctx)
 		goto err_ctx;
 

@@ -9,6 +9,7 @@
 
 #include <linux/scribe.h>
 #include <linux/scribe_resource.h>
+#include <linux/scribe_container.h>
 #include <linux/hash.h>
 #include <linux/fs.h>
 #include <linux/fdtable.h>
@@ -62,6 +63,7 @@ static inline int should_handle_resources(struct scribe_ps *scribe)
 }
 
 struct scribe_resource_context {
+	struct scribe_context *ctx;
 	/*
 	 * For inodes, instead of using one registration resource, we are
 	 * using 256 registration resources to decrease contention on SMP.
@@ -70,26 +72,28 @@ struct scribe_resource_context {
 	struct scribe_resource fs_res[FS_HASH_SIZE];
 };
 
-struct scribe_resource_context *scribe_alloc_resource_context(void)
+struct scribe_resource_context *scribe_alloc_resource_context(
+						struct scribe_context *ctx)
 {
-	struct scribe_resource_context *ctx;
+	struct scribe_resource_context *res_ctx;
 	int i;
 
-	ctx = kmalloc(sizeof(*ctx), GFP_KERNEL);
-	if (!ctx)
+	res_ctx = kmalloc(sizeof(*res_ctx), GFP_KERNEL);
+	if (!res_ctx)
 		return NULL;
 
 	for (i = 0; i < INODE_HASH_SIZE; i++) {
-		scribe_init_resource(&ctx->registration_res_inode[i],
+		scribe_init_resource(&res_ctx->registration_res_inode[i],
 				     SCRIBE_RES_TYPE_REGISTRATION |
 				     SCRIBE_RES_TYPE_INODE |
 				     SCRIBE_RES_TYPE_SPINLOCK);
 	}
 
 	for (i = 0; i < FS_HASH_SIZE; i++)
-		scribe_init_resource(&ctx->fs_res[i], SCRIBE_RES_TYPE_FS);
+		scribe_init_resource(&res_ctx->fs_res[i], SCRIBE_RES_TYPE_FS);
+	res_ctx->ctx = ctx;
 
-	return ctx;
+	return res_ctx;
 }
 
 void scribe_reset_resource_context(struct scribe_resource_context *ctx)
@@ -104,12 +108,6 @@ void scribe_reset_resource_context(struct scribe_resource_context *ctx)
 void scribe_free_resource_context(struct scribe_resource_context *ctx)
 {
 	kfree(ctx);
-}
-
-void scribe_init_resource_container(struct scribe_resource_container *container)
-{
-	spin_lock_init(&container->lock);
-	INIT_LIST_HEAD(&container->handles);
 }
 
 static struct scribe_resource *find_registration_res_inode(
@@ -132,10 +130,7 @@ static struct scribe_resource *find_fs_res(
 }
 
 struct scribe_resource_handle {
-	atomic_t ref_cnt;
-	struct list_head container_node;
-	struct scribe_resource_context *ctx;
-	struct rcu_head rcu;
+	struct scribe_handle handle;
 
 	struct scribe_resource res;
 	/*
@@ -161,15 +156,70 @@ void scribe_reset_resource(struct scribe_resource *res)
 	res->serial = 0;
 }
 
-static void init_resource_handle(struct scribe_resource_context *ctx,
-				 struct scribe_resource_handle *hres, int type)
+struct get_arg {
+	int type;
+	int *created;
+	struct scribe_resource_handle **pre_alloc_hres;
+};
+
+static void init_resource_handle(struct scribe_handle *handle, void *_arg)
 {
-	atomic_set(&hres->ref_cnt, 1);
-	hres->ctx = ctx;
-	scribe_init_resource(&hres->res, type);
+	struct get_arg *arg = _arg;
+	struct scribe_resource_handle *hres;
+
+	hres = container_of(handle, struct scribe_resource_handle, handle);
+
+	scribe_init_resource(&hres->res, arg->type);
 	spin_lock_init(&hres->lock);
 	INIT_LIST_HEAD(&hres->close_lock_regions);
+	*arg->created = 1;
+	*arg->pre_alloc_hres = NULL;
 }
+
+static void free_resource_handle(struct scribe_handle *handle)
+{
+	struct scribe_resource_handle *hres;
+	hres = container_of(handle, struct scribe_resource_handle, handle);
+	kfree(hres);
+}
+
+static struct scribe_resource_handle *get_resource_handle(
+		struct scribe_resource_context *ctx,
+		struct scribe_container *container,
+		int type, int *created,
+		struct scribe_resource_handle **pre_alloc_hres)
+{
+	struct scribe_handle *handle;
+	struct scribe_handle_ctor ctor;
+	struct get_arg arg;
+
+	arg.type = type;
+	*created = 0;
+	arg.created = created;
+	arg.pre_alloc_hres = pre_alloc_hres;
+
+	ctor.pre_alloc_handle = &(*pre_alloc_hres)->handle;
+	ctor.init = init_resource_handle;
+	ctor.arg = &arg;
+	ctor.free = free_resource_handle;
+
+	handle = get_scribe_handle(container, ctx->ctx, &ctor);
+	return container_of(handle, struct scribe_resource_handle, handle);
+}
+
+static struct scribe_resource_handle *find_resource_handle(
+		struct scribe_resource_context *ctx,
+		struct scribe_container *container)
+{
+	struct scribe_handle *handle;
+
+	handle = find_scribe_handle(container, ctx->ctx);
+	if (!handle)
+		return NULL;
+
+	return container_of(handle, struct scribe_resource_handle, handle);
+}
+
 
 struct scribe_lock_region {
 	struct list_head node;
@@ -314,99 +364,6 @@ void scribe_resource_exit_user(struct scribe_res_user *user)
 
 	WARN(!list_empty(&user->locked_regions),
 	     "Some regions are left unlocked\n");
-}
-
-/*
- * Global objects like inodes needs to be synchronized. Since we can have
- * multiple scribe contextes, we need a list of resources per object.
- * This list is in the scribe_resource_container struct.
- */
-static struct scribe_resource_handle *__get_resource_handle(
-				struct scribe_resource_context *ctx,
-				struct scribe_resource_container *container)
-{
-	struct scribe_resource_handle *hres;
-
-	list_for_each_entry_rcu(hres, &container->handles, container_node) {
-		if (hres->ctx != ctx)
-			continue;
-
-		if (likely(atomic_inc_not_zero(&hres->ref_cnt)))
-			return hres;
-	}
-
-	return NULL;
-}
-
-static struct scribe_resource_handle *get_resource_handle(
-				struct scribe_resource_context *ctx,
-				struct scribe_resource_container *container,
-				int type, int *created,
-				struct scribe_resource_handle **pre_alloc_hres)
-{
-	struct scribe_resource_handle *hres;
-
-	*created = 0;
-
-	rcu_read_lock();
-	hres = __get_resource_handle(ctx, container);
-	rcu_read_unlock();
-	if (hres)
-		return hres;
-
-	spin_lock(&container->lock);
-	hres = __get_resource_handle(ctx, container);
-	if (unlikely(hres)) {
-		spin_unlock(&container->lock);
-		return hres;
-	}
-
-	hres = *pre_alloc_hres;
-	*pre_alloc_hres = NULL;
-	BUG_ON(!hres);
-
-	init_resource_handle(ctx, hres, type);
-
-	list_add_rcu(&hres->container_node, &container->handles);
-
-	spin_unlock(&container->lock);
-
-	*created = 1;
-	return hres;
-}
-
-static void free_rcu_hres(struct rcu_head *rcu)
-{
-	kfree(container_of(rcu, struct scribe_resource_handle, rcu));
-}
-
-/* put_resource_handle() is somewhat hidden in scribe_close_resource() */
-static inline void __put_resource_handle(
-				struct scribe_resource_container *container,
-				struct scribe_resource_handle *hres)
-{
-	spin_lock(&container->lock);
-	list_del_rcu(&hres->container_node);
-	spin_unlock(&container->lock);
-	call_rcu(&hres->rcu, free_rcu_hres);
-}
-
-static struct scribe_resource_handle *find_resource_handle(
-				struct scribe_resource_context *ctx,
-				struct scribe_resource_container *container)
-{
-	struct scribe_resource_handle *hres;
-
-	rcu_read_lock();
-	list_for_each_entry_rcu(hres, &container->handles, container_node) {
-		if (hres->ctx == ctx) {
-			rcu_read_unlock();
-			return hres;
-		}
-	}
-	rcu_read_unlock();
-
-	return NULL;
 }
 
 static bool is_locking_necessary(struct scribe_ps *scribe,
@@ -793,7 +750,7 @@ void scribe_lock_object(void *object, struct scribe_resource *res, int flags)
 }
 
 static int __lock_object_handle(struct scribe_ps *scribe, void *object,
-				struct scribe_resource_container *container,
+				struct scribe_container *container,
 				int flags)
 {
 	struct scribe_resource_handle *hres;
@@ -807,7 +764,7 @@ static int __lock_object_handle(struct scribe_ps *scribe, void *object,
 }
 
 void scribe_lock_object_handle(void *object,
-		struct scribe_resource_container *container, int flags)
+		struct scribe_container *container, int flags)
 {
 	struct scribe_ps *scribe = current->scribe;
 
@@ -907,7 +864,7 @@ void scribe_assert_locked(void *object)
 }
 
 void scribe_open_resource_no_sync(struct scribe_resource_context *ctx,
-				  struct scribe_resource_container *container,
+				  struct scribe_container *container,
 				  int type, struct scribe_res_user *user)
 {
 	int created;
@@ -932,7 +889,7 @@ void scribe_open_resource_no_sync(struct scribe_resource_context *ctx,
  *    closes the resource. The serial number is not re-initialized to 0.
  */
 static void scribe_open_resource(struct scribe_ps *scribe,
-				 struct scribe_resource_container *container,
+				 struct scribe_container *container,
 				 int type, struct scribe_resource *sync_res,
 				 int do_sync_open, int do_sync_close,
 				 int *created)
@@ -985,31 +942,43 @@ static void scribe_open_resource(struct scribe_ps *scribe,
 }
 
 void scribe_close_resource_no_sync(struct scribe_resource_context *ctx,
-				   struct scribe_resource_container *container)
+				   struct scribe_container *container)
 {
-	struct scribe_resource_handle *hres;
+	struct scribe_handle *handle;
 
-	hres = find_resource_handle(ctx, container);
-	if (unlikely(!hres)) {
+	handle = find_scribe_handle(container, ctx->ctx);
+	if (unlikely(!handle)) {
 		WARN(1, "No resource\n");
 		return;
 	}
 
-	if (atomic_dec_and_test(&hres->ref_cnt))
-		__put_resource_handle(container, hres);
+	put_scribe_handle(container, handle, NULL);
+}
+
+struct put_arg {
+	struct scribe_ps *scribe;
+	struct scribe_lock_region *close_lock_region;
+};
+
+static void scribe_resource_put(struct scribe_handle *handle, void *_arg)
+{
+	struct put_arg *arg = _arg;
+
+	if (arg->close_lock_region) {
+		do_unlock(arg->scribe, arg->close_lock_region);
+		free_lock_region(arg->close_lock_region);
+	}
 }
 
 void scribe_close_resource(struct scribe_ps *scribe,
-			   struct scribe_resource_container *container,
+			   struct scribe_container *container,
 			   int do_close_sync, int *destroyed)
 {
 	struct scribe_resource_context *ctx = scribe->ctx->res_ctx;
 	struct scribe_lock_region *close_lock_region = NULL;
 	struct scribe_resource_handle *hres;
-	int _destroyed;
-
-	if (!destroyed)
-		destroyed = &_destroyed;
+	struct scribe_handle_put hput;
+	struct put_arg put_arg;
 
 	hres = find_resource_handle(ctx, container);
 	if (unlikely(!hres)) {
@@ -1028,19 +997,13 @@ void scribe_close_resource(struct scribe_ps *scribe,
 		do_lock(scribe, close_lock_region);
 	}
 
-	*destroyed = atomic_dec_and_test(&hres->ref_cnt);
-	/*
-	 * We have to defer the resource removal because the unlock() can be
-	 * performed on the resource itself.
-	 */
-
-	if (do_close_sync) {
-		do_unlock(scribe, close_lock_region);
-		free_lock_region(close_lock_region);
-	}
-
-	if (*destroyed)
-		__put_resource_handle(container, hres);
+	put_arg.scribe = scribe;
+	put_arg.close_lock_region = close_lock_region;
+	hput.put = scribe_resource_put;
+	hput.arg = &put_arg;
+	put_scribe_handle(container, &hres->handle, &hput);
+	if (destroyed)
+		*destroyed = hput.ref_left ? 0 : 1;
 }
 
 static inline int inode_need_reg_sync(struct inode *inode)

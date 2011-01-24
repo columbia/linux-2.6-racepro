@@ -382,6 +382,7 @@ struct inodes_stat_t {
 #include <linux/capability.h>
 #include <linux/semaphore.h>
 #include <linux/fiemap.h>
+#include <linux/scribe_container.h>
 #include <linux/scribe_resource.h>
 
 #include <asm/atomic.h>
@@ -793,7 +794,7 @@ struct inode {
 	void			*i_private; /* fs or device private pointer */
 
 #ifdef CONFIG_SCRIBE
-	struct scribe_resource_container i_scribe_resource;
+	struct scribe_container i_scribe_resource;
 #endif
 };
 

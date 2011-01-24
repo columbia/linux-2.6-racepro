@@ -14,7 +14,6 @@
 
 #ifdef CONFIG_SCRIBE
 
-#include <linux/list.h>
 #include <linux/spinlock.h>
 #include <linux/mutex.h>
 #include <linux/wait.h>
@@ -24,20 +23,6 @@
  * depends on this file.
  */
 
-/*
- * We want to store each resource in the struct of the object they
- * synchronize. For example we want to put a resource in the inode struct.
- * But an inode may be utilized by more than one scribe context, thus the
- * resource_container.
- * On the other hand, a files_struct object can only be synchronized in one
- * scribe context. A simple scribe_resource will be used.
- */
-
-struct scribe_resource_container {
-	spinlock_t lock;
-	struct list_head handles;
-};
-
 struct scribe_resource {
 	int type;
 	u32 serial;
@@ -45,13 +30,6 @@ struct scribe_resource {
 	spinlock_t slock;
 	wait_queue_head_t wait;
 };
-
-/*
- * We would want to provide the resource type here, but it would waste some
- * precious bytes (struct scribe_resource_container is in each inode)
- */
-extern void scribe_init_resource_container(
-				struct scribe_resource_container *container);
 
 
 /* Types are also in scribe_api.h */

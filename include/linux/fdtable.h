@@ -11,7 +11,8 @@
 #include <linux/rcupdate.h>
 #include <linux/types.h>
 #include <linux/init.h>
-#include <linux/scribe_resource.h>
+#include <linux/mutex.h>
+#include <linux/scribe_container.h>
 
 #include <asm/atomic.h>
 
@@ -55,7 +56,7 @@ struct files_struct {
 	 * resource_close().
 	 */
 	struct mutex scribe_open_lock;
-	struct scribe_resource_container scribe_resource;
+	struct scribe_container scribe_resource;
 #endif
 
   /*

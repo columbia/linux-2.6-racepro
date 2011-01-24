@@ -319,7 +319,7 @@ struct files_struct *dup_fd(struct files_struct *oldf, int *errorp)
 
 #ifdef CONFIG_SCRIBE
 	mutex_init(&newf->scribe_open_lock);
-	scribe_init_resource_container(&newf->scribe_resource);
+	scribe_init_container(&newf->scribe_resource);
 #endif
 	spin_lock_init(&newf->file_lock);
 	newf->next_fd = 0;

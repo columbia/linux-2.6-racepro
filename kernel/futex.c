@@ -131,7 +131,7 @@ struct futex_q {
 struct futex_hash_bucket {
 	spinlock_t lock;
 	struct plist_head chain;
-	struct scribe_resource_container scribe_resource;
+	struct scribe_container scribe_resource;
 };
 
 static struct futex_hash_bucket futex_queues[1<<FUTEX_HASHBITS];
@@ -2838,7 +2838,7 @@ static int __init futex_init(void)
 	for (i = 0; i < ARRAY_SIZE(futex_queues); i++) {
 		plist_head_init(&futex_queues[i].chain, &futex_queues[i].lock);
 		spin_lock_init(&futex_queues[i].lock);
-		scribe_init_resource_container(&futex_queues[i].scribe_resource);
+		scribe_init_container(&futex_queues[i].scribe_resource);
 	}
 
 	return 0;
