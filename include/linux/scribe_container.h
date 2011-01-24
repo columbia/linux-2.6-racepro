@@ -35,8 +35,7 @@ struct scribe_container {
 };
 
 struct scribe_handle_ctor {
-	struct scribe_handle *pre_alloc_handle;
-	void (*init) (struct scribe_handle *, void *);
+	struct scribe_handle* (*get_new) (void *);
 	void *arg;
 	void (*free) (struct scribe_handle *);
 };

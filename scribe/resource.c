@@ -156,24 +156,11 @@ void scribe_reset_resource(struct scribe_resource *res)
 	res->serial = 0;
 }
 
-struct get_arg {
-	int type;
-	int *created;
-	struct scribe_resource_handle **pre_alloc_hres;
-};
-
-static void init_resource_handle(struct scribe_handle *handle, void *_arg)
+static void init_resource_handle(struct scribe_resource_handle *hres, int type)
 {
-	struct get_arg *arg = _arg;
-	struct scribe_resource_handle *hres;
-
-	hres = container_of(handle, struct scribe_resource_handle, handle);
-
-	scribe_init_resource(&hres->res, arg->type);
+	scribe_init_resource(&hres->res, type);
 	spin_lock_init(&hres->lock);
 	INIT_LIST_HEAD(&hres->close_lock_regions);
-	*arg->created = 1;
-	*arg->pre_alloc_hres = NULL;
 }
 
 static void free_resource_handle(struct scribe_handle *handle)
@@ -181,6 +168,25 @@ static void free_resource_handle(struct scribe_handle *handle)
 	struct scribe_resource_handle *hres;
 	hres = container_of(handle, struct scribe_resource_handle, handle);
 	kfree(hres);
+}
+
+struct get_new_arg {
+	int type;
+	int *created;
+	struct scribe_resource_handle **pre_alloc_hres;
+};
+
+static struct scribe_handle *get_new_resource_handle(void *_arg)
+{
+	struct get_new_arg *arg = _arg;
+	struct scribe_resource_handle *hres;
+
+	hres = *arg->pre_alloc_hres;
+	BUG_ON(!hres);
+	*arg->pre_alloc_hres = NULL;
+	*arg->created = 1;
+	init_resource_handle(hres, arg->type);
+	return &hres->handle;
 }
 
 static struct scribe_resource_handle *get_resource_handle(
@@ -191,15 +197,14 @@ static struct scribe_resource_handle *get_resource_handle(
 {
 	struct scribe_handle *handle;
 	struct scribe_handle_ctor ctor;
-	struct get_arg arg;
+	struct get_new_arg arg;
 
 	arg.type = type;
 	*created = 0;
 	arg.created = created;
 	arg.pre_alloc_hres = pre_alloc_hres;
 
-	ctor.pre_alloc_handle = &(*pre_alloc_hres)->handle;
-	ctor.init = init_resource_handle;
+	ctor.get_new = get_new_resource_handle;
 	ctor.arg = &arg;
 	ctor.free = free_resource_handle;
 

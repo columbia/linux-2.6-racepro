@@ -45,12 +45,10 @@ struct scribe_handle *get_scribe_handle(struct scribe_container *container,
 		return handle;
 	}
 
-	handle = ctor->pre_alloc_handle;
-	BUG_ON(!handle);
+	handle = ctor->get_new(ctor->arg);
 	atomic_set(&handle->ref_cnt, 1);
 	handle->ctx = ctx;
 	handle->free = ctor->free;
-	ctor->init(handle, ctor->arg);
 
 	list_add_rcu(&handle->node, &container->handles);
 
