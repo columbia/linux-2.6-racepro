@@ -16,6 +16,7 @@
 #include <linux/sched.h>
 #include <linux/pid_namespace.h>
 #include <linux/ipc_namespace.h>
+#include <linux/writeback.h>
 #include <linux/sunrpc/svcauth.h> /* For hash_str() */
 
 /*
@@ -133,7 +134,9 @@ static struct inode *__get_inode_from_res(struct scribe_resource *res)
 static void on_create_res_inode(struct scribe_resource *res)
 {
 	struct inode *inode = __get_inode_from_res(res);
-	atomic_inc(&inode->i_count);
+	spin_lock(&inode_lock);
+	__iget(inode);
+	spin_unlock(&inode_lock);
 }
 
 static int on_reset_res_inode(struct scribe_context *ctx,
@@ -214,6 +217,41 @@ void scribe_reset_resource(struct scribe_resource *res)
 	spin_unlock(&resources->lock);
 }
 
+void scribe_reset_resource_container(struct scribe_container *container)
+{
+	struct scribe_resource_handle *hres;
+	struct scribe_resources *resources;
+	struct scribe_context *ctx;
+	int ret;
+
+retry:
+	rcu_read_lock();
+	if (list_empty(&container->handles)) {
+		rcu_read_unlock();
+		return;
+	}
+
+	hres = list_first_entry_rcu(&container->handles,
+				    struct scribe_resource_handle, handle.node);
+	ctx = hres->res.ctx;
+
+	/*
+	 * ctx should always be valid: we are in a place where processes
+	 * cannot add any handles to the list (umount).
+	 */
+	BUG_ON(!ctx);
+	resources = ctx->resources;
+
+	spin_lock(&resources->lock);
+	rcu_read_unlock();
+
+	ret = __scribe_reset_resource(&hres->res);
+	if (ret == -EAGAIN)
+		goto retry;
+	spin_unlock(&resources->lock);
+	goto retry;
+}
+
 void scribe_reset_resources(struct scribe_resources *resources)
 {
 	struct scribe_resource *res, *tmp;
@@ -236,8 +274,8 @@ void scribe_free_resources(struct scribe_resources *resources)
 	scribe_reset_resources(resources);
 	/*
 	 * XXX There is no possible race with scribe_reset_resource() since
-	 * all potential processes that could call scribe_reset_resource() are
-	 * gone.
+	 * all potential processes that could call scribe_reset_resource() and
+	 * scribe_reset_resource_container() are gone.
 	 */
 	kfree(resources);
 }

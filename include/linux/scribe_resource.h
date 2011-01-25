@@ -53,6 +53,8 @@ struct scribe_resource {
 
 void scribe_init_resource(struct scribe_resource *res, int type);
 void scribe_reset_resource(struct scribe_resource *res);
+struct scribe_container;
+void scribe_reset_resource_container(struct scribe_container *container);
 
 #endif /* CONFIG_SCRIBE */
 

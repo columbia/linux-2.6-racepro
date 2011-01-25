@@ -325,6 +325,53 @@ void clear_inode(struct inode *inode)
 }
 EXPORT_SYMBOL(clear_inode);
 
+static void scribe_unmount_inodes(struct list_head *list)
+{
+	struct inode *inode, *next_i, *need_iput = NULL;
+
+	/*
+	 * Adapted from inotify_unmount_inodes()
+	 */
+
+	list_for_each_entry_safe(inode, next_i, list, i_sb_list) {
+		struct inode *need_iput_tmp;
+
+		if (!atomic_read(&inode->i_count))
+			continue;
+
+		need_iput_tmp = need_iput;
+		need_iput = NULL;
+		/* In case inotify_remove_watch_locked() drops a reference. */
+		if (inode != need_iput_tmp)
+			__iget(inode);
+		else
+			need_iput_tmp = NULL;
+		/* In case the dropping of a reference would nuke next_i. */
+		if ((&next_i->i_sb_list != list) &&
+				atomic_read(&next_i->i_count)) {
+			__iget(next_i);
+			need_iput = next_i;
+		}
+
+		/*
+		 * We can safely drop inode_lock here because we hold
+		 * references on both inode and next_i.  Also no new inodes
+		 * will be added since the umount has begun.  Finally,
+		 * iprune_mutex keeps shrink_icache_memory() away.
+		 */
+		spin_unlock(&inode_lock);
+
+		if (need_iput_tmp)
+			iput(need_iput_tmp);
+
+		scribe_reset_resource_container(&inode->i_scribe_resource);
+
+		iput(inode);
+
+		spin_lock(&inode_lock);
+	}
+}
+
 /*
  * dispose_list - dispose of the contents of a local list
  * @head: the head of the list to free
@@ -417,6 +464,7 @@ int invalidate_inodes(struct super_block *sb)
 
 	down_write(&iprune_sem);
 	spin_lock(&inode_lock);
+	scribe_unmount_inodes(&sb->s_inodes);
 	inotify_unmount_inodes(&sb->s_inodes);
 	fsnotify_unmount_inodes(&sb->s_inodes);
 	busy = invalidate_list(&sb->s_inodes, &throw_away);
