@@ -1062,8 +1062,6 @@ static int do_path_lookup(int dfd, const char *name,
 	if (scribe_resource_prepare())
 		return -ENOMEM;
 
-	scribe_lock_fs(name);
-
 	retval = path_init(dfd, name, flags, nd);
 	if (!retval)
 		retval = path_walk(name, nd);
@@ -1074,8 +1072,6 @@ static int do_path_lookup(int dfd, const char *name,
 		path_put(&nd->root);
 		nd->root.mnt = NULL;
 	}
-
-	scribe_unlock((void *)name);
 
 	return retval;
 }
@@ -1769,8 +1765,8 @@ exit:
  * are not the same as in the local variable "flag". See
  * open_to_namei_flags() for more details.
  */
-static struct file *__do_filp_open(int dfd, const char *pathname,
-				   int open_flag, int mode, int acc_mode)
+struct file *do_filp_open(int dfd, const char *pathname,
+			  int open_flag, int mode, int acc_mode)
 {
 	struct file *filp;
 	struct nameidata nd;
@@ -1904,21 +1900,6 @@ exit_parent:
 	path_put(&nd.path);
 	filp = ERR_PTR(error);
 	goto out;
-}
-
-struct file *do_filp_open(int dfd, const char *pathname,
-			  int open_flag, int mode, int acc_mode)
-{
-	struct file *file;
-
-	if (scribe_resource_prepare())
-		return ERR_PTR(-ENOMEM);
-
-	scribe_lock_fs(pathname);
-	file = __do_filp_open(dfd, pathname, open_flag, mode, acc_mode);
-	scribe_unlock((void *)pathname);
-
-	return file;
 }
 
 /**

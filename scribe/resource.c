@@ -17,7 +17,6 @@
 #include <linux/pid_namespace.h>
 #include <linux/ipc_namespace.h>
 #include <linux/writeback.h>
-#include <linux/sunrpc/svcauth.h> /* For hash_str() */
 
 /*
  * A few notes:
@@ -49,9 +48,6 @@
  *   resource API already use read/write version, but it does the same thing).
  */
 
-#define FS_HASH_BITS 10
-#define FS_HASH_SIZE (1 << FS_HASH_BITS)
-
 static inline int should_handle_resources(struct scribe_ps *scribe)
 {
 	if (!is_scribed(scribe))
@@ -61,7 +57,6 @@ static inline int should_handle_resources(struct scribe_ps *scribe)
 }
 
 struct scribe_resources {
-	struct scribe_resource fs_res[FS_HASH_SIZE];
 	struct scribe_resource tasks_res;
 
 	/*
@@ -75,7 +70,6 @@ struct scribe_resources {
 struct scribe_resources *scribe_alloc_resources(void)
 {
 	struct scribe_resources *resources;
-	int i;
 
 	resources = kmalloc(sizeof(*resources), GFP_KERNEL);
 	if (!resources)
@@ -84,8 +78,6 @@ struct scribe_resources *scribe_alloc_resources(void)
 	INIT_LIST_HEAD(&resources->tracked);
 	spin_lock_init(&resources->lock);
 
-	for (i = 0; i < FS_HASH_SIZE; i++)
-		scribe_init_resource(&resources->fs_res[i], SCRIBE_RES_TYPE_FS);
 	scribe_init_resource(&resources->tasks_res, SCRIBE_RES_TYPE_TASK);
 
 	return resources;
@@ -278,14 +270,6 @@ void scribe_free_resources(struct scribe_resources *resources)
 	 * scribe_reset_resource_container() are gone.
 	 */
 	kfree(resources);
-}
-
-static struct scribe_resource *find_fs_res(
-		struct scribe_context *ctx, const char *name)
-{
-	struct scribe_resources *resources = ctx->resources;
-	int index = hash_str((char *)name, FS_HASH_BITS);
-	return &resources->fs_res[index];
 }
 
 struct scribe_lock_region {
@@ -1250,17 +1234,6 @@ void scribe_lock_ipc(struct ipc_namespace *ns)
 
 	/* For now all IPC things are synchronized on the same resource */
 	__lock_object(scribe, ns, &ns->scribe_resource, SCRIBE_WRITE);
-}
-
-void scribe_lock_fs(const char *name)
-{
-	struct scribe_ps *scribe = current->scribe;
-
-	if (!should_handle_resources(scribe))
-		return;
-
-	__lock_object(scribe, (void *)name,
-		      find_fs_res(scribe->ctx, name), SCRIBE_WRITE);
 }
 
 bool scribe_was_locking_interrupted(void)
