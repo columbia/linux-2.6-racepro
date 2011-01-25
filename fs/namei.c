@@ -546,7 +546,16 @@ __do_follow_link(struct path *path, struct nameidata *nd, void **p)
 	}
 	mntget(path->mnt);
 	nd->last_type = LAST_BIND;
+
+	if (scribe_resource_prepare()) {
+		*p = ERR_PTR(-ENOMEM);
+		return -ENOMEM;
+	}
+
+	scribe_lock_inode_read(dentry->d_inode);
 	*p = dentry->d_inode->i_op->follow_link(dentry, nd);
+	scribe_unlock(dentry->d_inode);
+
 	error = PTR_ERR(*p);
 	if (!IS_ERR(*p)) {
 		char *s = nd_get_link(nd);
@@ -697,8 +706,8 @@ static __always_inline void follow_dotdot(struct nameidata *nd)
  *  small and for now I'd prefer to have fast path as straight as possible.
  *  It _is_ time-critical.
  */
-static int do_lookup(struct nameidata *nd, struct qstr *name,
-		     struct path *path)
+static int __do_lookup(struct nameidata *nd, struct qstr *name,
+		       struct path *path)
 {
 	struct vfsmount *mnt = nd->path.mnt;
 	struct dentry *dentry, *parent;
@@ -792,6 +801,22 @@ need_revalidate:
 
 fail:
 	return PTR_ERR(dentry);
+}
+
+static int do_lookup(struct nameidata *nd, struct qstr *name,
+		     struct path *path)
+{
+	struct dentry *dir = nd->path.dentry;
+	int ret;
+
+	if (scribe_resource_prepare())
+		return -ENOMEM;
+
+	scribe_lock_inode_read(dir->d_inode);
+	ret = __do_lookup(nd, name, path);
+	scribe_unlock(dir->d_inode);
+
+	return ret;
 }
 
 /*
@@ -1616,9 +1641,9 @@ exit:
 	return ERR_PTR(error);
 }
 
-static struct file *do_last(struct nameidata *nd, struct path *path,
-			    int open_flag, int acc_mode,
-			    int mode, const char *pathname)
+static struct file *__do_last(struct nameidata *nd, struct path *path,
+			      int open_flag, int acc_mode,
+			      int mode, const char *pathname)
 {
 	struct dentry *dir = nd->path.dentry;
 	struct file *filp;
@@ -1758,6 +1783,26 @@ exit:
 		release_open_intent(nd);
 	path_put(&nd->path);
 	return ERR_PTR(error);
+}
+
+static struct file *do_last(struct nameidata *nd, struct path *path,
+			    int open_flag, int acc_mode,
+			    int mode, const char *pathname)
+{
+	struct dentry *dir = nd->path.dentry;
+	struct file *filp;
+
+	if (scribe_resource_prepare())
+		return ERR_PTR(-ENOMEM);
+
+	if (open_flag & O_CREAT)
+		scribe_lock_inode_write(dir->d_inode);
+	/* In the other case, do_follow() will lock the dir */
+	filp = __do_last(nd, path, open_flag, acc_mode, mode, pathname);
+	if (open_flag & O_CREAT)
+		scribe_unlock(dir->d_inode);
+
+	return filp;
 }
 
 /*
