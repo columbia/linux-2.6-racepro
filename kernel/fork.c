@@ -1350,6 +1350,11 @@ static struct task_struct *copy_process(unsigned long long clone_flags,
 
 	spin_lock(&current->sighand->siglock);
 
+	if (is_ps_replaying(current)) {
+		if (current->scribe->orig_ret != -ERESTARTNOINTR)
+			goto skip_signaling;
+	}
+
 	/*
 	 * Process group and session signals need to be delivered to just the
 	 * parent before the fork or both the parent and the child after the
@@ -1365,6 +1370,7 @@ static struct task_struct *copy_process(unsigned long long clone_flags,
 		retval = -ERESTARTNOINTR;
 		goto bad_fork_free_pid;
 	}
+skip_signaling:
 
 	if (clone_flags & CLONE_THREAD) {
 		current->signal->nr_threads++;
