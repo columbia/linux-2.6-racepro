@@ -157,8 +157,11 @@ static void adjust_sigpending_flag_exit(struct scribe_ps *scribe)
 	if (!is_interruptible_syscall(scribe->nr_syscall))
 		return;
 
-	if (is_replaying(scribe))
-		recalc_sigpending();
+	if (is_replaying(scribe)) {
+		/* Fake signals should not get cleared */
+		if (!is_interruption(scribe->orig_ret))
+			recalc_sigpending();
+	}
 }
 
 void scribe_enter_syscall(struct pt_regs *regs)

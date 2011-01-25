@@ -71,6 +71,7 @@ static int scribe_wait_all_sync(struct scribe_context *ctx)
 
 	spin_lock(&ctx->tasks_lock);
 	list_for_each_entry(scribe, &ctx->tasks, node) {
+		/* FIXME This is racy */
 		if (!(scribe->p->flags & PF_EXITING)) {
 			npr_waiting += scribe->bmark_waiting;
 			npr++;
