@@ -870,8 +870,6 @@ void fd_install(unsigned int fd, struct file *file)
 	struct files_struct *files = current->files;
 	struct fdtable *fdt;
 
-	scribe_open_file(file, SCRIBE_SYNC);
-
 	scribe_lock_files_write(files);
 	spin_lock(&files->file_lock);
 	fdt = files_fdtable(files);
@@ -1001,10 +999,8 @@ SYSCALL_DEFINE1(close, unsigned int, fd)
 	__put_unused_fd(files, fd);
 	spin_unlock(&files->file_lock);
 
-	if (scribed) {
+	if (scribed)
 		scribe_unlock(files);
-		scribe_close_file(filp);
-	}
 
 	retval = filp_close(filp, files);
 

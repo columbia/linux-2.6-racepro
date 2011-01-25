@@ -318,8 +318,9 @@ struct files_struct *dup_fd(struct files_struct *oldf, int *errorp)
 	atomic_set(&newf->count, 1);
 
 #ifdef CONFIG_SCRIBE
-	mutex_init(&newf->scribe_open_lock);
-	scribe_init_container(&newf->scribe_resource);
+	scribe_init_resource(&newf->scribe_resource,
+			     SCRIBE_RES_TYPE_FILES_STRUCT |
+			     SCRIBE_RES_SPINLOCK);
 #endif
 	spin_lock_init(&newf->file_lock);
 	newf->next_fd = 0;

@@ -12,7 +12,7 @@
 #include <linux/types.h>
 #include <linux/init.h>
 #include <linux/mutex.h>
-#include <linux/scribe_container.h>
+#include <linux/scribe_resource.h>
 
 #include <asm/atomic.h>
 
@@ -50,13 +50,7 @@ struct files_struct {
 	struct fdtable *fdt;
 	struct fdtable fdtab;
 #ifdef CONFIG_SCRIBE
-	/*
-	 * Event though a files_struct cannot be shared among scribe
-	 * contexts, we want the synchronization facilities provided by
-	 * resource_close().
-	 */
-	struct mutex scribe_open_lock;
-	struct scribe_container scribe_resource;
+	struct scribe_resource scribe_resource;
 #endif
 
   /*

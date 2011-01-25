@@ -134,8 +134,7 @@ struct file *get_empty_filp(void)
 	spin_lock_init(&f->f_lock);
 	eventpoll_init_file(f);
 #ifdef CONFIG_SCRIBE
-	atomic_set(&f->scribe_ref_cnt, 0);
-	f->scribe_context = NULL;
+	scribe_init_resource(&f->scribe_resource, SCRIBE_RES_TYPE_FILE);
 #endif
 	/* f->f_version: 0 */
 	return f;
@@ -259,6 +258,9 @@ static void __fput(struct file *file)
 		drop_file_write_access(file);
 	file->f_path.dentry = NULL;
 	file->f_path.mnt = NULL;
+#ifdef CONFIG_SCRIBE
+	scribe_reset_resource(&file->scribe_resource);
+#endif
 	file_free(file);
 	dput(dentry);
 	mntput(mnt);

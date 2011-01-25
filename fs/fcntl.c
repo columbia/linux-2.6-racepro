@@ -102,7 +102,6 @@ SYSCALL_DEFINE3(dup3, unsigned int, oldfd, unsigned int, newfd, int, flags)
 	if (!tofree && FD_ISSET(newfd, fdt->open_fds))
 		goto out_unlock;
 	get_file(file);
-	get_file(file);
 	rcu_assign_pointer(fdt->fd[newfd], file);
 	FD_SET(newfd, fdt->open_fds);
 	if (flags & O_CLOEXEC)
@@ -112,13 +111,8 @@ SYSCALL_DEFINE3(dup3, unsigned int, oldfd, unsigned int, newfd, int, flags)
 	spin_unlock(&files->file_lock);
 	scribe_unlock(files);
 
-	scribe_open_file(file, SCRIBE_NO_SYNC);
-	fput(file);
-
-	if (tofree) {
-		scribe_close_file(tofree);
+	if (tofree)
 		filp_close(tofree, files);
-	}
 
 	return newfd;
 

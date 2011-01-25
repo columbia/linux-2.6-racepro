@@ -16,10 +16,7 @@ static struct scribe_handle *__get_handle(struct scribe_container *container,
 	struct scribe_handle *handle;
 
 	list_for_each_entry_rcu(handle, &container->handles, node) {
-		if (handle->ctx != ctx)
-			continue;
-
-		if (likely(atomic_inc_not_zero(&handle->ref_cnt)))
+		if (handle->ctx == ctx)
 			return handle;
 	}
 
@@ -46,7 +43,7 @@ struct scribe_handle *get_scribe_handle(struct scribe_container *container,
 	}
 
 	handle = ctor->get_new(ctor->arg);
-	atomic_set(&handle->ref_cnt, 1);
+	handle->container = container;
 	handle->ctx = ctx;
 	handle->free = ctor->free;
 
@@ -64,23 +61,14 @@ static void free_rcu_handle(struct rcu_head *rcu)
 	handle->free(handle);
 }
 
-void put_scribe_handle(struct scribe_container *container,
-		       struct scribe_handle *handle,
-		       struct scribe_handle_put *put)
+void remove_scribe_handle(struct scribe_handle *handle)
 {
-	int ref_left = atomic_dec_return(&handle->ref_cnt);
+	struct scribe_container *container = handle->container;
 
-	if (put) {
-		put->ref_left = ref_left;
-		put->put(handle, put->arg);
-	}
-
-	if (!ref_left) {
-		spin_lock(&container->lock);
-		list_del_rcu(&handle->node);
-		spin_unlock(&container->lock);
-		call_rcu(&handle->rcu, free_rcu_handle);
-	}
+	spin_lock(&container->lock);
+	list_del_rcu(&handle->node);
+	spin_unlock(&container->lock);
+	call_rcu(&handle->rcu, free_rcu_handle);
 }
 
 struct scribe_handle *find_scribe_handle(struct scribe_container *container,
@@ -99,4 +87,3 @@ struct scribe_handle *find_scribe_handle(struct scribe_container *container,
 
 	return NULL;
 }
-

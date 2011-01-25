@@ -24,6 +24,15 @@
  */
 
 struct scribe_resource {
+	/* Attached context, conveniant to know if a resource is tracked */
+	struct scribe_context *ctx;
+
+	/* This node correspond to the scribe_resources->tracked list */
+	struct list_head node;
+
+	/* Return -EAGAIN when the lock has been dropped */
+	int (*on_reset) (struct scribe_context *, struct scribe_resource *);
+
 	int type;
 	u32 serial;
 	struct mutex lock;
@@ -31,18 +40,16 @@ struct scribe_resource {
 	wait_queue_head_t wait;
 };
 
-
 /* Types are also in scribe_api.h */
-#define SCRIBE_RES_TYPE_RESERVED	0
-#define SCRIBE_RES_TYPE_INODE		1
-#define SCRIBE_RES_TYPE_FILE		2
-#define SCRIBE_RES_TYPE_FILES_STRUCT	3
-#define SCRIBE_RES_TYPE_TASK		4
-#define SCRIBE_RES_TYPE_FUTEX		5
-#define SCRIBE_RES_TYPE_IPC		6
-#define SCRIBE_RES_TYPE_FS		7
-#define SCRIBE_RES_TYPE_SPINLOCK	0x40
-#define SCRIBE_RES_TYPE_REGISTRATION	0x80
+#define SCRIBE_RES_TYPE_INODE		0
+#define SCRIBE_RES_TYPE_FILE		1
+#define SCRIBE_RES_TYPE_FILES_STRUCT	2
+#define SCRIBE_RES_TYPE_TASK		3
+#define SCRIBE_RES_TYPE_FUTEX		4
+#define SCRIBE_RES_TYPE_IPC		5
+#define SCRIBE_RES_TYPE_FS		6
+#define SCRIBE_RES_TYPE_MASK		0x0f
+#define SCRIBE_RES_SPINLOCK		0x80
 
 void scribe_init_resource(struct scribe_resource *res, int type);
 void scribe_reset_resource(struct scribe_resource *res);

@@ -415,15 +415,6 @@ extern int scribe_resource_pre_alloc(struct scribe_res_user *user,
 				     int doing_recording, int res_extra);
 extern int scribe_resource_prepare(void);
 
-#define SCRIBE_NO_SYNC	0
-#define SCRIBE_SYNC	1
-extern void scribe_open_resource_no_sync(
-				struct scribe_context *ctx,
-				struct scribe_container *container,
-				int type, struct scribe_res_user *user);
-extern void scribe_close_resource_no_sync(struct scribe_context *ctx,
-				struct scribe_container *container);
-
 #define SCRIBE_INTERRUPTIBLE	0x01
 #define SCRIBE_READ		0x02
 #define SCRIBE_WRITE		0x04
@@ -432,10 +423,8 @@ extern void scribe_close_resource_no_sync(struct scribe_context *ctx,
 extern void scribe_lock_object(void *object, struct scribe_resource *res,
 			       int flags);
 extern void scribe_lock_object_handle(void *object,
-		struct scribe_container *container, int flags);
+		struct scribe_container *container, int type, int flags);
 
-extern void scribe_open_file(struct file *file, int do_sync);
-extern void scribe_close_file(struct file *file);
 extern void scribe_lock_file_no_inode(struct file *file);
 extern void scribe_lock_file_read(struct file *file);
 extern void scribe_lock_file_write(struct file *file);
@@ -455,8 +444,6 @@ extern int scribe_post_fget(struct files_struct *files, struct file *file,
 			    int lock_flags);
 extern void scribe_pre_fput(struct file *file);
 
-extern void scribe_open_files(struct files_struct *files);
-extern void scribe_close_files(struct files_struct *files);
 extern void scribe_lock_files_read(struct files_struct *files);
 extern void scribe_lock_files_write(struct files_struct *files);
 

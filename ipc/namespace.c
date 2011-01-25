@@ -88,6 +88,7 @@ void free_ipcs(struct ipc_namespace *ns, struct ipc_ids *ids,
 
 static void free_ipc_ns(struct ipc_namespace *ns)
 {
+	scribe_reset_resource(&ns->scribe_resource);
 	/*
 	 * Unregistering the hotplug notifier at the beginning guarantees
 	 * that the ipc namespace won't be freed while we are inside the

@@ -1309,6 +1309,10 @@ static inline void iput_final(struct inode *inode)
 	const struct super_operations *op = inode->i_sb->s_op;
 	void (*drop)(struct inode *) = generic_drop_inode;
 
+#ifdef CONFIG_SCRIBE
+	scribe_exit_container(&inode->i_scribe_resource);
+#endif
+
 	if (op && op->drop_inode)
 		drop = op->drop_inode;
 	drop(inode);

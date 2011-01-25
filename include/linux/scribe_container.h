@@ -32,6 +32,11 @@
 struct scribe_container {
 	spinlock_t lock;
 	struct list_head handles;
+	/*
+	 * We would want to put extra information here so that the handle ctor
+	 * could get some extra information.
+	 * But we don't to optimize memory usage.
+	 */
 };
 
 struct scribe_handle_ctor {
@@ -40,16 +45,10 @@ struct scribe_handle_ctor {
 	void (*free) (struct scribe_handle *);
 };
 
-struct scribe_handle_put {
-	void (*put) (struct scribe_handle *, void *);
-	void *arg;
-	int ref_left;
-};
-
 struct scribe_handle {
 	struct list_head node;
+	struct scribe_container *container;
 	struct scribe_context *ctx;
-	atomic_t ref_cnt;
 	struct rcu_head rcu;
 	void (*free) (struct scribe_handle *);
 };
@@ -60,13 +59,16 @@ static inline void scribe_init_container(struct scribe_container *container)
 	INIT_LIST_HEAD(&container->handles);
 }
 
+static inline void scribe_exit_container(struct scribe_container *container)
+{
+	BUG_ON(!list_empty(&container->handles));
+}
+
 extern struct scribe_handle *get_scribe_handle(
 		struct scribe_container *container,
 		struct scribe_context *ctx, struct scribe_handle_ctor *ctor);
 
-extern void put_scribe_handle(struct scribe_container *container,
-			      struct scribe_handle *handle,
-			      struct scribe_handle_put *put);
+extern void remove_scribe_handle(struct scribe_handle *handle);
 
 extern struct scribe_handle *find_scribe_handle(
 					struct scribe_container *container,

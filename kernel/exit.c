@@ -494,6 +494,8 @@ static void close_files(struct files_struct * files)
 			set >>= 1;
 		}
 	}
+
+	scribe_reset_resource(&files->scribe_resource);
 }
 
 struct files_struct *get_files_struct(struct task_struct *task)
@@ -547,9 +549,6 @@ void exit_files(struct task_struct *tsk)
 	struct files_struct * files = tsk->files;
 
 	if (files) {
-		if (is_ps_scribed(tsk))
-			scribe_close_files(files);
-
 		task_lock(tsk);
 		tsk->files = NULL;
 		task_unlock(tsk);

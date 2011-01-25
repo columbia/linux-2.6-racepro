@@ -897,7 +897,9 @@ double_unlock_hb(struct futex_hash_bucket *hb1, struct futex_hash_bucket *hb2)
 
 static inline void scribe_lock_hb(struct futex_hash_bucket *hb)
 {
-	scribe_lock_object_handle(hb, &hb->scribe_resource, SCRIBE_WRITE);
+	scribe_lock_object_handle(hb, &hb->scribe_resource,
+			  SCRIBE_RES_TYPE_FUTEX | SCRIBE_RES_SPINLOCK,
+			  SCRIBE_WRITE);
 }
 
 static inline void scribe_double_lock_hb(struct futex_hash_bucket *hb1,
@@ -2777,44 +2779,6 @@ SYSCALL_DEFINE6(futex, u32 __user *, uaddr, int, op, u32, val,
 
 	return do_futex(uaddr, op, val, tp, uaddr2, val2, val3);
 }
-
-#ifdef CONFIG_SCRIBE
-int scribe_open_futexes(struct scribe_context *ctx)
-{
-	int ret = 0;
-	int i;
-	struct scribe_res_user user;
-
-	scribe_resource_init_user(&user);
-	for (i = 0; i < ARRAY_SIZE(futex_queues); i++) {
-		if (scribe_resource_pre_alloc(&user, 0, 0)) {
-			ret = -ENOMEM;
-			break;
-		}
-
-		scribe_open_resource_no_sync(
-		      ctx, &futex_queues[i].scribe_resource,
-		      SCRIBE_RES_TYPE_FUTEX | SCRIBE_RES_TYPE_SPINLOCK, &user);
-	}
-	scribe_resource_exit_user(&user);
-	if (ret) {
-		for (i--; i >= 0; i--) {
-			scribe_close_resource_no_sync(ctx,
-					&futex_queues[i].scribe_resource);
-		}
-	}
-	return ret;
-}
-
-void scribe_close_futexes(struct scribe_context *ctx)
-{
-	int i;
-	for (i = 0; i < ARRAY_SIZE(futex_queues); i++) {
-		scribe_close_resource_no_sync(ctx,
-					      &futex_queues[i].scribe_resource);
-	}
-}
-#endif
 
 static int __init futex_init(void)
 {

@@ -10,7 +10,6 @@
 #include <linux/sched.h>
 #include <linux/seq_file.h>
 #include <linux/scribe.h>
-#include <linux/futex.h>
 
 struct scribe_context *scribe_alloc_context(void)
 {
@@ -47,12 +46,9 @@ struct scribe_context *scribe_alloc_context(void)
 	if (!ctx->resources)
 		goto err_ctx;
 
-	if (scribe_open_futexes(ctx))
-		goto err_resources;
-
 	ctx->bmark = scribe_bookmark_alloc(ctx);
 	if (!ctx->bmark)
-		goto err_futex;
+		goto err_resources;
 
 	spin_lock_init(&ctx->mem_hash_lock);
 	ctx->mem_hash = scribe_alloc_mem_hash();
@@ -65,8 +61,6 @@ struct scribe_context *scribe_alloc_context(void)
 
 err_bmark:
 	scribe_bookmark_free(ctx->bmark);
-err_futex:
-	scribe_close_futexes(ctx);
 err_resources:
 	scribe_free_resources(ctx->resources);
 err_ctx:
@@ -96,7 +90,6 @@ void scribe_exit_context(struct scribe_context *ctx)
 
 	scribe_free_all_events(&ctx->notifications);
 	scribe_free_mem_hash(ctx->mem_hash);
-	scribe_close_futexes(ctx);
 	scribe_free_resources(ctx->resources);
 	scribe_bookmark_free(ctx->bmark);
 
@@ -478,7 +471,6 @@ void scribe_attach(struct scribe_ps *scribe)
 
 	scribe_attach_arch(scribe);
 
-	scribe_open_files(scribe->p->files);
 	BUG_ON(scribe_mem_init_st(scribe));
 }
 
@@ -546,7 +538,6 @@ void scribe_detach(struct scribe_ps *scribe)
 		scribe_kill_queue(scribe->queue);
 
 	scribe_mem_exit_st(scribe);
-	scribe_close_files(scribe->p->files);
 	__scribe_detach(scribe);
 }
 
