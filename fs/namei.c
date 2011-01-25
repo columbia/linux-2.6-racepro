@@ -2076,7 +2076,10 @@ SYSCALL_DEFINE4(mknodat, int, dfd, const char __user *, filename, int, mode,
 	if (error)
 		return error;
 
+	/* Resources are already pre-allocated */
+	scribe_lock_inode_write(nd.path.dentry->d_inode);
 	dentry = lookup_create(&nd, 0);
+
 	if (IS_ERR(dentry)) {
 		error = PTR_ERR(dentry);
 		goto out_unlock;
@@ -2110,6 +2113,7 @@ out_dput:
 	dput(dentry);
 out_unlock:
 	mutex_unlock(&nd.path.dentry->d_inode->i_mutex);
+	scribe_unlock(nd.path.dentry->d_inode);
 	path_put(&nd.path);
 	putname(tmp);
 
@@ -2153,6 +2157,8 @@ SYSCALL_DEFINE3(mkdirat, int, dfd, const char __user *, pathname, int, mode)
 	if (error)
 		goto out_err;
 
+	/* Resources are already pre-allocated */
+	scribe_lock_inode_write(nd.path.dentry->d_inode);
 	dentry = lookup_create(&nd, 1);
 	error = PTR_ERR(dentry);
 	if (IS_ERR(dentry))
@@ -2173,6 +2179,7 @@ out_dput:
 	dput(dentry);
 out_unlock:
 	mutex_unlock(&nd.path.dentry->d_inode->i_mutex);
+	scribe_unlock(nd.path.dentry->d_inode);
 	path_put(&nd.path);
 	putname(tmp);
 out_err:
@@ -2269,6 +2276,8 @@ static long do_rmdir(int dfd, const char __user *pathname)
 
 	nd.flags &= ~LOOKUP_PARENT;
 
+	/* Resources are already pre-allocated */
+	scribe_lock_inode_write(nd.path.dentry->d_inode);
 	mutex_lock_nested(&nd.path.dentry->d_inode->i_mutex, I_MUTEX_PARENT);
 	dentry = lookup_hash(&nd);
 	error = PTR_ERR(dentry);
@@ -2287,6 +2296,7 @@ exit3:
 	dput(dentry);
 exit2:
 	mutex_unlock(&nd.path.dentry->d_inode->i_mutex);
+	scribe_unlock(nd.path.dentry->d_inode);
 exit1:
 	path_put(&nd.path);
 	putname(name);
@@ -2354,6 +2364,7 @@ static long do_unlinkat(int dfd, const char __user *pathname)
 
 	nd.flags &= ~LOOKUP_PARENT;
 
+	scribe_lock_inode_write(nd.path.dentry->d_inode);
 	mutex_lock_nested(&nd.path.dentry->d_inode->i_mutex, I_MUTEX_PARENT);
 	dentry = lookup_hash(&nd);
 	error = PTR_ERR(dentry);
@@ -2377,6 +2388,7 @@ exit3:
 		dput(dentry);
 	}
 	mutex_unlock(&nd.path.dentry->d_inode->i_mutex);
+	scribe_unlock(nd.path.dentry->d_inode);
 	if (inode)
 		iput(inode);	/* truncate the inode here */
 exit1:
@@ -2443,6 +2455,8 @@ SYSCALL_DEFINE3(symlinkat, const char __user *, oldname,
 	if (error)
 		goto out_putname;
 
+	/* Resources are already pre-allocated */
+	scribe_lock_inode_write(nd.path.dentry->d_inode);
 	dentry = lookup_create(&nd, 0);
 	error = PTR_ERR(dentry);
 	if (IS_ERR(dentry))
@@ -2461,6 +2475,7 @@ out_dput:
 	dput(dentry);
 out_unlock:
 	mutex_unlock(&nd.path.dentry->d_inode->i_mutex);
+	scribe_unlock(nd.path.dentry->d_inode);
 	path_put(&nd.path);
 	putname(to);
 out_putname:
@@ -2543,6 +2558,8 @@ SYSCALL_DEFINE5(linkat, int, olddfd, const char __user *, oldname,
 	error = -EXDEV;
 	if (old_path.mnt != nd.path.mnt)
 		goto out_release;
+	/* TODO lock the old_path */
+	scribe_lock_inode_write(nd.path.dentry->d_inode);
 	new_dentry = lookup_create(&nd, 0);
 	error = PTR_ERR(new_dentry);
 	if (IS_ERR(new_dentry))
@@ -2560,6 +2577,7 @@ out_dput:
 	dput(new_dentry);
 out_unlock:
 	mutex_unlock(&nd.path.dentry->d_inode->i_mutex);
+	scribe_unlock(nd.path.dentry->d_inode);
 out_release:
 	path_put(&nd.path);
 	putname(to);
@@ -2758,6 +2776,7 @@ SYSCALL_DEFINE4(renameat, int, olddfd, const char __user *, oldname,
 
 	trap = lock_rename(new_dir, old_dir);
 
+	/* TODO double lock the inodes */
 	old_dentry = lookup_hash(&oldnd);
 	error = PTR_ERR(old_dentry);
 	if (IS_ERR(old_dentry))
