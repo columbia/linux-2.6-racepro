@@ -333,10 +333,13 @@ void scribe_wake_all_fake_sig(struct scribe_context *ctx)
 	unsigned long flags;
 	struct scribe_ps *scribe;
 
+	assert_spin_locked(&ctx->tasks_lock);
+
 	list_for_each_entry(scribe, &ctx->tasks, node) {
-		spin_lock_irqsave(&scribe->p->sighand->siglock, flags);
-		signal_wake_up(scribe->p, 0);
-		spin_unlock_irqrestore(&scribe->p->sighand->siglock, flags);
+		if (lock_task_sighand(scribe->p, &flags)) {
+			signal_wake_up(scribe->p, 0);
+			unlock_task_sighand(scribe->p, &flags);
+		}
 	}
 }
 
