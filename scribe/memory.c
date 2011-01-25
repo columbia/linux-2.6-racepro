@@ -1068,6 +1068,7 @@ int scribe_mem_init_st(struct scribe_ps *scribe)
 		goto out_up;
 	}
 
+	smp_wmb();
 	scribe->mm = mm;
 	add_shadow_mm(mm, tsk->mm);
 	mm->is_alone = !is_sharing_mm(scribe);
@@ -1126,15 +1127,17 @@ void scribe_mem_exit_st(struct scribe_ps *scribe)
 	scribe_mem_sync_point(scribe, MEM_SYNC_OUT);
 
 	/* set back the real pgd */
+	preempt_disable();
 	if (current->scribe == scribe)
 		load_cr3(tsk->mm->pgd);
 
 	rm_shadow_mm(mm, scribe->p->mm);
 	put_all_objects(scribe);
-
 	free_own_pgd(scribe);
-
 	scribe->mm = NULL;
+
+	preempt_enable();
+
 	kfree(mm);
 
 	up_write(&tsk->mm->mmap_sem);

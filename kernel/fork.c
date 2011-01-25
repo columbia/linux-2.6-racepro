@@ -1011,8 +1011,10 @@ int init_scribe(struct task_struct *p, struct scribe_context *ctx)
 	scribe->p = p;
 	scribe->bmark_waiting = 0;
 	scribe->mm = NULL;
-
-
+	/*
+	 * The memory pointer needs to be set before we set the scribe pointer
+	 */
+	smp_wmb();
 	p->scribe = scribe;
 
 	return 0;
