@@ -38,7 +38,8 @@ void generic_fillattr(struct inode *inode, struct kstat *stat)
 
 EXPORT_SYMBOL(generic_fillattr);
 
-int vfs_getattr(struct vfsmount *mnt, struct dentry *dentry, struct kstat *stat)
+static int __vfs_getattr(struct vfsmount *mnt,
+			 struct dentry *dentry, struct kstat *stat)
 {
 	struct inode *inode = dentry->d_inode;
 	int retval;
@@ -54,13 +55,31 @@ int vfs_getattr(struct vfsmount *mnt, struct dentry *dentry, struct kstat *stat)
 	return 0;
 }
 
+int vfs_getattr(struct vfsmount *mnt, struct dentry *dentry, struct kstat *stat)
+{
+	int ret;
+
+	if (scribe_resource_prepare())
+		return -ENOMEM;
+
+	scribe_lock_inode_read(dentry->d_inode);
+	ret = __vfs_getattr(mnt, dentry, stat);
+	scribe_unlock(dentry->d_inode);
+
+	return ret;
+}
+
 EXPORT_SYMBOL(vfs_getattr);
 
 int vfs_fstat(unsigned int fd, struct kstat *stat)
 {
-	struct file *f = fget(fd);
+	struct file *f;
 	int error = -EBADF;
 
+	if (scribe_track_next_file_no_inode())
+		return -ENOMEM;
+
+	f = fget(fd);
 	if (f) {
 		error = vfs_getattr(f->f_path.mnt, f->f_path.dentry, stat);
 		fput(f);
