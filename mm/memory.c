@@ -302,11 +302,10 @@ static inline void free_pud_range(struct mmu_gather *tlb, pgd_t *pgd,
  *
  * Must be called with pagetable lock held.
  */
-void free_pgd_range(struct mmu_gather *tlb,
-			unsigned long addr, unsigned long end,
-			unsigned long floor, unsigned long ceiling)
+void __free_pgd_range(struct mmu_gather *tlb, pgd_t *pgd,
+		      unsigned long addr, unsigned long end,
+		      unsigned long floor, unsigned long ceiling)
 {
-	pgd_t *pgd;
 	unsigned long next;
 	unsigned long start;
 
@@ -353,13 +352,21 @@ void free_pgd_range(struct mmu_gather *tlb,
 		return;
 
 	start = addr;
-	pgd = pgd_offset(tlb->mm, addr);
+	pgd += pgd_index(addr);
 	do {
 		next = pgd_addr_end(addr, end);
 		if (pgd_none_or_clear_bad(pgd))
 			continue;
 		free_pud_range(tlb, pgd, addr, next, floor, ceiling);
 	} while (pgd++, addr = next, addr != end);
+}
+
+void free_pgd_range(struct mmu_gather *tlb,
+		    unsigned long addr, unsigned long end,
+		    unsigned long floor, unsigned long ceiling)
+{
+	__free_pgd_range(tlb, tlb->mm->pgd, addr, end, floor, ceiling);
+	scribe_free_all_shadow_pgd_range(tlb, addr, end, floor, ceiling);
 }
 
 void free_pgtables(struct mmu_gather *tlb, struct vm_area_struct *vma,

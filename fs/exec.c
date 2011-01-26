@@ -585,6 +585,11 @@ static int shift_arg_pages(struct vm_area_struct *vma, unsigned long shift)
 				       vma, new_start, length))
 		return -ENOMEM;
 
+	/*
+	 * Scribe: Nothing is scribed around here, so we are safe not to do
+	 * anything.
+	 */
+
 	lru_add_drain();
 	tlb = tlb_gather_mmu(mm, 0);
 	if (new_end > old_start) {

@@ -263,8 +263,8 @@ int sys_vfork(struct pt_regs *regs)
 {
 	if (is_ps_scribed(current)) {
 		/*
-		 * vfork() is generate memory sharing events: doing a regular
-		 * fork() to avoid that.
+		 * vfork() is worse for scribe: it would instanciate two clean
+		 * page tables. The wanted optimization won't happen.
 		 */
 		return sys_fork(regs);
 	}

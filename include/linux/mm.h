@@ -798,6 +798,9 @@ struct mm_walk {
 
 int walk_page_range(unsigned long addr, unsigned long end,
 		struct mm_walk *walk);
+void __free_pgd_range(struct mmu_gather *tlb, pgd_t *pgd,
+		      unsigned long addr, unsigned long end,
+		      unsigned long floor, unsigned long ceiling);
 void free_pgd_range(struct mmu_gather *tlb, unsigned long addr,
 		unsigned long end, unsigned long floor, unsigned long ceiling);
 int copy_page_range(struct mm_struct *dst, struct mm_struct *src,
@@ -871,9 +874,6 @@ extern unsigned long do_mremap(unsigned long addr,
 extern int mprotect_fixup(struct vm_area_struct *vma,
 			  struct vm_area_struct **pprev, unsigned long start,
 			  unsigned long end, unsigned long newflags);
-extern void change_protection(struct vm_area_struct *vma,
-			      unsigned long addr, unsigned long end,
-			      pgprot_t newprot, int dirty_accountable);
 
 /*
  * doesn't attempt to fault and will return short.

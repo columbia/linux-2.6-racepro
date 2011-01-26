@@ -115,9 +115,9 @@ static inline void change_pud_range(struct mm_struct *mm,
 	} while (pud++, addr = next, addr != end);
 }
 
-void change_protection(struct vm_area_struct *vma,
-		       unsigned long addr, unsigned long end, pgprot_t newprot,
-		       int dirty_accountable)
+static void change_protection(struct vm_area_struct *vma,
+		unsigned long addr, unsigned long end, pgprot_t newprot,
+		int dirty_accountable)
 {
 	struct mm_struct *mm = vma->vm_mm;
 	pgd_t *pgd;

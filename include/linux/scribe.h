@@ -741,6 +741,11 @@ extern void scribe_clear_shadow_pte_locked(struct mm_struct *mm,
 					   struct vm_area_struct *vma,
 					   pte_t *real_pte, unsigned long addr);
 
+struct mmu_gather;
+extern void scribe_free_all_shadow_pgd_range(struct mmu_gather *tlb,
+				unsigned long addr, unsigned long end,
+				unsigned long floor, unsigned long ceiling);
+
 extern void scribe_mem_schedule_in(struct scribe_ps *scribe);
 extern void scribe_mem_schedule_out(struct scribe_ps *scribe);
 #else /* CONFIG_SCRIBE */

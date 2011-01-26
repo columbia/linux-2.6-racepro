@@ -454,18 +454,18 @@ static inline int get_scribe_cnt(struct mm_struct *mm)
 	return ret;
 }
 
-static int is_sharing_mm(struct scribe_ps *scribe)
+static int is_sharing_mm(struct mm_struct *mm)
 {
-	return get_scribe_cnt(scribe->p->mm) > 1;
+	return get_scribe_cnt(mm) > 1;
 }
 
-static int is_sharing_mm_biased(struct scribe_ps *scribe)
+static int is_sharing_mm_biased(struct mm_struct *mm)
 {
 	/*
 	 * This one is used when the scribe_mm struct isn't on the mm_struct
 	 * list.
 	 */
-	return get_scribe_cnt(scribe->p->mm) > 0;
+	return get_scribe_cnt(mm) > 0;
 }
 
 static void add_shadow_mm(struct scribe_mm *scribe_mm, struct mm_struct *mm)
@@ -495,31 +495,29 @@ static void rm_shadow_mm(struct scribe_mm *scribe_mm, struct mm_struct *mm)
 	}
 }
 
-
-/* get_all_objects() bumps the (private) reference counter of the mm_struct, and
- * the inode counters (only if the mm_struct counter was 0)
+/*
+ * get_all_objects() and put_all_objects() take action only in single threaded
+ * mode. And because of this, the mmap semaphore doesn't need to be taken
  */
-/* mmap_sem has to be taken for write */
-static int get_all_objects(struct scribe_ps *scribe)
+static int get_all_objects(struct scribe_context *ctx, struct mm_struct *mm)
 {
 	struct scribe_obj_ref *ref;
 	struct vm_area_struct *vma;
-	struct mm_struct *mm = scribe->p->mm;
 
-	if (is_sharing_mm_biased(scribe))
+	if (is_sharing_mm_biased(mm))
 		return 0;
 
 	for (vma = mm->mmap; vma; vma = vma->vm_next) {
 		if (!(vma->vm_flags & VM_SHARED))
 			continue;
 
+		BUG_ON(vma->vm_flags & VM_SCRIBED);
 		vma->vm_flags |= VM_SCRIBED;
 
-		ref = get_obj_ref(scribe->ctx, vma->vm_file->f_dentry->d_inode);
+		ref = get_obj_ref(ctx, vma->vm_file->f_dentry->d_inode);
 
 		if (IS_ERR(ref)) {
-			MEM_DEBUG(scribe, "warning: cannot get_all_objects()");
-			BUG(); /* FIXME do the proper cleaning */
+			WARN_ON(1); /* FIXME do the proper cleaning */
 			return PTR_ERR(ref);
 		}
 	}
@@ -527,13 +525,11 @@ static int get_all_objects(struct scribe_ps *scribe)
 	return 0;
 }
 
-/* mmap_sem has to be taken for write */
-static void put_all_objects(struct scribe_ps *scribe)
+static void put_all_objects(struct scribe_context *ctx, struct mm_struct *mm)
 {
 	struct vm_area_struct *vma;
-	struct mm_struct *mm = scribe->p->mm;
 
-	if (is_sharing_mm_biased(scribe))
+	if (is_sharing_mm_biased(mm))
 		return;
 
 	for (vma = mm->mmap; vma; vma = vma->vm_next) {
@@ -541,7 +537,7 @@ static void put_all_objects(struct scribe_ps *scribe)
 			continue;
 
 		if (vma->vm_flags & VM_SCRIBED)
-			put_obj(scribe->ctx, vma->vm_file->f_dentry->d_inode);
+			put_obj(ctx, vma->vm_file->f_dentry->d_inode);
 	}
 }
 
@@ -886,46 +882,6 @@ static inline void dec_waiters(struct scribe_page *page, int write_access)
     private page table management
 *********************************************************/
 
-static int alloc_own_pgd(struct scribe_ps *scribe,
-			 struct scribe_mm *scribe_mm, struct mm_struct *mm)
-{
-	BUG_ON(scribe_mm->own_pgd);
-
-	scribe_mm->own_pgd = pgd_alloc(mm);
-	if (!scribe_mm->own_pgd)
-		return -ENOMEM;
-
-	XMEM_DEBUG(scribe, "own pgd is at %p", scribe_mm->own_pgd);
-	return 0;
-}
-
-static void free_own_pgd(struct scribe_ps *scribe)
-{
-	struct mm_struct *mm = scribe->p->mm;
-	pgd_t *pgd, *own_pgd;
-	struct mmu_gather *tlb;
-
-	own_pgd = scribe->mm->own_pgd;
-	if (!own_pgd)
-		return;
-
-	scribe->mm->own_pgd = NULL;
-
-	/* we need to free all the pte pages */
-	XMEM_DEBUG(scribe, "freeing own pgd %p", own_pgd);
-	flush_cache_mm(mm);
-	tlb = tlb_gather_mmu(mm, 1);
-	preempt_disable();
-	pgd = mm->pgd;
-	mm->pgd = own_pgd;
-	free_pgd_range(tlb, FIRST_USER_ADDRESS, TASK_SIZE, 0, 0);
-	mm->pgd = pgd;
-	preempt_enable();
-	tlb_finish_mmu(tlb, FIRST_USER_ADDRESS, TASK_SIZE);
-
-	pgd_free(mm, own_pgd);
-}
-
 static void update_private_pte_locked(struct scribe_ps *scribe,
 		struct mm_struct *mm, struct vm_area_struct *vma,
 		pte_t *real_pte, unsigned long address, int write_access)
@@ -1027,120 +983,174 @@ static void update_private_pte(struct scribe_ps *scribe,
 /********************************************************
     memory context initialization/destruction
 *********************************************************/
+
+static struct scribe_mm *get_new_scribe_mm(struct scribe_ps *scribe)
+{
+	struct scribe_mm *scribe_mm;
+
+	scribe_mm = kmalloc(sizeof(*scribe_mm), GFP_KERNEL);
+	if (!scribe_mm)
+		return NULL;
+
+	scribe_mm->own_pgd = pgd_alloc(scribe->p->mm);
+	if (!scribe_mm->own_pgd) {
+		kfree(scribe_mm);
+		return NULL;
+	}
+
+	scribe_mm->scribe = scribe;
+
+	spin_lock_init(&scribe_mm->req_lock);
+	INIT_LIST_HEAD(&scribe_mm->shared_req);
+	scribe_mm->weak_owner = 0;
+	scribe_mm->disable_sync_sleep = 0;
+
+	return scribe_mm;
+}
+
+static void free_shadow_pgd_range(struct mm_struct *mm, pgd_t *pgd,
+				  unsigned long addr, unsigned long end)
+{
+	struct mmu_gather *tlb;
+
+	flush_cache_mm(mm);
+	tlb = tlb_gather_mmu(mm, 1);
+
+	/*
+	 * The spinlock is necessary to prevent races with rmap calling
+	 * scribe_clear_shadow_pte_locked()
+	 */
+	spin_lock(&mm->scribe_lock);
+	__free_pgd_range(tlb, pgd, addr, end, 0, 0);
+	spin_unlock(&mm->scribe_lock);
+
+	tlb_finish_mmu(tlb, addr, end);
+}
+
+void scribe_free_all_shadow_pgd_range(struct mmu_gather *tlb,
+				unsigned long addr, unsigned long end,
+				unsigned long floor, unsigned long ceiling)
+{
+	struct mm_struct *mm = tlb->mm;
+	struct scribe_mm *scribe_mm;
+
+	spin_lock(&mm->scribe_lock);
+	list_for_each_entry(scribe_mm, &mm->scribe_list, node)
+		__free_pgd_range(tlb, scribe_mm->own_pgd,
+				 addr, end, floor, ceiling);
+	spin_unlock(&mm->scribe_lock);
+}
+
+
+static void free_scribe_mm(struct scribe_mm *scribe_mm, struct mm_struct *mm)
+{
+	free_shadow_pgd_range(mm, scribe_mm->own_pgd,
+			      FIRST_USER_ADDRESS, TASK_SIZE);
+	pgd_free(mm, scribe_mm->own_pgd);
+	kfree(scribe_mm);
+}
+
+static inline int is_vma_scribed(struct scribe_ps *scribe,
+				 struct vm_area_struct *vma);
+static void maybe_go_multithreaded(struct mm_struct *mm)
+{
+	struct scribe_ps *scribe = current->scribe;
+
+	/*
+	 * XXX @scribe points to the current process, no the new scribed
+	 * processed to be attached.
+	 */
+
+	if (current->mm != mm) {
+		/* The target belongs to another memory context */
+		return;
+	}
+
+	if (!scribe->mm->is_alone) {
+		/* We already made the switch to multithreading */
+		return;
+	}
+
+	/*
+	 * We are going from singlethreaded to multithreaded and the
+	 * address space is now shared.
+	 */
+	scribe->mm->is_alone = 0;
+	BUG_ON(!is_sharing_mm(scribe->p->mm));
+
+	/* We don't need the mmap_sem to be taken because we are still alone */
+	free_shadow_pgd_range(mm, scribe->mm->own_pgd,
+			      FIRST_USER_ADDRESS, TASK_SIZE);
+}
+
 int scribe_mem_init_st(struct scribe_ps *scribe)
 {
-	int ret = 0;
-	struct scribe_mm *mm;
-	struct vm_area_struct *vma;
-	struct task_struct *tsk = scribe->p;
+	struct scribe_mm *scribe_mm;
+	struct mm_struct *mm = scribe->p->mm;
+	int ret;
 
-	if (is_ps_scribed(current) &&
-	    tsk->mm != current->mm &&
-	    is_sharing_mm(current->scribe))
-		MEM_DEBUG(current->scribe, "forked from multithreaded process");
-
-	MEM_DEBUG(scribe, "scribe_mem_init_st()");
-
-	mm = kmalloc(sizeof(*mm), GFP_KERNEL);
-	if (!mm)
+	scribe_mm = get_new_scribe_mm(scribe);
+	if (!scribe_mm)
 		return -ENOMEM;
 
-	mm->own_pgd = NULL;
-	mm->scribe = scribe;
-
-	spin_lock_init(&mm->req_lock);
-	INIT_LIST_HEAD(&mm->shared_req);
-	mm->weak_owner = 0;
-	mm->disable_sync_sleep = 0;
-
-	down_write(&tsk->mm->mmap_sem);
-
-	ret = get_all_objects(scribe);
+	ret = get_all_objects(scribe->ctx, mm);
 	if (ret) {
-		kfree(mm);
-		goto out_up;
+		free_scribe_mm(scribe_mm, mm);
+		return ret;
 	}
 
-	ret = alloc_own_pgd(scribe, mm, tsk->mm);
-	if (ret) {
-		put_all_objects(scribe);
-		kfree(mm);
-		goto out_up;
-	}
+	add_shadow_mm(scribe_mm, mm);
+	scribe_mm->is_alone = !is_sharing_mm(mm);
 
+	/*
+	 * The wmb protects the context switcher to pick a bad pgd:
+	 * scribe_mm->own_pgd must be written before scribe->mm
+	 */
 	smp_wmb();
-	scribe->mm = mm;
-	add_shadow_mm(mm, tsk->mm);
-	mm->is_alone = !is_sharing_mm(scribe);
+	scribe->mm = scribe_mm;
 
 	if (current->scribe == scribe)
-		load_cr3(mm->own_pgd);
-	else if (tsk->mm == current->mm && current->scribe->mm->is_alone) {
-		/*
-		 * Two cases where we want to flush the private pte's:
-		 * - We are going from singlethreaded to multithreaded and the
-		 * address space is now shared
-		 * - We are forking a child and some pages are now marked as COW
-		 */
-		MEM_DEBUG(current->scribe, "adjusting pte's");
-
-		for (vma = current->mm->mmap; vma; vma = vma->vm_next) {
-			change_protection(vma, vma->vm_start,
-					  vma->vm_end, vma->vm_page_prot, 0);
-		}
-
-		current->scribe->mm->is_alone = !is_sharing_mm(scribe);
-	}
+		load_cr3(scribe_mm->own_pgd);
+	else
+		maybe_go_multithreaded(mm);
 
 	scribe_mem_sync_point(scribe, MEM_SYNC_IN);
 
-out_up:
-	up_write(&tsk->mm->mmap_sem);
-	return ret;
+	return 0;
 }
 
 void scribe_mem_exit_st(struct scribe_ps *scribe)
 {
-	struct scribe_mm	*mm = scribe->mm;
-	struct task_struct	*tsk = scribe->p;
-
-	MEM_DEBUG(scribe, "scribe_mem_exit_st()");
-	BUG_ON (!mm);
+	struct scribe_mm *scribe_mm = scribe->mm;
+	struct mm_struct *mm = scribe->p->mm;
 
 	/*
 	 * we don't want any schedule() to call mem_sync_point() while we are
 	 * in MEM_SYNC_SLEEP
 	 */
-	mm->disable_sync_sleep = 1;
+	scribe_mm->disable_sync_sleep = 1;
 
 	/* take care of the pending shared memory requests */
 	scribe_mem_sync_point(scribe, MEM_SYNC_IN | MEM_SYNC_SLEEP);
 
-
-	down_write(&tsk->mm->mmap_sem);
-
+	down_read(&mm->mmap_sem);
 	scribe_page_release_ownership(scribe, ALL_PAGES);
-
-	BUG_ON(!list_empty(&mm->shared_req));
+	up_read(&mm->mmap_sem);
 
 	scribe_mem_sync_point(scribe, MEM_SYNC_OUT | MEM_SYNC_SLEEP);
 	scribe_mem_sync_point(scribe, MEM_SYNC_OUT);
 
-	/* set back the real pgd */
-	preempt_disable();
-	if (current->scribe == scribe)
-		load_cr3(tsk->mm->pgd);
+	BUG_ON(!list_empty(&scribe_mm->shared_req));
 
-	rm_shadow_mm(mm, scribe->p->mm);
-	put_all_objects(scribe);
-	free_own_pgd(scribe);
 	scribe->mm = NULL;
+	smp_wmb();
 
-	preempt_enable();
+	if (current->scribe == scribe)
+		load_cr3(mm->pgd);
 
-	kfree(mm);
-
-	up_write(&tsk->mm->mmap_sem);
+	rm_shadow_mm(scribe_mm, mm);
+	put_all_objects(scribe->ctx, mm);
+	free_scribe_mm(scribe_mm, mm);
 }
 
 /********************************************************
@@ -1637,7 +1647,7 @@ static inline int is_vma_scribed(struct scribe_ps *scribe, struct vm_area_struct
 /* Returns 1 if we went alone, 0 if not, -ENOMEM if the allocation failed */
 static int check_for_aloneness(struct scribe_ps *scribe)
 {
-	if (is_sharing_mm(scribe))
+	if (is_sharing_mm(scribe->p->mm))
 		return 0;
 
 	if (scribe->mm->is_alone)
@@ -1983,7 +1993,7 @@ static int scribe_page_access_replay(struct scribe_ps *scribe,
 		scribe_free_event(event);
 
 		MEM_DEBUG(scribe, "waiting for threads to die");
-		wait_event(mm->scribe_wait, !is_sharing_mm(scribe));
+		wait_event(mm->scribe_wait, !is_sharing_mm(scribe->p->mm));
 		MEM_DEBUG(scribe, "threads are dead :)");
 		scribe->mm->is_alone = 1;
 
