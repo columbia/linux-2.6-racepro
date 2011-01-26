@@ -1626,6 +1626,18 @@ long do_fork_with_pids(unsigned long long clone_flags,
 	long nr;
 	pid_t *target_pids;
 
+	if (is_ps_scribed(current)) {
+		/*
+		 * We don't do vfork() for two reasons:
+		 * - vfork() is worse for scribe: it would instantiate two
+		 *   clean page tables. The wanted optimization would not
+		 *   happen.
+		 * - Bookmark sync deadlocks because of
+		 *   wait_for_completion(&vfork);
+		 */
+		clone_flags &= ~CLONE_VFORK;
+	}
+
 	/*
 	 * Do some preliminary argument and permissions checking before we
 	 * actually start allocating stuff
