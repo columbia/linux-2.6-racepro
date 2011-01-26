@@ -261,10 +261,11 @@ int sys_fork(struct pt_regs *regs)
  */
 int sys_vfork(struct pt_regs *regs)
 {
-	if (is_ps_scribed(current)) {
+	struct scribe_ps *scribe = current->scribe;
+	if (is_scribed(scribe) && !scribe_mm_disabled(scribe)) {
 		/*
 		 * vfork() is worse for scribe: it would instanciate two clean
-		 * page tables. The wanted optimization won't happen.
+		 * page tables. The wanted optimization would not happen.
 		 */
 		return sys_fork(regs);
 	}
