@@ -108,9 +108,11 @@ struct fuse_req *fuse_get_req(struct fuse_conn *fc)
 	block_sigs(&oldset);
 	intr = wait_event_interruptible(fc->blocked_waitq, !fc->blocked);
 	restore_sigs(&oldset);
-	err = -EINTR;
-	if (intr)
+	err = -ERESTARTNOHAND;
+	if (intr) {
+		set_thread_flag(TIF_SIGPENDING);
 		goto out;
+	}
 
 	err = -ENOTCONN;
 	if (!fc->connected)
@@ -359,7 +361,8 @@ __acquires(&fc->lock)
 		if (req->state == FUSE_REQ_PENDING) {
 			list_del(&req->list);
 			__fuse_put_request(req);
-			req->out.h.error = -EINTR;
+			req->out.h.error = -ERESTARTNOHAND;
+			set_thread_flag(TIF_SIGPENDING);
 			return;
 		}
 	}
