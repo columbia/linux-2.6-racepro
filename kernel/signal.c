@@ -157,6 +157,21 @@ void recalc_sigpending_and_wake(struct task_struct *t)
 
 void recalc_sigpending(void)
 {
+	struct scribe_ps *scribe = current->scribe;
+
+	if (is_replaying(scribe) && scribe->need_syscall_ret) {
+		/*
+		 * We have the return value, now we want to see if we need to
+		 * set the TIF_SIGPENDING flag
+		 */
+
+		if (is_interruption(scribe->orig_ret))
+			set_thread_flag(TIF_SIGPENDING);
+		else
+			clear_thread_flag(TIF_SIGPENDING);
+		return;
+	}
+
 	if (unlikely(tracehook_force_sigpending()))
 		set_thread_flag(TIF_SIGPENDING);
 	else if (!recalc_sigpending_tsk(current) && !freezing(current))

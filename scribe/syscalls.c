@@ -136,34 +136,6 @@ static bool is_interruptible_syscall(int nr_syscall)
 	return true;
 }
 
-static void adjust_sigpending_flag_enter(struct scribe_ps *scribe)
-{
-	if (!is_interruptible_syscall(scribe->nr_syscall))
-		return;
-
-	if (scribe_need_syscall_ret(scribe) < 0)
-		return;
-
-	if (is_replaying(scribe)) {
-		if (is_interruption(scribe->orig_ret))
-			set_thread_flag(TIF_SIGPENDING);
-		else
-			clear_thread_flag(TIF_SIGPENDING);
-	}
-}
-
-static void adjust_sigpending_flag_exit(struct scribe_ps *scribe)
-{
-	if (!is_interruptible_syscall(scribe->nr_syscall))
-		return;
-
-	if (is_replaying(scribe)) {
-		/* Fake signals should not get cleared */
-		if (!is_interruption(scribe->orig_ret))
-			recalc_sigpending();
-	}
-}
-
 void scribe_enter_syscall(struct pt_regs *regs)
 {
 	struct scribe_ps *scribe = current->scribe;
@@ -181,11 +153,13 @@ void scribe_enter_syscall(struct pt_regs *regs)
 	    scribe_regs(scribe, regs))
 		return;
 
+	/* It should already be set to false, but let's be sure */
+	scribe->need_syscall_ret = false;
+
 	scribe_data_det();
 
 	scribe_signal_enter_sync_point(&num_sig_deferred);
 	if (num_sig_deferred > 0) {
-		recalc_sigpending();
 		/* TODO We could go back to userspace to reduce latency */
 	}
 
@@ -196,15 +170,15 @@ void scribe_enter_syscall(struct pt_regs *regs)
 	if (scribe_maybe_detach(scribe))
 		return;
 
+	/* FIXME signals needs the return value */
 	if (!should_scribe_syscalls(scribe))
 		return;
 
-	scribe->need_syscall_ret = false;
-
-	if (should_scribe_syscall_ret(scribe))
+	if (should_scribe_syscall_ret(scribe) ||
+	    is_interruptible_syscall(scribe->nr_syscall))
 		__scribe_need_syscall_ret(scribe);
 
-	adjust_sigpending_flag_enter(scribe);
+	recalc_sigpending();
 }
 
 static void scribe_commit_syscall_record(struct scribe_ps *scribe,
@@ -272,8 +246,6 @@ void scribe_commit_syscall(struct scribe_ps *scribe, struct pt_regs *regs,
 		scribe_commit_syscall_record(scribe, regs, ret_value);
 	else
 		scribe_commit_syscall_replay(scribe, regs, ret_value);
-
-	adjust_sigpending_flag_exit(scribe);
 }
 
 void scribe_exit_syscall(struct pt_regs *regs)
@@ -291,6 +263,14 @@ void scribe_exit_syscall(struct pt_regs *regs)
 
 	__scribe_allow_uaccess(scribe);
 	scribe_signal_leave_sync_point();
+
+	/*
+	 * During the replay, the sigpending flag was cleared to not disturb
+	 * the syscall. Now we want do_signal() to be called if needed.
+	 * Note: If the syscall was interrupted with a fake signal,
+	 * we are not clearing the sigpending flag either.
+	 */
+	recalc_sigpending_and_wake(current);
 }
 
 SYSCALL_DEFINE0(get_scribe_flags)
