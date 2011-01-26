@@ -1089,6 +1089,9 @@ int scribe_mem_init_st(struct scribe_ps *scribe)
 	struct mm_struct *mm = scribe->p->mm;
 	int ret;
 
+	if (scribe_mm_disabled(scribe))
+		return 0;
+
 	scribe_mm = get_new_scribe_mm(scribe);
 	if (!scribe_mm)
 		return -ENOMEM;
@@ -1123,6 +1126,9 @@ void scribe_mem_exit_st(struct scribe_ps *scribe)
 {
 	struct scribe_mm *scribe_mm = scribe->mm;
 	struct mm_struct *mm = scribe->p->mm;
+
+	if (!scribe_mm)
+		return;
 
 	/*
 	 * we don't want any schedule() to call mem_sync_point() while we are
