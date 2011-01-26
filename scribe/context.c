@@ -425,9 +425,8 @@ void scribe_attach(struct scribe_ps *scribe)
 		 * context is about to die, the queue will get freed anyways.
 		 */
 
-		spin_lock(&ctx->queues_lock);
-		scribe_unset_persistent(scribe->queue);
-		spin_unlock(&ctx->queues_lock);
+		scribe_put_queue(scribe->queue);
+		scribe->queue = NULL;
 
 		do_send_sig_info(SIGKILL, SEND_SIG_PRIV, scribe->p, 1);
 		exit_scribe(scribe->p);
@@ -437,13 +436,14 @@ void scribe_attach(struct scribe_ps *scribe)
 	list_add_tail(&scribe->node, &ctx->tasks);
 	tasks_accounting(ctx, +1);
 
-	spin_unlock(&ctx->tasks_lock);
-
-	wake_up(&ctx->tasks_wait);
-
+	/* ctx->flags must be read within the critical region */
 	scribe->flags |= (ctx->flags & SCRIBE_RECORD) ? SCRIBE_PS_RECORD : 0;
 	scribe->flags |= (ctx->flags & SCRIBE_REPLAY) ? SCRIBE_PS_REPLAY : 0;
 	scribe->flags |= SCRIBE_PS_ENABLE_ALL;
+
+	spin_unlock(&ctx->tasks_lock);
+
+	wake_up(&ctx->tasks_wait);
 
 	if (is_recording(scribe)) {
 		/*
