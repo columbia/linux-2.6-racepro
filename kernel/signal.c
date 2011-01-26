@@ -670,44 +670,43 @@ err_nomem:
 	scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
 }
 
-static bool scribe_signal_enter_sync_point_record(struct scribe_ps *scribe)
+static void scribe_signal_enter_sync_point_record(struct scribe_ps *scribe,
+						  int *num_deferred)
 {
 	struct scribe_signal *scribe_sig = &scribe->signal;
 	struct sigqueue *q;
 	int sig;
 
 	spin_lock_irq(&scribe->p->sighand->siglock);
-	sig = next_signal(&scribe_sig->deferred, &empty_mask);
-	if (likely(!sig)) {
-		scribe_create_insert_point(&scribe_sig->signal_ip,
-					   &scribe->queue->stream);
-		scribe_sig->should_defer = false;
+	while ((sig = next_signal(&scribe_sig->deferred, &empty_mask))) {
+		q = next_sigqueue(&scribe_sig->deferred, sig);
+		if (q)
+			list_add_tail(&q->list, &scribe->p->pending.list);
+		sigaddset(&scribe->p->pending.signal, sig);
 		spin_unlock_irq(&scribe->p->sighand->siglock);
-		return false;
+
+		*num_deferred += 1;
+		scribe_record_signal(scribe, sig, q, true, GFP_KERNEL);
+
+		spin_lock_irq(&scribe->p->sighand->siglock);
 	}
 
-	q = next_sigqueue(&scribe_sig->deferred, sig);
-	if (q)
-		list_add_tail(&q->list, &scribe->p->pending.list);
-	sigaddset(&scribe->p->pending.signal, sig);
+	scribe_create_insert_point(&scribe_sig->signal_ip,
+				   &scribe->queue->stream);
+	scribe_sig->should_defer = false;
 	spin_unlock_irq(&scribe->p->sighand->siglock);
-
-	scribe_record_signal(scribe, sig, q, true, GFP_KERNEL);
-
-	set_tsk_thread_flag(current, TIF_SIGPENDING);
-	return true;
 }
 
-static bool scribe_signal_enter_sync_point_replay(struct scribe_ps *scribe)
+static void scribe_signal_enter_sync_point_replay(struct scribe_ps *scribe,
+						  int *num_deferred)
 {
 	struct scribe_event *event;
 	struct scribe_event_signal *sig_event;
-	bool deferred;
 
 	for (;;) {
 		event = scribe_peek_event(scribe->queue, SCRIBE_WAIT);
 		if (IS_ERR(event))
-			return false;
+			return;
 
 		if (event->type == SCRIBE_EVENT_SIG_RECV_COOKIE) {
 			event = scribe_dequeue_event(scribe->queue,
@@ -717,50 +716,48 @@ static bool scribe_signal_enter_sync_point_replay(struct scribe_ps *scribe)
 		}
 
 		if (event->type != SCRIBE_EVENT_SIGNAL)
-			return false;
+			return;
 
 		sig_event = scribe_dequeue_event_sized(
 				scribe, SCRIBE_EVENT_SIGNAL, sizeof(siginfo_t));
 		if (IS_ERR(sig_event))
-			return false;
+			return;
 
-		deferred = sig_event->deferred;
+		if (sig_event->deferred)
+			*num_deferred += 1;
+
 		do_send_sig_info(sig_event->nr, (siginfo_t *)sig_event->info,
 				 current, false);
 
 		scribe_free_event(sig_event);
-
-		if (deferred)
-			return true;
 	}
 }
 
-/*
- * When it returns true, new signals have been added to the real pending
- * signals queue.
- */
-bool scribe_signal_enter_sync_point(void)
+void scribe_signal_enter_sync_point(int *num_deferred)
 {
 	struct scribe_ps *scribe = current->scribe;
+	int _num_deferred;
 	int ret;
 
+	if (!num_deferred)
+		num_deferred = &_num_deferred;
+	*num_deferred = 0;
+
 	if (!is_scribed(scribe) || !should_scribe_signals(scribe))
-		return false;
+		return;
 
 	ret = scribe_enter_fenced_region(SCRIBE_REGION_SIGNAL);
 	if (ret) {
 		scribe_emergency_stop(scribe->ctx, ERR_PTR(ret));
-		return false;
+		return;
 	}
 
 	if (is_recording(scribe))
-		ret = scribe_signal_enter_sync_point_record(scribe);
+		scribe_signal_enter_sync_point_record(scribe, num_deferred);
 	else
-		ret = scribe_signal_enter_sync_point_replay(scribe);
+		scribe_signal_enter_sync_point_replay(scribe, num_deferred);
 
 	scribe_leave_fenced_region(SCRIBE_REGION_SIGNAL);
-
-	return ret;
 }
 
 static void scribe_signal_leave_sync_point_record(struct scribe_ps *scribe)
@@ -2370,8 +2367,8 @@ relock:
 		spin_unlock_irq(&sighand->siglock);
 
 		scribe_forbid_uaccess();
-		while (scribe_signal_enter_sync_point())
-			{}
+		scribe_signal_enter_sync_point(NULL);
+
 		/*
 		 * Anything else is fatal, maybe with a core dump.
 		 */

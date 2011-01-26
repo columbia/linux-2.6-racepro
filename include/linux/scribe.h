@@ -476,7 +476,7 @@ struct scribe_signal {
 	struct scribe_event_sig_send_cookie *send_cookie_event;
 };
 
-extern bool scribe_signal_enter_sync_point(void);
+extern void scribe_signal_enter_sync_point(int *num_deferred);
 extern void scribe_signal_leave_sync_point(void);
 extern void scribe_init_signal(struct scribe_signal *scribe_sig);
 

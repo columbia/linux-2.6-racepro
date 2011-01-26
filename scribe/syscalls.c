@@ -167,6 +167,7 @@ static void adjust_sigpending_flag_exit(struct scribe_ps *scribe)
 void scribe_enter_syscall(struct pt_regs *regs)
 {
 	struct scribe_ps *scribe = current->scribe;
+	int num_sig_deferred;
 
 	if (!is_scribed(scribe))
 		return;
@@ -182,10 +183,10 @@ void scribe_enter_syscall(struct pt_regs *regs)
 
 	scribe_data_det();
 
-	while (scribe_signal_enter_sync_point()) {
+	scribe_signal_enter_sync_point(&num_sig_deferred);
+	if (num_sig_deferred > 0) {
 		recalc_sigpending();
-		if (signal_pending(current))
-			do_signal(regs);
+		/* TODO We could go back to userspace to reduce latency */
 	}
 
 	__scribe_forbid_uaccess(scribe);

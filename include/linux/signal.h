@@ -25,7 +25,7 @@ struct sigqueue {
 };
 
 /* flags values. */
-#define SIGQUEUE_PREALLOC		1
+#define SIGQUEUE_PREALLOC	1
 
 struct sigpending {
 	struct list_head list;
@@ -381,7 +381,6 @@ int unhandled_signal(struct task_struct *tsk, int sig);
 	 (t)->sighand->action[(signr)-1].sa.sa_handler == SIG_DFL)
 
 void signals_init(void);
-void do_signal(struct pt_regs *regs);
 
 #endif /* __KERNEL__ */
 
