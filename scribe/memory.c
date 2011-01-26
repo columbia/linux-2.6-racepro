@@ -938,15 +938,7 @@ void scribe_clear_shadow_pte_locked(struct mm_struct *mm,
 				    struct vm_area_struct *vma,
 				    pte_t *real_pte, unsigned long addr)
 {
-	struct scribe_ps *scribe = get_scribe_from_mm(mm);
 	struct scribe_mm *scribe_mm;
-
-	if (!should_handle_mm(scribe))
-		return;
-
-	XMEM_DEBUG(scribe, "clear shadow ptes called on %p (page = %p)",
-		   (void *)addr, (void *)(addr & PAGE_MASK));
-
 	spin_lock(&mm->scribe_lock);
 	list_for_each_entry(scribe_mm, &mm->scribe_list, node) {
 		update_private_pte_locked(scribe_mm->scribe, mm, vma,
