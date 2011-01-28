@@ -11,6 +11,7 @@
 #include <linux/seq_file.h>
 #include <linux/scribe.h>
 #include <linux/syscalls.h>
+#include <linux/net.h>
 #include <asm/syscall.h>
 
 union scribe_syscall_event_union {
@@ -136,6 +137,23 @@ static bool is_interruptible_syscall(int nr_syscall)
 	return true;
 }
 
+static int get_nr_syscall(struct pt_regs *regs)
+{
+	unsigned long call;
+	int nr;
+
+	nr = syscall_get_nr(current, regs);
+	if (nr == __NR_socketcall) {
+		syscall_get_arguments(current, regs, 0, 1, &call);
+		if (call < 1 || call > SYS_RECVMMSG)
+			return nr;
+
+		return SCRIBE_SOCKETCALL_BASE + call;
+	}
+
+	return nr;
+}
+
 void scribe_enter_syscall(struct pt_regs *regs)
 {
 	struct scribe_ps *scribe = current->scribe;
@@ -144,7 +162,7 @@ void scribe_enter_syscall(struct pt_regs *regs)
 	if (!is_scribed(scribe))
 		return;
 
-	scribe->nr_syscall = syscall_get_nr(current, regs);
+	scribe->nr_syscall = get_nr_syscall(regs);
 	if (is_scribe_syscall(scribe->nr_syscall))
 		return;
 
