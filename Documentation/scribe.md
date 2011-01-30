@@ -98,3 +98,180 @@ The kernel implementation is separated in different parts:
 - **The signals**. TODO
 
 - **The Userspace Accesses**. TODO
+
+
+The log file
+==============
+
+Log file structure
+-------------------
+
+The log file consists of a stream of events. An event is simply an array of
+bytes. Events will be shown in this document in their human representation.
+
+Each event belongs to a task, except for the init event and the pid event. An
+event is associated with a pid. There exists a function `events_of` such as:
+
+                          events_of
+        (logfile, pid) ---------------> list of events that belongs to that pid
+
+In the log file, pids are not repeated with each event for efficiency. Below is
+an example of how it works in the log file:
+
+        event_pid=10
+        event1
+        event2
+        event3
+        event_pid=20
+        event4
+        event5
+        event6
+
+Events 1,2,3 are associated with pid=10, and events 4,5,6 are associated with pid=20.
+
+Rule: For each pid, `events_of(log, pid)` should be terminated with a
+`eof_queue` event. It allows the kernel to make sure that there is not any
+events to be waited for.  During the replay, a process can golive when its
+entire event queue has been consumed.
+
+
+Log file verbosity
+--------------------
+
+There are different log verbosity levels. Level `i+1` contains all the information of level `i`.
+
+- level 0 (minimal verbosity): the log file contains only the necessary data for a faithful
+  replay.
+- level 1: the log file contains all syscall returns values.
+- level 2: the log file contains extra syscall information:
+  - The syscall numbers
+  - Where the syscall ended. This is needed to indent the human readable
+    representation of the log file on each syscall.
+- level 3: contains the signal cookies (dependencies of sent/delivered signals).
+- level 4: contains extra information about resources:
+  - Which object was locked
+  - Where the resource was unlocked. This is needed to indent the human readable
+    representation of the log file on each syscall.
+- level 5: contains extra information about the memory tracking: owned pages
+  embed the page address.
+- level 6: contains extra information about user accesses (`copy_from_user()` and friends).
+  The userspace pointer is embedded withing the event.
+- level 7: contains all non-deterministic user accesses data.
+- level 8: Always do the resource locking, even when it's not needed.
+- level 9: Always put fences, even when not needed.
+- level 10: Registers are saved before each syscalls.
+
+Example of a recording in level 0:
+
+        [02] data: size = 96, 00000801 00000000 00000000 000a1ddb 000081a4 00000002 00000000 00000000...
+        [02] syscall() = 0xb73f4000
+        [02] syscall() = 0xb773e000
+        [02] syscall() = 0
+        [02] syscall() = 0
+        [02] data: size = 96, 00000009 00000000 00000000 00000003 00002190 00000001 00000000 00000005...
+        [02] syscall() = 0
+
+The same snippet, but recorded in level 20:
+
+        [02] fstat64() = 0
+        [02]     resource lock, type = files_struct (spinlock), object = 0xf676b500, serial = 11
+        [02]     resource lock, type = file, object = 0xf6b5a480, serial = 0
+        [02]       resource lock, type = inode, object = 0xf6d8daf0, serial = 0
+        [02]     data: non-det output, ptr = 0xb7775ae0, size = 96, 00000801 00000000 00000000 000a1dd...
+        [02]     --fence(281)--
+        [02] regs: eip: 0073:b777e424, eflags: 00000246, eax: 000000c0, ebx: 00000000, ecx: 00200000,...
+        [02] --fence(282)--
+        [02] --fence(283)--
+        [02] mmap_pgoff() = 0xb7432000
+        [02] regs: eip: 0073:b777e424, eflags: 00000246, eax: 000000c0, ebx: 00000000, ecx: 00001000,...
+        [02] --fence(284)--
+        [02] --fence(285)--
+        [02] mmap_pgoff() = 0xb777c000
+        [02] regs: eip: 0073:b777e424, eflags: 00000206, eax: 00000006, ebx: 00000003, ecx: b7774ff4,...
+        [02] --fence(286)--
+        [02] --fence(287)--
+        [02] close() = 0
+        [02]     resource lock, type = files_struct (spinlock), object = 0xf676b500, serial = 12
+        [02] regs: eip: 0073:b777e424, eflags: 00000292, eax: 000000c5, ebx: 00000001, ecx: bffbecec,...
+        [02] --fence(288)--
+        [02] --fence(289)--
+        [02] fstat64() = 0
+        [02]     resource lock, type = files_struct (spinlock), object = 0xf676b500, serial = 13
+        [02]     resource lock, type = file, object = 0xf66aa300, serial = 0
+        [02]       resource lock, type = inode, object = 0xf6fbd830, serial = 0
+        [02]     data: non-det output, ptr = 0xbffbecec, size = 96, 00000009 00000000 00000000 0000000...
+        [02]     --fence(290)--
+        [02] regs: eip: 0073:b777e424, eflags: 00000292, eax: 000000c5, ebx: 00000000, ecx: bffbecec,...
+        [02] --fence(291)--
+        [02] --fence(292)--
+        [02] fstat64() = 0
+        [02]     resource lock, type = files_struct (spinlock), object = 0xf676b500, serial = 14
+        [02]     resource lock, type = file, object = 0xf66aa300, serial = 1
+        [02]       resource lock, type = inode, object = 0xf6fbd830, serial = 1
+        [02]     data: non-det output, ptr = 0xbffbecec, size = 96, 00000009 00000000 00000000 0000000...
+        [02]     --fence(293)--
+
+Log file grammar
+-----------------
+
+**We will assume a maximum log verbosity.**
+
+Legend:
+
+- `1` mean one.
+- `1?` means zero or one.
+- `*` means zero or more.
+
+Each `events_of(log, pid)` is:
+
+1. \* `main_block`
+2. 1 `eof_queue_event`
+
+A `main_block` is either:
+
+- a `rdtsc_event`
+- a `mem_block`
+- a `syscall_block`
+
+A `mem_block` is:
+
+1. 1? `fence_event`
+2. \* `mem_public_event`
+3. 1 `mem_owned_event`, or 1 `mem_alone_event`
+
+A `syscall_block` is:
+
+1. 1 `regs_event`
+2. \* `sig_block`
+3. 1? `mem_block`
+4. 1? `bookmark_event`
+5. 1 `syscall_event`
+6. \* `inner_syscall_block`
+7. 1 `syscall_end_event`
+
+A `sig_block` is:
+
+1. 1? `fence_event`
+2. 1? `sig_recv_cookie_event`
+3. 1 `sig_event`
+
+A `inner_syscall_block` is either:
+
+- a `res_block`
+- a `data_block`
+- a `sig_send_cookie_event`
+
+A `res_block` is either:
+
+1. 1 `res_lock_event`
+2. \* `inner_syscall_block`
+3. 1 `res_unlock_event`
+
+or:
+
+1. `res_lock_intr_event`
+
+A `data_block` is:
+
+1. 1? `mem_block`
+2. 1 `data_event`
