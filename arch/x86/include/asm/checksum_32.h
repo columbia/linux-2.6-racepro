@@ -2,6 +2,7 @@
 #define _ASM_X86_CHECKSUM_32_H
 
 #include <linux/in6.h>
+#include <linux/scribe_uaccess.h>
 
 #include <asm/uaccess.h>
 
@@ -49,9 +50,15 @@ static inline __wsum csum_partial_copy_from_user(const void __user *src,
 						 int len, __wsum sum,
 						 int *err_ptr)
 {
+	__wsum ret;
 	might_sleep();
-	return csum_partial_copy_generic((__force void *)src, dst,
-					 len, sum, err_ptr, NULL);
+
+	scribe_pre_uaccess(dst, src, len, SCRIBE_DATA_INPUT);
+	ret = csum_partial_copy_generic((__force void *)src, dst,
+					len, sum, err_ptr, NULL);
+	/* FIXME we don't have the number of bytes read */
+	scribe_post_uaccess(dst, src, len, SCRIBE_DATA_INPUT);
+	return ret;
 }
 
 /*
@@ -176,10 +183,15 @@ static inline __wsum csum_and_copy_to_user(const void *src,
 					   int len, __wsum sum,
 					   int *err_ptr)
 {
+	__wsum ret;
 	might_sleep();
-	if (access_ok(VERIFY_WRITE, dst, len))
-		return csum_partial_copy_generic(src, (__force void *)dst,
-						 len, sum, NULL, err_ptr);
+	if (access_ok(VERIFY_WRITE, dst, len)) {
+		scribe_pre_uaccess(src, dst, len, 0);
+		ret = csum_partial_copy_generic(src, (__force void *)dst,
+						len, sum, NULL, err_ptr);
+		scribe_post_uaccess(src, dst, len, 0);
+		return ret;
+	}
 
 	if (len)
 		*err_ptr = -EFAULT;
