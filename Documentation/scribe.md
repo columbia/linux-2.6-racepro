@@ -222,24 +222,39 @@ Legend:
 - `1?` means zero or one.
 - `*` means zero or more.
 
-Each `events_of(log, pid)` is:
+### Each `events_of(log, pid)` is:
 
 1. \* `main_block`
 2. 1 `eof_queue_event`
 
-A `main_block` is either:
+Example:
 
-- a `rdtsc_event`
-- a `mem_block`
-- a `syscall_block`
+    rdtsc = 0000016205f68540
+    brk() = 0x95e0000
+    syscall ended
+    queue EOF
 
-A `mem_block` is:
+### A `main_block` is either:
+
+- a `rdtsc_event`: used when the userspace process does a RDTSC instruction.
+- a `mem_block`: used when the userspace process accesses some memory.
+- a `data_block`: used when a signal is delivered and the context is created.
+- a `syscall_block`: used when the userspace process calls a system call.
+
+### A `mem_block` is:
 
 1. 1? `fence_event`
 2. \* `mem_public_event`
 3. 1 `mem_owned_event`, or 1 `mem_alone_event`
 
-A `syscall_block` is:
+Example:
+
+    --fence(135)--
+    mem public, page = b760a000
+    mem public, page = b75fe000
+    mem owned, page = b760b000, serial = 193
+
+### A `syscall_block` is:
 
 1. 1 `regs_event`
 2. \* `sig_block`
@@ -249,23 +264,54 @@ A `syscall_block` is:
 6. \* `inner_syscall_block`
 7. 1 `syscall_end_event`
 
-A `sig_block` is:
+Example:
+
+    regs: eip: 0073:b7ff8714, eflags: 00000282, eax: 00000005, ebx: b7ffaafe, ...
+    --fence(8)--
+    --fence(9)--
+    open() = 3
+    data: input string, ptr = 0xb7ffaafe, size = 16, "/etc/ld.so.cache"
+    --fence(10)--
+    resource lock, type = files_struct (spinlock), object = 0xf7214a80, serial = 0
+    resource unlock, object = 0xf7214a80
+    resource lock, type = inode, object = 0xf6d60570, serial = 1
+    resource unlock, object = 0xf6d60570
+    resource lock, type = inode, object = 0xf6db8e70, serial = 1
+    resource unlock, object = 0xf6db8e70
+    resource lock, type = files_struct (spinlock), object = 0xf7214a80, serial = 1
+    resource unlock, object = 0xf7214a80
+    syscall ended
+
+### A `sig_block` is:
 
 1. 1? `fence_event`
 2. 1? `sig_recv_cookie_event`
 3. 1 `sig_event`
 
-A `inner_syscall_block` is either:
+Example:
+
+    --fence(321)--
+    signal recv, cookie = 1
+    signal: SIGUSR1, deferred = false, info = 0000000a 00000000 00000000 ...
+
+### A `inner_syscall_block` is either:
 
 - a `res_block`
 - a `data_block`
 - a `sig_send_cookie_event`
 
-A `res_block` is either:
+### A `res_block` is either:
 
 1. 1 `res_lock_event`
 2. \* `inner_syscall_block`
 3. 1 `res_unlock_event`
+
+Example of two nested resource locks:
+
+    resource lock, type = file, object = 0xf6790180, serial = 1
+    resource lock, type = inode, object = 0xf516b6f0, serial = 1
+    resource unlock, object = 0xf516b6f0
+    resource unlock, object = 0xf6790180
 
 or:
 
