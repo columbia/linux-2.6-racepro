@@ -26,6 +26,7 @@
 #include <linux/fs.h>
 #include <linux/rcupdate.h>
 #include <linux/hrtimer.h>
+#include <linux/scribe.h>
 
 #include <asm/uaccess.h>
 
@@ -528,6 +529,7 @@ int core_sys_select(int n, fd_set __user *inp, fd_set __user *outp,
 	struct fdtable *fdt;
 	/* Allocate small arguments on the stack to save memory and be faster */
 	long stack_fds[SELECT_STACK_ALLOC/sizeof(long)];
+	struct scribe_ps *scribe = current->scribe;
 
 	ret = -EINVAL;
 	if (n < 0)
@@ -570,7 +572,13 @@ int core_sys_select(int n, fd_set __user *inp, fd_set __user *outp,
 	zero_fd_set(n, fds.res_out);
 	zero_fd_set(n, fds.res_ex);
 
-	ret = do_select(n, &fds, end_time);
+	if (scribe_need_syscall_ret(scribe))
+		return -ENOMEM;
+
+	if (is_replaying(scribe))
+		ret = scribe->orig_ret;
+	else
+		ret = do_select(n, &fds, end_time);
 
 	if (ret < 0)
 		goto out;
@@ -580,6 +588,8 @@ int core_sys_select(int n, fd_set __user *inp, fd_set __user *outp,
 			goto out;
 		ret = 0;
 	}
+
+	scribe_data_non_det();
 
 	if (set_fd_set(n, inp, fds.res_in) ||
 	    set_fd_set(n, outp, fds.res_out) ||
@@ -828,6 +838,7 @@ static int do_poll(unsigned int nfds,  struct poll_list *list,
 int do_sys_poll(struct pollfd __user *ufds, unsigned int nfds,
 		struct timespec *end_time)
 {
+	struct scribe_ps *scribe = current->scribe;
 	struct poll_wqueues table;
  	int err = -EFAULT, fdcount, len, size;
 	/* Allocate small arguments on the stack to save memory and be
@@ -837,6 +848,11 @@ int do_sys_poll(struct pollfd __user *ufds, unsigned int nfds,
 	struct poll_list *const head = (struct poll_list *)stack_pps;
  	struct poll_list *walk = head;
  	unsigned long todo = nfds;
+
+	if (scribe_need_syscall_ret(scribe)) {
+		scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
+		return -ENOMEM;
+	}
 
 	if (nfds > rlimit(RLIMIT_NOFILE))
 		return -EINVAL;
@@ -866,8 +882,13 @@ int do_sys_poll(struct pollfd __user *ufds, unsigned int nfds,
 	}
 
 	poll_initwait(&table);
-	fdcount = do_poll(nfds, head, &table, end_time);
+	if (is_replaying(scribe))
+		fdcount = scribe->orig_ret;
+	else
+		fdcount = do_poll(nfds, head, &table, end_time);
 	poll_freewait(&table);
+
+	scribe_data_non_det();
 
 	for (walk = head; walk; walk = walk->next) {
 		struct pollfd *fds = walk->entries;
