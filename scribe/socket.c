@@ -29,6 +29,16 @@ static int scribe_bind(struct socket *sock, struct sockaddr *myaddr,
 static int scribe_connect(struct socket *sock, struct sockaddr *vaddr,
 			  int sockaddr_len, int flags)
 {
+	struct scribe_ps *scribe = current->scribe;
+
+	if (scribe_need_syscall_ret(scribe))
+		return -ENOMEM;
+
+	if (is_replaying(scribe)) {
+		/* Faking the connection */
+		return scribe->orig_ret;
+	}
+
 	return sock->real_ops->connect(sock, vaddr, sockaddr_len, flags);
 }
 
@@ -39,6 +49,14 @@ static int scribe_socketpair(struct socket *sock1, struct socket *sock2)
 
 static int scribe_accept(struct socket *sock, struct socket *newsock, int flags)
 {
+	struct scribe_ps *scribe = current->scribe;
+
+	if (is_replaying(scribe)) {
+		/* Faking the accept. newsock will stay unconnected */
+		/* TODO do we have to do newsock->state SS_CONNECTED ? */
+		return 0;
+	}
+
 	return sock->real_ops->accept(sock, newsock, flags);
 }
 

@@ -36,8 +36,76 @@ void __scribe_forbid_uaccess(struct scribe_ps *scribe)
 	scribe_mem_sync_point(scribe, MEM_SYNC_IN);
 }
 
-static union scribe_event_data_union get_data_event(struct scribe_ps *scribe,
-						    int data_extra, size_t size)
+int is_kernel_copy(void)
+{
+	return !memcmp(&get_fs(), &get_ds(), sizeof(mm_segment_t));
+}
+
+struct data_desc {
+	void *data;
+	void __user *user_ptr;
+	size_t size;
+	unsigned int flags;
+	union scribe_event_data_union event;
+
+	/* At most one of the following three flags are set */
+	bool do_non_det;
+	bool do_det;
+	bool do_info;
+
+	bool do_extra;
+	bool do_zero;
+};
+
+static void post_init_data_desc(struct scribe_ps *scribe,
+				struct data_desc *desc)
+{
+	/*
+	 * One not so intuitive thing: clear_user() can generate
+	 * deterministic, or non-deterministic copies. It's just easier to
+	 * implement the handlers.
+	 * It will look as if copy_to_user(ptr, zero_page, size) was
+	 * performed.
+	 */
+
+	desc->do_non_det = desc->flags & SCRIBE_DATA_NON_DETERMINISTIC;
+	desc->do_det = should_scribe_data_det(scribe);
+	desc->do_info = desc->flags & SCRIBE_DATA_NEED_INFO;
+	desc->do_extra = should_scribe_data_extra(scribe);
+	desc->do_zero = desc->flags & SCRIBE_DATA_ZERO;
+
+	if (desc->do_non_det)
+		desc->do_det = false;
+	
+	if (desc->do_det || desc->do_non_det) {
+		if (desc->do_info)
+			desc->do_extra = true;
+		desc->do_info = false;
+	}
+}
+
+static bool need_action(struct scribe_ps *scribe, struct data_desc *desc)
+{
+	/*
+	 * @desc.size is the number of bytes that have been copied from/to
+	 * userspace.
+	 * For convenience during the replay, we will record a 0 sized
+	 * data event.
+	 */
+
+	if (!should_scribe_data(scribe))
+		return false;
+
+	if (is_kernel_copy())
+		return false;
+
+	if (desc->flags & SCRIBE_DATA_IGNORE)
+		return false;
+
+	return desc->do_det || desc->do_non_det || desc->do_info;
+}
+
+static int get_data_event(struct scribe_ps *scribe, struct data_desc *desc)
 {
 	union scribe_event_data_union event;
 
@@ -46,80 +114,86 @@ static union scribe_event_data_union get_data_event(struct scribe_ps *scribe,
 		if (event.generic) {
 			scribe->prepared_data_event.generic = NULL;
 
-			if (data_extra) {
-				BUG_ON(event.extra->h.size < size);
-				event.extra->h.size = size;
+			if (desc->do_info) {
+				/* we're good */
+			} else if (desc->do_extra) {
+				BUG_ON(event.extra->h.size < desc->size);
+				event.extra->h.size = desc->size;
 			} else {
-				BUG_ON(event.regular->h.size < size);
-				event.regular->h.size = size;
+				BUG_ON(event.regular->h.size < desc->size);
+				event.regular->h.size = desc->size;
 			}
-			return event;
+			goto out;
 		}
 
-		if (data_extra)
+		if (desc->do_info)
+			event.info = scribe_alloc_event(
+					SCRIBE_EVENT_DATA_INFO);
+		else if (desc->do_extra)
 			event.extra = scribe_alloc_event_sized(
-						SCRIBE_EVENT_DATA_EXTRA, size);
+					SCRIBE_EVENT_DATA_EXTRA, desc->size);
 		else
 			event.regular = scribe_alloc_event_sized(
-						SCRIBE_EVENT_DATA, size);
+					SCRIBE_EVENT_DATA, desc->size);
 		if (!event.generic) {
 			scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
-			event.generic = ERR_PTR(-ENOMEM);
+			return -ENOMEM;
 		}
-	} else {
+		goto out;
+	} else /* replaying */ {
 		event = scribe->prepared_data_event;
 		if (event.generic) {
 			scribe->prepared_data_event.generic = NULL;
-			return event;
+			goto out;
 		}
+
 		/*
 		 * Not using scribe_dequeue_event_sized() because we don't
 		 * really know the size (maybe we are in
-		 * scribe_prepare_data_event() and @size would only be the
+		 * scribe_prepare_data_event() and @desc->size would only be the
 		 * maximum size).
 		 */
-		if (data_extra)
-			event.extra = scribe_dequeue_event_specific(scribe,
-						      SCRIBE_EVENT_DATA_EXTRA);
+
+		if (desc->do_info)
+			event.info = scribe_dequeue_event_specific(
+					scribe, SCRIBE_EVENT_DATA_INFO);
+		else if (desc->do_extra)
+			event.extra = scribe_dequeue_event_specific(
+					scribe, SCRIBE_EVENT_DATA_EXTRA);
 		else
-			event.regular = scribe_dequeue_event_specific(scribe,
-						      SCRIBE_EVENT_DATA);
+			event.regular = scribe_dequeue_event_specific(
+					scribe, SCRIBE_EVENT_DATA);
+		if (IS_ERR(event.generic))
+			return PTR_ERR(event.generic);
 	}
-
-	return event;
-}
-
-int is_kernel_copy(void)
-{
-	return !memcmp(&get_fs(), &get_ds(), sizeof(mm_segment_t));
-}
-
-static int should_handle_data(struct scribe_ps *scribe)
-{
-	return !(scribe->data_flags & SCRIBE_DATA_IGNORE) &&
-	       !is_kernel_copy() &&
-	       should_scribe_data(scribe);
+out:
+	desc->event = event;
+	return 0;
 }
 
 void scribe_prepare_data_event(size_t pre_alloc_size)
 {
-	union scribe_event_data_union event;
 	struct scribe_ps *scribe = current->scribe;
+	struct data_desc desc;
 
 	if (!is_scribed(scribe))
 		return;
 
-	if (!should_handle_data(scribe))
+	desc.data = NULL;
+	desc.user_ptr = NULL;
+	desc.size = pre_alloc_size;
+	desc.flags = scribe->data_flags;
+	desc.event.generic = NULL;
+
+	post_init_data_desc(scribe, &desc);
+
+	if (!need_action(scribe, &desc))
 		return;
 
-	if (!(scribe->data_flags & SCRIBE_DATA_NON_DETERMINISTIC) &&
-	    !should_scribe_data_det(scribe))
+	if (get_data_event(scribe, &desc))
 		return;
 
-	event = get_data_event(scribe, should_scribe_data_extra(scribe),
-			       pre_alloc_size);
-	if (!IS_ERR(event.generic))
-		scribe->prepared_data_event = event;
+	scribe->prepared_data_event = desc.event;
 }
 EXPORT_SYMBOL(scribe_prepare_data_event);
 
@@ -127,6 +201,7 @@ void scribe_pre_uaccess(const void *data, const void __user *user_ptr,
 			size_t size, int flags)
 {
 	struct scribe_ps *scribe = current->scribe;
+
 	if (!is_scribed(scribe))
 		return;
 
@@ -173,78 +248,112 @@ static void ensure_data_correctness(struct scribe_ps *scribe,
 	scribe_emergency_stop(scribe->ctx, (struct scribe_event *)de);
 }
 
-static void scribe_post_uaccess_record(struct scribe_ps *scribe, int data_extra,
-				       union scribe_event_data_union event,
-				       const void *data, void __user *user_ptr,
-				       size_t size, int data_flags)
+static void scribe_post_uaccess_record(struct scribe_ps *scribe,
+				       struct data_desc *desc)
 {
 	void *event_data;
 
-	if (data_extra) {
-		event.extra->data_type = data_flags;
-		event.extra->user_ptr = (__u32)user_ptr;
-		event_data = event.extra->data;
+	if (desc->do_info) {
+		desc->event.info->user_ptr = (__u32)desc->user_ptr;
+		desc->event.info->size = desc->size;
+		event_data = NULL;
+	} else if (desc->do_extra) {
+		desc->event.extra->data_type = desc->flags;
+		desc->event.extra->user_ptr = (__u32)desc->user_ptr;
+		event_data = desc->event.extra->data;
 	} else
-		event_data = event.regular->data;
+		event_data = desc->event.regular->data;
 
-	if (data_flags & SCRIBE_DATA_ZERO)
-		memset(event_data, 0, size);
-	else
-		memcpy(event_data, data, size);
-	scribe_queue_event(scribe->queue, event.generic);
+	if (event_data) {
+		if (desc->flags & SCRIBE_DATA_ZERO)
+			memset(event_data, 0, desc->size);
+		else
+			memcpy(event_data, desc->data, desc->size);
+	}
+
+	scribe_queue_event(scribe->queue, desc->event.generic);
+	desc->event.generic = NULL;
 }
 
-static void scribe_post_uaccess_replay(struct scribe_ps *scribe, int data_extra,
-				       union scribe_event_data_union event,
-				       const void *data, void __user *user_ptr,
-				       size_t size, int data_flags)
+static inline int check_info(struct scribe_ps *scribe,
+			     struct data_desc *desc,
+			     void __user *recorded_user_ptr,
+			     size_t recorded_size, unsigned int recorded_flags)
+{
+	if (recorded_user_ptr != desc->user_ptr) {
+		scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_DATA_PTR,
+			       .user_ptr = (u32)desc->user_ptr);
+		return -EDIVERGE;
+	}
+
+	/* We don't want to check for the data_zero flag since it may change */
+	if ((recorded_flags & ~SCRIBE_DATA_ZERO) !=
+	    (desc->flags & ~SCRIBE_DATA_ZERO)) {
+		scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_DATA_TYPE,
+			       .type = desc->flags);
+		return -EDIVERGE;
+	}
+
+	if (recorded_size != desc->size) {
+		scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_EVENT_SIZE,
+			       .size = desc->size);
+		return -EDIVERGE;
+	}
+
+	return 0;
+}
+
+static void scribe_post_uaccess_replay(struct scribe_ps *scribe,
+				       struct data_desc *desc)
 {
 	const void *event_data;
+	int old_data_flags;
+	int ret;
 
-	if (!data_extra)
-		goto skip_extra_checks;
-
-	if ((event.extra->data_type & ~SCRIBE_DATA_ZERO) !=
-	    (data_flags & ~SCRIBE_DATA_ZERO)) {
-		scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_DATA_TYPE,
-			       .type = data_flags);
+	if (desc->do_info) {
+		check_info(scribe, desc,
+			   (void __user *)desc->event.info->user_ptr,
+			   desc->event.info->size,
+			   desc->flags);
 		return;
 	}
 
-	if ((void *)event.extra->user_ptr != user_ptr) {
-		scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_DATA_PTR,
-			       .user_ptr = (u32)user_ptr);
-		return;
+	if (desc->do_extra) {
+		ret = check_info(scribe, desc,
+				 (void __user *)desc->event.extra->user_ptr,
+				 desc->event.extra->h.size,
+				 desc->event.extra->data_type);
+	} else {
+		ret = check_info(scribe, desc,
+				 desc->user_ptr,
+				 desc->event.extra->h.size,
+				 desc->flags);
 	}
 
-skip_extra_checks:
-	if (event.generic->size != size) {
-		scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_EVENT_SIZE,
-			       .size = size);
+	if (ret)
 		return;
-	}
 
-	if (data_flags & SCRIBE_DATA_ZERO) {
+
+	if (desc->do_zero) {
 		/*
 		 * Avoiding the use of scribe_data_ignore so that we
 		 * don't pollute the data flags 'stack'.
 		 */
-		data_flags = scribe->data_flags;
+		old_data_flags = scribe->data_flags;
 		scribe->data_flags = SCRIBE_DATA_IGNORE;
-		if (__clear_user(user_ptr, size)) {
-			scribe_emergency_stop(scribe->ctx,
-					      ERR_PTR(-EDIVERGE));
-		}
-		scribe->data_flags = data_flags;
+		if (__clear_user(desc->user_ptr, desc->size))
+			scribe_emergency_stop(scribe->ctx, ERR_PTR(-EDIVERGE));
+		scribe->data_flags = old_data_flags;
 		return;
 	}
 
-	event_data = data_extra ? event.extra->data : event.regular->data;
+	event_data = desc->do_extra ? desc->event.extra->data :
+				      desc->event.regular->data;
 
-	if (!(data_flags & SCRIBE_DATA_NON_DETERMINISTIC)) {
-		if (likely(data))
+	if (!(desc->flags & SCRIBE_DATA_NON_DETERMINISTIC)) {
+		if (likely(desc->data))
 			ensure_data_correctness(scribe, event_data,
-						data, size);
+						desc->data, desc->size);
 		else
 			scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_DATA_TYPE,
 				       .type = SCRIBE_DATA_NON_DETERMINISTIC);
@@ -256,14 +365,14 @@ skip_extra_checks:
 	 * FIXME Do the copying in pre_uaccess and skip the extra copy_to_user
 	 * that happened before.
 	 */
-	data_flags = scribe->data_flags;
+	old_data_flags = scribe->data_flags;
 	scribe->data_flags = SCRIBE_DATA_IGNORE;
 	/*
 	 * We're using the inatomic version so that we don't get the
 	 * might_sleep(), but if we're not in an atomic context, it's
 	 * equivalent to __copy_to_user().
 	 */
-	if (__copy_to_user_inatomic(user_ptr, event_data, size)) {
+	if (__copy_to_user_inatomic(desc->user_ptr, event_data, desc->size)) {
 		/*
 		 * FIXME If we are in an atomic region, the copy may or may
 		 * not have happended. We need to make sure that the copy
@@ -274,67 +383,26 @@ skip_extra_checks:
 		scribe_emergency_stop(scribe->ctx, ERR_PTR(-EDIVERGE));
 	}
 
-	scribe->data_flags = data_flags;
+	scribe->data_flags = old_data_flags;
 }
 
-
-static void __scribe_post_uaccess(const void *data, const void __user *user_ptr,
-				  size_t size, int flags,
-				  union scribe_event_data_union *eventp)
+static void __scribe_post_uaccess(struct scribe_ps *scribe,
+				  struct data_desc *desc)
 {
-	int data_flags;
-	union scribe_event_data_union event;
-	struct scribe_ps *scribe = current->scribe;
-	int data_extra;
+	if (!need_action(scribe, desc))
+		goto out;
 
-	if (!is_scribed(scribe))
-		return;
+	WARN_ON((long)desc->user_ptr > TASK_SIZE);
 
-	if (eventp)
-		eventp->generic = NULL;
+	if (get_data_event(scribe, desc))
+		goto out;
 
-	if (!should_handle_data(scribe))
-		goto skip;
+	if (is_recording(scribe))
+		scribe_post_uaccess_record(scribe, desc);
+	else /* replay */
+		scribe_post_uaccess_replay(scribe, desc);
 
-	/*
-	 * @size is the number of bytes that have been copied from/to
-	 * userspace.
-	 * For convenience during the replay, we will record a 0 sized
-	 * data event.
-	 */
-
-	data_flags = scribe->data_flags | flags;
-
-	WARN_ON((long)user_ptr > TASK_SIZE);
-
-	if (data_flags & SCRIBE_DATA_DONT_RECORD)
-		goto skip;
-
-	if ((!(data_flags & SCRIBE_DATA_NON_DETERMINISTIC) ||
-	     data_flags & SCRIBE_DATA_ZERO) &&
-	    !should_scribe_data_det(scribe))
-		goto skip;
-
-	data_extra = should_scribe_data_extra(scribe);
-	event = get_data_event(scribe, data_extra, size);
-	if (IS_ERR(event.generic))
-		goto skip;
-
-	if (is_recording(scribe)) {
-		scribe_post_uaccess_record(scribe, data_extra, event, data,
-					   (void __user *)user_ptr, size,
-					   data_flags);
-	} else { /* replay */
-		scribe_post_uaccess_replay(scribe, data_extra, event, data,
-					   (void __user *)user_ptr, size,
-					   data_flags);
-		if (eventp)
-			*eventp = event;
-		else
-			scribe_free_event(event.generic);
-	}
-
-skip:
+out:
 	if (!is_kernel_copy())
 		__scribe_forbid_uaccess(scribe);
 	WARN(scribe->prepared_data_event.generic,
@@ -344,18 +412,46 @@ skip:
 void scribe_post_uaccess(const void *data, const void __user *user_ptr,
 			 size_t size, int flags)
 {
-	__scribe_post_uaccess(data, user_ptr, size, flags, NULL);
+	struct scribe_ps *scribe = current->scribe;
+	struct data_desc desc;
+
+	if (!is_scribed(scribe))
+		return;
+
+	desc.data = (void *)data;
+	desc.user_ptr = (void __user *)user_ptr;
+	desc.size = size;
+	desc.flags = scribe->data_flags | flags;
+	desc.event.generic = NULL;
+
+	post_init_data_desc(scribe, &desc);
+	__scribe_post_uaccess(scribe, &desc);
+	scribe_free_event(desc.event.generic);
 }
 EXPORT_SYMBOL(scribe_post_uaccess);
 
 void scribe_copy_to_user_recorded(void __user *to, long n,
 				  union scribe_event_data_union *event)
 {
+	struct data_desc desc;
 	struct scribe_ps *scribe = current->scribe;
+
 	BUG_ON(!is_replaying(scribe));
 
+	desc.data = NULL;
+	desc.user_ptr = to;
+	desc.size = n;
+	desc.flags = scribe->data_flags;
+	desc.event.generic = NULL;
+	post_init_data_desc(scribe, &desc);
+
 	scribe_pre_uaccess(NULL, to, n, scribe->data_flags);
-	__scribe_post_uaccess(NULL, to, n, scribe->data_flags, event);
+	__scribe_post_uaccess(scribe, &desc);
+
+	if (event)
+		*event = desc.event;
+	else
+		scribe_free_event(desc.event.generic);
 }
 
 int scribe_interpose_value_record(struct scribe_ps *scribe,
@@ -460,16 +556,16 @@ void scribe_post_schedule(void)
 int fault_in_pages_writeable(char __user *uaddr, int size)
 {
 	struct scribe_ps *scribe = current->scribe;
-	int data_flags = 0;
+	int old_data_flags = 0;
 	int ret;
 
 	if (may_be_scribed(scribe)) {
-		data_flags = scribe->data_flags;
-		scribe->data_flags = SCRIBE_DATA_DONT_RECORD;
+		old_data_flags = scribe->data_flags;
+		scribe->data_flags = SCRIBE_DATA_IGNORE;
 	}
 	ret = __fault_in_pages_writeable(uaddr, size);
 	if (may_be_scribed(scribe))
-		scribe->data_flags = data_flags;
+		scribe->data_flags = old_data_flags;
 
 	return ret;
 }
@@ -477,16 +573,16 @@ int fault_in_pages_writeable(char __user *uaddr, int size)
 int fault_in_pages_readable(char __user *uaddr, int size)
 {
 	struct scribe_ps *scribe = current->scribe;
-	int data_flags = 0;
+	int old_data_flags = 0;
 	int ret;
 
 	if (may_be_scribed(scribe)) {
-		data_flags = scribe->data_flags;
-		scribe->data_flags = SCRIBE_DATA_DONT_RECORD;
+		old_data_flags = scribe->data_flags;
+		scribe->data_flags = SCRIBE_DATA_IGNORE;
 	}
 	ret = __fault_in_pages_readable(uaddr, size);
 	if (may_be_scribed(scribe))
-		scribe->data_flags = data_flags;
+		scribe->data_flags = old_data_flags;
 
 	return ret;
 }
@@ -512,9 +608,9 @@ void scribe_data_non_det(void)
 	scribe_data_push_flags(SCRIBE_DATA_NON_DETERMINISTIC);
 }
 
-void scribe_data_dont_record(void)
+void scribe_data_need_info(void)
 {
-	scribe_data_push_flags(SCRIBE_DATA_DONT_RECORD);
+	scribe_data_push_flags(SCRIBE_DATA_NEED_INFO);
 }
 
 void scribe_data_ignore(void)

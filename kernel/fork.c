@@ -652,7 +652,7 @@ void mm_release(struct task_struct *tsk, struct mm_struct *mm)
 			 * We don't check the error code - if userspace has
 			 * not set up a proper pointer then tough luck.
 			 */
-			scribe_data_dont_record();
+			scribe_data_ignore();
 			put_user(0, tsk->clear_child_tid);
 			sys_futex(tsk->clear_child_tid, FUTEX_WAKE,
 					1, NULL, NULL, 0);

@@ -2086,7 +2086,7 @@ static inline void cow_user_page(struct page *dst, struct page *src, unsigned lo
 		void *kaddr = kmap_atomic(dst, KM_USER0);
 		void __user *uaddr = (void __user *)(va & PAGE_MASK);
 
-		scribe_data_dont_record();
+		scribe_data_ignore();
 
 		/*
 		 * This really shouldn't fail, because the page is there

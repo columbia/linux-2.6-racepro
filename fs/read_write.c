@@ -414,8 +414,8 @@ static ssize_t scribe_do_read(struct file *file, char __user *buf,
 		    event->type != SCRIBE_EVENT_DATA)
 			break;
 
-		data_event.generic = (struct scribe_event_sized *)event;
-		data_size = data_event.generic->size;
+		data_event.generic_sized = (struct scribe_event_sized *)event;
+		data_size = data_event.generic_sized->size;
 
 		scribe_copy_to_user_recorded(buf, data_size, NULL);
 	}

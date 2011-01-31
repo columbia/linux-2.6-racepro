@@ -490,8 +490,10 @@ static inline int is_interruption(int ret)
 }
 
 union scribe_event_data_union {
-	struct scribe_event_sized *generic;
+	struct scribe_event *generic;
+	struct scribe_event_sized *generic_sized;
 	struct scribe_event_data *regular;
+	struct scribe_event_data_info *info;
 	struct scribe_event_data_extra *extra;
 };
 
@@ -679,7 +681,7 @@ extern void scribe_post_schedule(void);
 extern void scribe_data_push_flags(int flags);
 extern void scribe_data_det(void);
 extern void scribe_data_non_det(void);
-extern void scribe_data_dont_record(void);
+extern void scribe_data_need_info(void);
 extern void scribe_data_ignore(void);
 extern void scribe_data_pop_flags(void);
 

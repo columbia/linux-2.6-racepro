@@ -2243,7 +2243,7 @@ SYSCALL_DEFINE2(socketcall, int, call, unsigned long __user *, args)
 	 * The next copy to user doesn't need to be checked, besides,
 	 * sys_socketcall() is arch dependent.
 	 */
-	scribe_data_dont_record();
+	scribe_data_ignore();
 
 	/* copy_from_user should be SMP safe. */
 	if (copy_from_user(a, args, len))

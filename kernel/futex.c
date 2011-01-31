@@ -2691,7 +2691,10 @@ long do_futex(u32 __user *uaddr, int op, u32 val, ktime_t *timeout,
 		}
 
 		scribe_allow_uaccess();
-		scribe_data_dont_record();
+		/*
+		 * It's easier to ignore recording all the deterministic data
+		 */
+		scribe_data_ignore();
 	}
 
 	switch (cmd) {
