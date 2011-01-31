@@ -882,8 +882,11 @@ int do_sys_poll(struct pollfd __user *ufds, unsigned int nfds,
 	}
 
 	poll_initwait(&table);
-	if (is_replaying(scribe))
+	if (is_replaying(scribe)) {
 		fdcount = scribe->orig_ret;
+		if (fdcount == -ERESTART_RESTARTBLOCK)
+			fdcount = -EINTR;
+	}
 	else
 		fdcount = do_poll(nfds, head, &table, end_time);
 	poll_freewait(&table);
