@@ -353,8 +353,10 @@ static int is_deterministic(struct file *file)
 	if (S_ISCHR(inode_mode))
 		return 0;
 
-	if (S_ISSOCK(inode_mode))
-		return 0;
+	/*
+	 * We make the socket deterministic at this level since the
+	 * non-determinism is all handled in the scribe socket ops
+	 */
 
 	s_magic = file->f_dentry->d_sb->s_magic;
 	if (s_magic == PROC_SUPER_MAGIC)
@@ -367,9 +369,6 @@ static ssize_t scribe_do_read(struct file *file, char __user *buf,
 			      ssize_t len, loff_t *ppos)
 {
 	struct scribe_ps *scribe = current->scribe;
-	union scribe_event_data_union data_event;
-	struct scribe_event *event;
-	size_t data_size, ret;
 	int force_block = 0;
 
 	if (!is_scribed(scribe))
@@ -398,28 +397,7 @@ static ssize_t scribe_do_read(struct file *file, char __user *buf,
 	if (is_recording(scribe))
 		goto out;
 
-	/* Replaying on a non-deterministic stream */
-	for (ret = 0; ret < len; ret += data_size, buf += data_size) {
-		/* Replaying on a non-deterministic stream */
-
-		/*
-		 * We are peeking events without a regular fence, but that's
-		 * okey since we'll stop once ret >= len.
-		 */
-		event = scribe_peek_event(scribe->queue, SCRIBE_WAIT);
-		if (IS_ERR(event))
-			break;
-
-		if (event->type != SCRIBE_EVENT_DATA_EXTRA &&
-		    event->type != SCRIBE_EVENT_DATA)
-			break;
-
-		data_event.generic_sized = (struct scribe_event_sized *)event;
-		data_size = data_event.generic_sized->size;
-
-		scribe_copy_to_user_recorded(buf, data_size, NULL);
-	}
-	return ret;
+	return scribe_emul_copy_to_user(scribe, buf, len);
 
 out:
 	return do_read(file, buf, len, ppos, force_block);

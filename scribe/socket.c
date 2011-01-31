@@ -34,7 +34,7 @@ static int scribe_connect(struct socket *sock, struct sockaddr *vaddr,
 	if (scribe_need_syscall_ret(scribe))
 		return -ENOMEM;
 
-	if (is_replaying(scribe)) {
+	if (is_replaying(scribe) && sock->real_ops->family != PF_UNIX) {
 		/* Faking the connection */
 		return scribe->orig_ret;
 	}
@@ -63,7 +63,36 @@ static int scribe_accept(struct socket *sock, struct socket *newsock, int flags)
 static int scribe_getname(struct socket *sock, struct sockaddr *addr,
 			  int *sockaddr_len, int peer)
 {
-	return sock->real_ops->getname(sock, addr, sockaddr_len, peer);
+	struct scribe_ps *scribe = current->scribe;
+	int ret;
+
+	if (scribe_need_syscall_ret(scribe))
+		return -ENOMEM;
+
+	if (is_replaying(scribe)) {
+		ret = scribe->orig_ret;
+		if (ret < 0)
+			return ret;
+
+		if (scribe_interpose_value_replay(scribe,
+					  sockaddr_len, sizeof(*sockaddr_len)))
+			scribe_emergency_stop(scribe->ctx, ERR_PTR(-EDIVERGE));
+
+		else if (scribe_interpose_value_replay(scribe,
+					  addr, *sockaddr_len))
+			scribe_emergency_stop(scribe->ctx, ERR_PTR(-EDIVERGE));
+	} else {
+		ret = sock->real_ops->getname(sock, addr, sockaddr_len, peer);
+		if (scribe_interpose_value_record(scribe,
+					  sockaddr_len, sizeof(*sockaddr_len)))
+			ret = -ENOMEM;
+
+		else if (scribe_interpose_value_record(scribe,
+					  addr, *sockaddr_len))
+			ret = -ENOMEM;
+	}
+
+	return ret;
 }
 
 static unsigned int scribe_poll(struct file *file, struct socket *sock,
@@ -75,7 +104,11 @@ static unsigned int scribe_poll(struct file *file, struct socket *sock,
 static int scribe_ioctl(struct socket *sock, unsigned int cmd,
 			unsigned long arg)
 {
-	return sock->real_ops->ioctl(sock, cmd, arg);
+	int ret;
+	scribe_data_non_det();
+	ret = sock->real_ops->ioctl(sock, cmd, arg);
+	scribe_data_pop_flags();
+	return ret;
 }
 
 #ifdef CONFIG_COMPAT
@@ -131,20 +164,82 @@ static int scribe_compat_getsockopt(struct socket *sock, int level,
 static int scribe_sendmsg(struct kiocb *iocb, struct socket *sock,
 			  struct msghdr *m, size_t total_len)
 {
-	return sock->real_ops->sendmsg(iocb, sock, m, total_len);
+	struct scribe_ps *scribe = current->scribe;
+	int ret;
+
+	/*
+	 * FIXME For now we'll use the syscall return value even though it's
+	 * incorrect.
+	 */
+	if (scribe_need_syscall_ret(scribe))
+		return -ENOMEM;
+
+	scribe_data_need_info();
+
+	if (is_replaying(scribe)) {
+		ret = scribe->orig_ret;
+		if (ret <= 0)
+			goto out;
+
+		ret = scribe_emul_copy_from_user(scribe, NULL, ret);
+	} else
+		ret = sock->real_ops->sendmsg(iocb, sock, m, total_len);
+
+out:
+	scribe_data_pop_flags();
+	return ret;
 }
 
 static int scribe_recvmsg(struct kiocb *iocb, struct socket *sock,
 			  struct msghdr *m, size_t total_len,
 			  int flags)
 {
-	return sock->real_ops->recvmsg(iocb, sock, m, total_len, flags);
+	struct scribe_ps *scribe = current->scribe;
+	int ret;
+
+	/*
+	 * FIXME For now we'll use the syscall return value even though it's
+	 * incorrect.
+	 */
+	if (scribe_need_syscall_ret(scribe))
+		return -ENOMEM;
+
+	scribe_data_non_det_need_info();
+
+	if (is_replaying(scribe)) {
+		ret = scribe->orig_ret;
+		if (ret <= 0)
+			goto out;
+
+		ret = scribe_emul_copy_to_user(scribe, NULL, ret);
+		if (scribe_interpose_value_replay(scribe,
+					  &m->msg_namelen, sizeof(m->msg_namelen)))
+			scribe_emergency_stop(scribe->ctx, ERR_PTR(-EDIVERGE));
+		else if (scribe_interpose_value_replay(scribe,
+						  m->msg_name, m->msg_namelen))
+			scribe_emergency_stop(scribe->ctx, ERR_PTR(-EDIVERGE));
+	} else {
+		ret = sock->real_ops->recvmsg(iocb, sock, m, total_len, flags);
+
+		if (ret > 0) {
+			if (scribe_interpose_value_record(scribe,
+						  &m->msg_namelen, sizeof(m->msg_namelen)))
+				ret = -ENOMEM;
+			else if (scribe_interpose_value_record(scribe,
+							  m->msg_name, m->msg_namelen))
+				ret = -ENOMEM;
+		}
+	}
+
+out:
+	scribe_data_pop_flags();
+	return ret;
 }
 
 static int scribe_mmap(struct file *file, struct socket *sock,
 		       struct vm_area_struct * vma)
 {
-	return sock->real_ops->mmap(file, sock, vma);
+	return sock_no_mmap(file, sock, vma);
 }
 
 static ssize_t scribe_sendpage(struct socket *sock, struct page *page,

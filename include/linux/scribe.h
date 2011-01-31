@@ -669,8 +669,11 @@ extern void __scribe_detach(struct scribe_ps *scribe);
 extern void scribe_detach(struct scribe_ps *scribe);
 extern bool scribe_maybe_detach(struct scribe_ps *scribe);
 
-extern void scribe_copy_to_user_recorded(void __user *to, long n,
-					 union scribe_event_data_union *event);
+extern size_t scribe_emul_copy_to_user(struct scribe_ps *scribe,
+				       char __user *buf, ssize_t len);
+extern size_t scribe_emul_copy_from_user(struct scribe_ps *scribe,
+					 char __user *buf, ssize_t len);
+
 extern void __scribe_allow_uaccess(struct scribe_ps *scribe);
 extern void __scribe_forbid_uaccess(struct scribe_ps *scribe);
 extern void scribe_allow_uaccess(void);
@@ -682,6 +685,7 @@ extern void scribe_data_push_flags(int flags);
 extern void scribe_data_det(void);
 extern void scribe_data_non_det(void);
 extern void scribe_data_need_info(void);
+extern void scribe_data_non_det_need_info(void);
 extern void scribe_data_ignore(void);
 extern void scribe_data_pop_flags(void);
 

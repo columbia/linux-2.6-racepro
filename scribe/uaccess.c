@@ -430,8 +430,8 @@ void scribe_post_uaccess(const void *data, const void __user *user_ptr,
 }
 EXPORT_SYMBOL(scribe_post_uaccess);
 
-void scribe_copy_to_user_recorded(void __user *to, long n,
-				  union scribe_event_data_union *event)
+static void scribe_copy_to_user_recorded(void __user *to, long n,
+					 union scribe_event_data_union *event)
 {
 	struct data_desc desc;
 	struct scribe_ps *scribe = current->scribe;
@@ -452,6 +452,122 @@ void scribe_copy_to_user_recorded(void __user *to, long n,
 		*event = desc.event;
 	else
 		scribe_free_event(desc.event.generic);
+}
+
+/*
+ * emul copy_to_user() calls.
+ * if @buf is NULL, the user pointer will be read from the log file
+ */
+size_t scribe_emul_copy_to_user(struct scribe_ps *scribe,
+				char __user *buf, ssize_t len)
+{
+	union scribe_event_data_union data_event;
+	struct scribe_event *event;
+	bool has_user_buf;
+	size_t data_size, ret;
+
+	BUG_ON(!(scribe->data_flags & SCRIBE_DATA_NON_DETERMINISTIC));
+
+	has_user_buf = buf ? true : false;
+
+	for (ret = 0; ret < len; ret += data_size, buf += data_size) {
+		if (!is_kernel_copy())
+			__scribe_allow_uaccess(scribe);
+		/*
+		 * We are peeking events without a regular fence, but that's
+		 * okey since we'll stop once ret >= len.
+		 */
+		event = scribe_peek_event(scribe->queue, SCRIBE_WAIT);
+		if (IS_ERR(event))
+			goto out;
+
+		if (event->type != SCRIBE_EVENT_DATA_EXTRA &&
+		    event->type != SCRIBE_EVENT_DATA)
+			goto out;
+
+		data_event.generic = (struct scribe_event *)event;
+		data_size = data_event.generic_sized->size;
+
+		if (!has_user_buf) {
+			if (event->type != SCRIBE_EVENT_DATA_EXTRA)
+				goto out;
+			buf = (char __user *)data_event.extra->user_ptr;
+		}
+
+		scribe_copy_to_user_recorded(buf, data_size, NULL);
+
+		if (!is_kernel_copy())
+			__scribe_forbid_uaccess(scribe);
+	}
+	return ret;
+out:
+	if (!is_kernel_copy())
+		__scribe_forbid_uaccess(scribe);
+	return ret;
+}
+
+/*
+ * emul copy_from_user() calls.
+ * if @buf is NULL, the user pointer will be read from the log file
+ */
+size_t scribe_emul_copy_from_user(struct scribe_ps *scribe,
+				  char __user *buf, ssize_t len)
+{
+	union scribe_event_data_union data_event;
+	struct scribe_event *event;
+	bool has_user_buf;
+	size_t data_size, ret;
+
+	BUG_ON(scribe->data_flags & SCRIBE_DATA_NON_DETERMINISTIC);
+
+	has_user_buf = buf ? true : false;
+
+	for (ret = 0; ret < len; ret += data_size, buf += data_size) {
+		if (!is_kernel_copy())
+			__scribe_allow_uaccess(scribe);
+		/*
+		 * We are peeking events without a regular fence, but that's
+		 * okey since we'll stop once ret >= len.
+		 */
+		event = scribe_peek_event(scribe->queue, SCRIBE_WAIT);
+		if (IS_ERR(event))
+			goto out;
+
+		if (event->type != SCRIBE_EVENT_DATA_EXTRA &&
+		    event->type != SCRIBE_EVENT_DATA &&
+		    event->type != SCRIBE_EVENT_DATA_INFO)
+			goto out;
+
+		data_event.generic = (struct scribe_event *)event;
+
+		if (event->type == SCRIBE_EVENT_DATA_INFO)
+			data_size = data_event.info->size;
+		else
+			data_size = data_event.generic_sized->size;
+
+		if (!has_user_buf) {
+			if (event->type == SCRIBE_EVENT_DATA_INFO)
+				buf = (char __user *)data_event.info->user_ptr;
+			else if (event->type == SCRIBE_EVENT_DATA_EXTRA)
+				buf = (char __user *)data_event.extra->user_ptr;
+			else
+				goto out;
+		}
+
+		event = scribe_dequeue_event(scribe->queue, SCRIBE_NO_WAIT);
+
+		/* FIXME we do nothing for now (checking ?) ... */
+
+		if (!is_kernel_copy())
+			__scribe_forbid_uaccess(scribe);
+
+		scribe_free_event(event);
+	}
+	return ret;
+out:
+	if (!is_kernel_copy())
+		__scribe_forbid_uaccess(scribe);
+	return ret;
 }
 
 int scribe_interpose_value_record(struct scribe_ps *scribe,
@@ -613,6 +729,12 @@ void scribe_data_need_info(void)
 	scribe_data_push_flags(SCRIBE_DATA_NEED_INFO);
 }
 
+void scribe_data_non_det_need_info(void)
+{
+	scribe_data_push_flags(SCRIBE_DATA_NON_DETERMINISTIC |
+			       SCRIBE_DATA_NEED_INFO);
+}
+
 void scribe_data_ignore(void)
 {
 	scribe_data_push_flags(SCRIBE_DATA_IGNORE);
@@ -626,3 +748,5 @@ void scribe_data_pop_flags(void)
 
 	scribe->data_flags = scribe->old_data_flags;
 }
+
+
