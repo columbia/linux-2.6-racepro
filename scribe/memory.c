@@ -882,7 +882,7 @@ static inline void dec_waiters(struct scribe_page *page, int write_access)
     private page table management
 *********************************************************/
 
-static void update_private_pte_locked(struct scribe_ps *scribe,
+static void update_private_pte_locked(struct scribe_mm *scribe_mm,
 		struct mm_struct *mm, struct vm_area_struct *vma,
 		pte_t *real_pte, unsigned long address, int write_access)
 {
@@ -891,7 +891,7 @@ static void update_private_pte_locked(struct scribe_ps *scribe,
 	pmd_t *own_pmd;
 	pte_t *own_pte;
 
-	own_pgd = scribe->mm->own_pgd;
+	own_pgd = scribe_mm->own_pgd;
 	BUG_ON(!own_pgd);
 
 	own_pgd += pgd_index(address);
@@ -941,7 +941,7 @@ void scribe_clear_shadow_pte_locked(struct mm_struct *mm,
 	struct scribe_mm *scribe_mm;
 	spin_lock(&mm->scribe_lock);
 	list_for_each_entry(scribe_mm, &mm->scribe_list, node) {
-		update_private_pte_locked(scribe_mm->scribe, mm, vma,
+		update_private_pte_locked(scribe_mm, mm, vma,
 					  real_pte, addr, 1);
 	}
 	spin_unlock(&mm->scribe_lock);
@@ -968,7 +968,8 @@ static void update_private_pte(struct scribe_ps *scribe,
 		return;
 
 	pte = pte_offset_map_lock(mm, pmd, address, &ptl);
-	update_private_pte_locked(scribe, mm, vma, pte, address, write_access);
+	update_private_pte_locked(scribe->mm, mm, vma, pte,
+				  address, write_access);
 	pte_unmap_unlock(pte, ptl);
 }
 
