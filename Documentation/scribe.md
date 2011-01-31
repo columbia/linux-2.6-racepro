@@ -127,7 +127,8 @@ an example of how it works in the log file:
         event5
         event6
 
-Events 1,2,3 are associated with pid=10, and events 4,5,6 are associated with pid=20.
+Events 1,2,3 are associated with pid=10, and events 4,5,6 are associated with
+pid=20.
 
 Rule: For each pid, `events_of(log, pid)` should be terminated with a
 `eof_queue` event. It allows the kernel to make sure that there is not any
@@ -138,10 +139,11 @@ entire event queue has been consumed.
 Log file verbosity
 --------------------
 
-There are different log verbosity levels. Level `i+1` contains all the information of level `i`.
+There are different log verbosity levels. Level `i+1` contains all the
+information of level `i`.
 
-- level 0 (minimal verbosity): the log file contains only the necessary data for a faithful
-  replay.
+- level 0 (minimal verbosity): the log file contains only the necessary data
+  for a faithful replay.
 - level 1: the log file contains all syscall returns values.
 - level 2: the log file contains extra syscall information:
   - The syscall numbers
@@ -154,8 +156,8 @@ There are different log verbosity levels. Level `i+1` contains all the informati
     representation of the log file on each syscall.
 - level 5: contains extra information about the memory tracking: owned pages
   embed the page address.
-- level 6: contains extra information about user accesses (`copy_from_user()` and friends).
-  The userspace pointer is embedded withing the event.
+- level 6: contains extra information about user accesses (`copy_from_user()`
+  and friends). The userspace pointer is embedded withing the event.
 - level 7: contains all non-deterministic user accesses data.
 - level 8: Always do the resource locking, even when it's not needed.
 - level 9: Always put fences, even when not needed.
@@ -163,52 +165,52 @@ There are different log verbosity levels. Level `i+1` contains all the informati
 
 Example of a recording in level 0:
 
-        [02] data: size = 96, 00000801 00000000 00000000 000a1ddb 000081a4 00000002 00000000 00000000...
+        [02] data: size = 96, 00000801 00000000 00000000 000a1ddb 000081a4 ...
         [02] syscall() = 0xb73f4000
         [02] syscall() = 0xb773e000
         [02] syscall() = 0
         [02] syscall() = 0
-        [02] data: size = 96, 00000009 00000000 00000000 00000003 00002190 00000001 00000000 00000005...
+        [02] data: size = 96, 00000009 00000000 00000000 00000003 00002190 ...
         [02] syscall() = 0
 
 The same snippet, but recorded in level 20:
 
         [02] fstat64() = 0
-        [02]     resource lock, type = files_struct (spinlock), object = 0xf676b500, serial = 11
+        [02]     resource lock, type = files_struct (spinlock), object = 0x...
         [02]     resource lock, type = file, object = 0xf6b5a480, serial = 0
         [02]       resource lock, type = inode, object = 0xf6d8daf0, serial = 0
-        [02]     data: non-det output, ptr = 0xb7775ae0, size = 96, 00000801 00000000 00000000 000a1dd...
+        [02]     data: non-det output, ptr = 0xb7775ae0, size = 96, 0000080...
         [02]     --fence(281)--
-        [02] regs: eip: 0073:b777e424, eflags: 00000246, eax: 000000c0, ebx: 00000000, ecx: 00200000,...
+        [02] regs: eip: 0073:b777e424, eflags: 00000246, eax: 000000c0, ebx...
         [02] --fence(282)--
         [02] --fence(283)--
         [02] mmap_pgoff() = 0xb7432000
-        [02] regs: eip: 0073:b777e424, eflags: 00000246, eax: 000000c0, ebx: 00000000, ecx: 00001000,...
+        [02] regs: eip: 0073:b777e424, eflags: 00000246, eax: 000000c0, ebx...
         [02] --fence(284)--
         [02] --fence(285)--
         [02] mmap_pgoff() = 0xb777c000
-        [02] regs: eip: 0073:b777e424, eflags: 00000206, eax: 00000006, ebx: 00000003, ecx: b7774ff4,...
+        [02] regs: eip: 0073:b777e424, eflags: 00000206, eax: 00000006, ebx...
         [02] --fence(286)--
         [02] --fence(287)--
         [02] close() = 0
-        [02]     resource lock, type = files_struct (spinlock), object = 0xf676b500, serial = 12
-        [02] regs: eip: 0073:b777e424, eflags: 00000292, eax: 000000c5, ebx: 00000001, ecx: bffbecec,...
+        [02]     resource lock, type = files_struct (spinlock), object = 0x...
+        [02] regs: eip: 0073:b777e424, eflags: 00000292, eax: 000000c5, ebx...
         [02] --fence(288)--
         [02] --fence(289)--
         [02] fstat64() = 0
-        [02]     resource lock, type = files_struct (spinlock), object = 0xf676b500, serial = 13
+        [02]     resource lock, type = files_struct (spinlock), object = 0x...
         [02]     resource lock, type = file, object = 0xf66aa300, serial = 0
         [02]       resource lock, type = inode, object = 0xf6fbd830, serial = 0
-        [02]     data: non-det output, ptr = 0xbffbecec, size = 96, 00000009 00000000 00000000 0000000...
+        [02]     data: non-det output, ptr = 0xbffbecec, size = 96, 0000000...
         [02]     --fence(290)--
-        [02] regs: eip: 0073:b777e424, eflags: 00000292, eax: 000000c5, ebx: 00000000, ecx: bffbecec,...
+        [02] regs: eip: 0073:b777e424, eflags: 00000292, eax: 000000c5, ebx...
         [02] --fence(291)--
         [02] --fence(292)--
         [02] fstat64() = 0
-        [02]     resource lock, type = files_struct (spinlock), object = 0xf676b500, serial = 14
+        [02]     resource lock, type = files_struct (spinlock), object = 0x...
         [02]     resource lock, type = file, object = 0xf66aa300, serial = 1
         [02]       resource lock, type = inode, object = 0xf6fbd830, serial = 1
-        [02]     data: non-det output, ptr = 0xbffbecec, size = 96, 00000009 00000000 00000000 0000000...
+        [02]     data: non-det output, ptr = 0xbffbecec, size = 96, 0000000...
         [02]     --fence(293)--
 
 Log file grammar
@@ -218,14 +220,16 @@ Log file grammar
 
 Legend:
 
-- `1` mean one.
-- `1?` means zero or one.
-- `*` means zero or more.
+  - 1 mean one.
+  - 1? means zero or one.
+  - \* means zero or more.
 
-### Each `events_of(log, pid)` is:
+--------------------------------------------------------------------------------
 
-1. \* `main_block`
-2. 1 `eof_queue_event`
+Each `events_of(log, pid)` is:
+
+  1. \* main block
+  2. 1 eof queue event
 
 Example:
 
@@ -234,59 +238,67 @@ Example:
     syscall ended
     queue EOF
 
-### A `main_block` is either:
+--------------------------------------------------------------------------------
 
-- a `rdtsc_event`: used when the userspace process does a RDTSC instruction.
-- a `mem_block`: used when the userspace process accesses some memory.
-- a `data_block`: used when a signal is delivered and the context is created.
-- a `syscall_block`: used when the userspace process calls a system call.
+A main block is either:
 
-### A `mem_block` is:
+  - a rdtsc event: used when the userspace process does a RDTSC instruction.
+  - a mem block: used when the userspace process accesses some memory.
+  - a data block: used when a signal is delivered and the context is created.
+  - a syscall block: used when the userspace process calls a system call.
 
-1. 1? `fence_event`
-2. \* `mem_public_event`
-3. 1 `mem_owned_event`, or 1 `mem_alone_event`
+--------------------------------------------------------------------------------
 
-Example:
+A mem block is:
+
+  1. 1? fence event
+  2. \* mem public event
+  3. 1 mem owned event, or 1 mem alone event
+
+Example of a mem block:
 
     --fence(135)--
     mem public, page = b760a000
     mem public, page = b75fe000
     mem owned, page = b760b000, serial = 193
 
-### A `syscall_block` is:
+--------------------------------------------------------------------------------
 
-1. 1 `regs_event`
-2. \* `sig_block`
-3. 1? `mem_block`
-4. 1? `bookmark_event`
-5. 1 `syscall_event`
-6. \* `inner_syscall_block`
-7. 1 `syscall_end_event`
+A syscall block is:
 
-Example:
+  1. 1 regs event
+  2. \* sig block
+  3. 1? mem block
+  4. 1? bookmark event
+  5. 1 syscall event
+  6. \* inner syscall block
+  7. 1 syscall end event
 
-    regs: eip: 0073:b7ff8714, eflags: 00000282, eax: 00000005, ebx: b7ffaafe, ...
+Example of a syscall block:
+
+    regs: eip: 0073:b7ff8714, eflags: 00000282, eax: 00000005, ...
     --fence(8)--
     --fence(9)--
     open() = 3
     data: input string, ptr = 0xb7ffaafe, size = 16, "/etc/ld.so.cache"
     --fence(10)--
-    resource lock, type = files_struct (spinlock), object = 0xf7214a80, serial = 0
+    resource lock, type = files_struct (spinlock), object = 0xf7214a80, ...
     resource unlock, object = 0xf7214a80
     resource lock, type = inode, object = 0xf6d60570, serial = 1
     resource unlock, object = 0xf6d60570
     resource lock, type = inode, object = 0xf6db8e70, serial = 1
     resource unlock, object = 0xf6db8e70
-    resource lock, type = files_struct (spinlock), object = 0xf7214a80, serial = 1
+    resource lock, type = files_struct (spinlock), object = 0xf7214a80, ...
     resource unlock, object = 0xf7214a80
     syscall ended
 
-### A `sig_block` is:
+--------------------------------------------------------------------------------
 
-1. 1? `fence_event`
-2. 1? `sig_recv_cookie_event`
-3. 1 `sig_event`
+A sig block is:
+
+  1. 1? fence event
+  2. 1? sig recv cookie event
+  3. 1 sig event
 
 Example:
 
@@ -294,17 +306,22 @@ Example:
     signal recv, cookie = 1
     signal: SIGUSR1, deferred = false, info = 0000000a 00000000 00000000 ...
 
-### A `inner_syscall_block` is either:
+--------------------------------------------------------------------------------
 
-- a `res_block`
-- a `data_block`
-- a `sig_send_cookie_event`
+An inner syscall block is either:
 
-### A `res_block` is either:
+  - a res block
+  - a res lock intr event
+  - a data block
+  - a sig send cookie event
 
-1. 1 `res_lock_event`
-2. \* `inner_syscall_block`
-3. 1 `res_unlock_event`
+--------------------------------------------------------------------------------
+
+A res block is:
+
+  1. 1 res lock event
+  2. \* inner syscall block
+  3. 1 res unlock event
 
 Example of two nested resource locks:
 
@@ -313,11 +330,9 @@ Example of two nested resource locks:
     resource unlock, object = 0xf516b6f0
     resource unlock, object = 0xf6790180
 
-or:
+--------------------------------------------------------------------------------
 
-1. `res_lock_intr_event`
+A data block is:
 
-A `data_block` is:
-
-1. 1? `mem_block`
-2. 1 `data_event`
+  1. 1? mem block
+  2. 1 data event
