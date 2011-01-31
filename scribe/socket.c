@@ -66,6 +66,9 @@ static int scribe_getname(struct socket *sock, struct sockaddr *addr,
 	struct scribe_ps *scribe = current->scribe;
 	int ret;
 
+	if (!is_scribed(scribe))
+		return sock->real_ops->getname(sock, addr, sockaddr_len, peer);
+
 	if (scribe_need_syscall_ret(scribe))
 		return -ENOMEM;
 
@@ -167,6 +170,9 @@ static int scribe_sendmsg(struct kiocb *iocb, struct socket *sock,
 	struct scribe_ps *scribe = current->scribe;
 	int ret;
 
+	if (!is_scribed(scribe))
+		return sock->real_ops->sendmsg(iocb, sock, m, total_len);
+
 	/*
 	 * FIXME For now we'll use the syscall return value even though it's
 	 * incorrect.
@@ -196,6 +202,9 @@ static int scribe_recvmsg(struct kiocb *iocb, struct socket *sock,
 {
 	struct scribe_ps *scribe = current->scribe;
 	int ret;
+
+	if (!is_scribed(scribe))
+		return sock->real_ops->recvmsg(iocb, sock, m, total_len, flags);
 
 	/*
 	 * FIXME For now we'll use the syscall return value even though it's
@@ -240,6 +249,11 @@ out:
 static int scribe_mmap(struct file *file, struct socket *sock,
 		       struct vm_area_struct * vma)
 {
+	struct scribe_ps *scribe = current->scribe;
+
+	if (!is_scribed(scribe))
+		return sock->real_ops->mmap(file, sock , vma);
+
 	return sock_no_mmap(file, sock, vma);
 }
 
