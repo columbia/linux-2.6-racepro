@@ -2040,6 +2040,7 @@ static int __sys_recvmsg(struct socket *sock, struct msghdr __user *msg,
 			 COMPAT_FLAGS(msg));
 	if (err)
 		goto out_freeiov;
+	scribe_data_non_det();
 	if (MSG_CMSG_COMPAT & flags)
 		err = __put_user((unsigned long)msg_sys->msg_control - cmsg_ptr,
 				 &msg_compat->msg_controllen);

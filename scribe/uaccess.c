@@ -256,6 +256,7 @@ static void scribe_post_uaccess_record(struct scribe_ps *scribe,
 	if (desc->do_info) {
 		desc->event.info->user_ptr = (__u32)desc->user_ptr;
 		desc->event.info->size = desc->size;
+		desc->event.info->data_type = desc->flags;
 		event_data = NULL;
 	} else if (desc->do_extra) {
 		desc->event.extra->data_type = desc->flags;
@@ -314,7 +315,7 @@ static void scribe_post_uaccess_replay(struct scribe_ps *scribe,
 		check_info(scribe, desc,
 			   (void __user *)desc->event.info->user_ptr,
 			   desc->event.info->size,
-			   desc->flags);
+			   desc->event.info->data_type);
 		return;
 	}
 
@@ -465,6 +466,7 @@ size_t scribe_emul_copy_to_user(struct scribe_ps *scribe,
 	struct scribe_event *event;
 	bool has_user_buf;
 	size_t data_size, ret;
+	unsigned int recorded_flags;
 
 	BUG_ON(!(scribe->data_flags & SCRIBE_DATA_NON_DETERMINISTIC));
 
@@ -494,6 +496,15 @@ size_t scribe_emul_copy_to_user(struct scribe_ps *scribe,
 			buf = (char __user *)data_event.extra->user_ptr;
 		}
 
+		if (event->type == SCRIBE_EVENT_DATA_EXTRA) {
+			recorded_flags = data_event.extra->data_type;
+			recorded_flags &= ~(SCRIBE_DATA_ZERO |
+					    SCRIBE_DATA_INPUT |
+					    SCRIBE_DATA_STRING);
+			if (recorded_flags != scribe->data_flags)
+				goto out;
+		}
+
 		scribe_copy_to_user_recorded(buf, data_size, NULL);
 
 		if (!is_kernel_copy())
@@ -517,6 +528,7 @@ size_t scribe_emul_copy_from_user(struct scribe_ps *scribe,
 	struct scribe_event *event;
 	bool has_user_buf;
 	size_t data_size, ret;
+	unsigned int recorded_flags;
 
 	BUG_ON(scribe->data_flags & SCRIBE_DATA_NON_DETERMINISTIC);
 
@@ -551,6 +563,19 @@ size_t scribe_emul_copy_from_user(struct scribe_ps *scribe,
 			else if (event->type == SCRIBE_EVENT_DATA_EXTRA)
 				buf = (char __user *)data_event.extra->user_ptr;
 			else
+				goto out;
+		}
+
+		recorded_flags = -1;
+		if (event->type == SCRIBE_EVENT_DATA_EXTRA)
+			recorded_flags = data_event.extra->data_type;
+		else if (event->type == SCRIBE_EVENT_DATA_INFO)
+			recorded_flags = data_event.info->data_type;
+		if (recorded_flags != -1) {
+			recorded_flags &= ~(SCRIBE_DATA_ZERO |
+					    SCRIBE_DATA_INPUT |
+					    SCRIBE_DATA_STRING);
+			if (recorded_flags != scribe->data_flags)
 				goto out;
 		}
 

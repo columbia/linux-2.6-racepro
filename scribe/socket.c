@@ -181,7 +181,7 @@ static int scribe_sendmsg(struct kiocb *iocb, struct socket *sock,
 		if (ret <= 0)
 			goto out;
 
-		ret = scribe_emul_copy_from_user(scribe, NULL, ret);
+		scribe_emul_copy_from_user(scribe, NULL, INT_MAX);
 	} else
 		ret = sock->real_ops->sendmsg(iocb, sock, m, total_len);
 
@@ -211,7 +211,8 @@ static int scribe_recvmsg(struct kiocb *iocb, struct socket *sock,
 		if (ret <= 0)
 			goto out;
 
-		ret = scribe_emul_copy_to_user(scribe, NULL, ret);
+		scribe_emul_copy_to_user(scribe, NULL, INT_MAX);
+
 		if (scribe_interpose_value_replay(scribe,
 					  &m->msg_namelen, sizeof(m->msg_namelen)))
 			scribe_emergency_stop(scribe->ctx, ERR_PTR(-EDIVERGE));
