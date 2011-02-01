@@ -473,26 +473,24 @@ size_t scribe_emul_copy_to_user(struct scribe_ps *scribe,
 	has_user_buf = buf ? true : false;
 
 	for (ret = 0; ret < len; ret += data_size, buf += data_size) {
-		if (!is_kernel_copy())
-			__scribe_allow_uaccess(scribe);
 		/*
 		 * We are peeking events without a regular fence, but that's
 		 * okey since we'll stop once ret >= len.
 		 */
 		event = scribe_peek_event(scribe->queue, SCRIBE_WAIT);
 		if (IS_ERR(event))
-			goto out;
+			return ret;
 
 		if (event->type != SCRIBE_EVENT_DATA_EXTRA &&
 		    event->type != SCRIBE_EVENT_DATA)
-			goto out;
+			return ret;
 
 		data_event.generic = (struct scribe_event *)event;
 		data_size = data_event.generic_sized->size;
 
 		if (!has_user_buf) {
 			if (event->type != SCRIBE_EVENT_DATA_EXTRA)
-				goto out;
+				return ret;
 			buf = (char __user *)data_event.extra->user_ptr;
 		}
 
@@ -502,18 +500,11 @@ size_t scribe_emul_copy_to_user(struct scribe_ps *scribe,
 					    SCRIBE_DATA_INPUT |
 					    SCRIBE_DATA_STRING);
 			if (recorded_flags != scribe->data_flags)
-				goto out;
+				return ret;
 		}
 
 		scribe_copy_to_user_recorded(buf, data_size, NULL);
-
-		if (!is_kernel_copy())
-			__scribe_forbid_uaccess(scribe);
 	}
-	return ret;
-out:
-	if (!is_kernel_copy())
-		__scribe_forbid_uaccess(scribe);
 	return ret;
 }
 
@@ -535,20 +526,18 @@ size_t scribe_emul_copy_from_user(struct scribe_ps *scribe,
 	has_user_buf = buf ? true : false;
 
 	for (ret = 0; ret < len; ret += data_size, buf += data_size) {
-		if (!is_kernel_copy())
-			__scribe_allow_uaccess(scribe);
 		/*
 		 * We are peeking events without a regular fence, but that's
 		 * okey since we'll stop once ret >= len.
 		 */
 		event = scribe_peek_event(scribe->queue, SCRIBE_WAIT);
 		if (IS_ERR(event))
-			goto out;
+			return ret;
 
 		if (event->type != SCRIBE_EVENT_DATA_EXTRA &&
 		    event->type != SCRIBE_EVENT_DATA &&
 		    event->type != SCRIBE_EVENT_DATA_INFO)
-			goto out;
+			return ret;
 
 		data_event.generic = (struct scribe_event *)event;
 
@@ -563,7 +552,7 @@ size_t scribe_emul_copy_from_user(struct scribe_ps *scribe,
 			else if (event->type == SCRIBE_EVENT_DATA_EXTRA)
 				buf = (char __user *)data_event.extra->user_ptr;
 			else
-				goto out;
+				return ret;
 		}
 
 		recorded_flags = -1;
@@ -576,22 +565,19 @@ size_t scribe_emul_copy_from_user(struct scribe_ps *scribe,
 					    SCRIBE_DATA_INPUT |
 					    SCRIBE_DATA_STRING);
 			if (recorded_flags != scribe->data_flags)
-				goto out;
+				return ret;
 		}
 
 		event = scribe_dequeue_event(scribe->queue, SCRIBE_NO_WAIT);
 
+		if (!is_kernel_copy())
+			__scribe_allow_uaccess(scribe);
 		/* FIXME we do nothing for now (checking ?) ... */
-
 		if (!is_kernel_copy())
 			__scribe_forbid_uaccess(scribe);
 
 		scribe_free_event(event);
 	}
-	return ret;
-out:
-	if (!is_kernel_copy())
-		__scribe_forbid_uaccess(scribe);
 	return ret;
 }
 
