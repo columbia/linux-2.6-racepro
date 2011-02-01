@@ -12,6 +12,7 @@
 #include <linux/scribe.h>
 #include <linux/syscalls.h>
 #include <linux/net.h>
+#include <linux/futex.h>
 #include <asm/syscall.h>
 
 union scribe_syscall_event_union {
@@ -149,6 +150,14 @@ static int get_nr_syscall(struct pt_regs *regs)
 			return nr;
 
 		return SCRIBE_SOCKETCALL_BASE + call;
+	}
+	if (nr == __NR_futex) {
+		syscall_get_arguments(current, regs, 1, 1, &call);
+		call &= FUTEX_CMD_MASK;
+		if (call > FUTEX_CMP_REQUEUE_PI)
+			return nr;
+
+		return SCRIBE_FUTEX_BASE + call;
 	}
 
 	return nr;

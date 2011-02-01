@@ -1031,7 +1031,7 @@ retry_private:
 
 		scribe_double_unlock_hb_discard(hb1, hb2);
 		WARN(1, "Scribe: Not handling memory accesses replay "
-		     "in the retry loop");
+		     "in the retry loop\n");
 
 		if (!fshared)
 			goto retry_private;
@@ -1296,7 +1296,7 @@ retry_private:
 
 			scribe_double_unlock_hb_discard(hb1, hb2);
 			WARN(1, "Scribe: Not handling memory accesses replay "
-			     "in the retry loop");
+			     "in the retry loop\n");
 
 			if (!fshared)
 				goto retry_private;
@@ -1885,7 +1885,7 @@ retry_private:
 
 		scribe_unlock_discard(*hb);
 		WARN(1, "Scribe: Not handling memory accesses replay "
-		     "in the retry loop");
+		     "in the retry loop\n");
 
 		if (!fshared)
 			goto retry_private;
