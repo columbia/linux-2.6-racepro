@@ -379,6 +379,16 @@ pipe_read(struct kiocb *iocb, const struct iovec *_iov,
 			size_t chars = buf->len;
 			int error, atomic;
 
+			if (chars < total_len && is_ps_replaying(current)) {
+				/*
+				 * We need to wait for the exact same number
+				 * of bytes since copy_from_user() need to
+				 * match
+				 */
+				pipe_wait(pipe);
+				continue;
+			}
+
 			if (chars > total_len)
 				chars = total_len;
 
@@ -422,6 +432,15 @@ redo:
 				do_wakeup = 1;
 			}
 			total_len -= chars;
+
+			if (is_current_scribed) {
+				/*
+				 * We cannot allow another read, otherwise it
+				 * would mess up the memory fence regions.
+				 */
+				break;
+			}
+
 			if (!total_len)
 				break;	/* common path: read succeeded */
 		}
@@ -547,6 +566,15 @@ redo1:
 			buf->len += chars;
 			total_len -= chars;
 			ret = chars;
+
+			if (is_current_scribed) {
+				/*
+				 * We cannot allow another write, otherwise it
+				 * would mess up the memory fence regions.
+				 */
+				goto out;
+			}
+
 			if (!total_len)
 				goto out;
 		}
@@ -621,6 +649,15 @@ redo2:
 			pipe->tmp_page = NULL;
 
 			total_len -= chars;
+
+			if (is_current_scribed) {
+				/*
+				 * We cannot allow another write, otherwise it
+				 * would mess up the memory fence regions.
+				 */
+				break;
+			}
+
 			if (!total_len)
 				break;
 		}
