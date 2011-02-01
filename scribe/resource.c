@@ -64,6 +64,7 @@ struct scribe_resources {
 	 * In other words, only used resources are kept in that list.
 	 */
 	spinlock_t lock;
+	int next_id;
 	struct list_head tracked;
 };
 
@@ -75,8 +76,9 @@ struct scribe_resources *scribe_alloc_resources(void)
 	if (!resources)
 		return NULL;
 
-	INIT_LIST_HEAD(&resources->tracked);
 	spin_lock_init(&resources->lock);
+	resources->next_id = 0;
+	INIT_LIST_HEAD(&resources->tracked);
 
 	scribe_init_resource(&resources->tasks_res, SCRIBE_RES_TYPE_TASK);
 
@@ -92,6 +94,7 @@ void scribe_init_resource(struct scribe_resource *res, int type)
 {
 	res->ctx = NULL;
 	res->on_reset = NULL;
+	res->id = -1; /* The id will be set once the resource is tracked */
 	res->type = type;
 	mutex_init(&res->lock);
 	spin_lock_init(&res->slock);
@@ -171,6 +174,7 @@ static void track_resource(struct scribe_context *ctx,
 	if (likely(!res->ctx)) {
 		BUG_ON(res->serial);
 		res->ctx = ctx;
+		res->id = resources->next_id++;
 		list_add(&res->node, &resources->tracked);
 		res->on_reset = on_reset;
 		if (on_create)
@@ -685,12 +689,12 @@ static void do_unlock_record(struct scribe_ps *scribe,
 		lock_region->unlock_event = NULL;
 
 		lock_event->type = res->type;
-		lock_event->object = (unsigned long)lock_region->object;
+		lock_event->id = res->id;
 		lock_event->serial = serial;
 		scribe_queue_event_at(&lock_region->ip, lock_event);
 		scribe_commit_insert_point(&lock_region->ip);
 
-		unlock_event->object = (unsigned int)lock_region->object;
+		unlock_event->id = res->id;
 		scribe_queue_event(scribe->queue, unlock_event);
 	} else {
 		struct scribe_event_resource_lock *lock_event;

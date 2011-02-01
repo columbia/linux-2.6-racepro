@@ -33,6 +33,7 @@ struct scribe_resource {
 	/* Return -EAGAIN when the lock has been dropped */
 	int (*on_reset) (struct scribe_context *, struct scribe_resource *);
 
+	int id;
 	int type;
 	u32 serial;
 	struct mutex lock;
