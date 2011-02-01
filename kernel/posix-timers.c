@@ -744,7 +744,7 @@ SYSCALL_DEFINE1(timer_getoverrun, timer_t, timer_id)
 	overrun = timr->it_overrun_last;
 	unlock_timer(timr, flags);
 
-	scribe_interpose_value(overrun, overrun);
+	scribe_value(&overrun);
 
 	return overrun;
 }

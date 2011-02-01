@@ -1497,6 +1497,7 @@ SYSCALL_DEFINE4(accept4, int, fd, struct sockaddr __user *, upeer_sockaddr,
 
 	newsock->type = sock->type;
 	newsock->ops = sock->ops;
+	newsock->real_ops = sock->real_ops;
 
 	/*
 	 * We don't need try_module_get here, as the listening socket (sock)

@@ -15,8 +15,15 @@
 #include <net/sock.h>
 #include <linux/syscalls.h>
 
+/*
+ * We cannot use scribe_need_syscall_ret() because one syscall may call
+ * many of these functions.
+ */
+
 static int scribe_release(struct socket *sock)
 {
+	BUG_ON(!sock);
+	BUG_ON(!sock->real_ops);
 	return sock->real_ops->release(sock);
 }
 
@@ -29,17 +36,22 @@ static int scribe_bind(struct socket *sock, struct sockaddr *myaddr,
 static int scribe_connect(struct socket *sock, struct sockaddr *vaddr,
 			  int sockaddr_len, int flags)
 {
-	struct scribe_ps *scribe = current->scribe;
+	int ret, err;
 
-	if (scribe_need_syscall_ret(scribe))
-		return -ENOMEM;
-
-	if (is_replaying(scribe) && sock->real_ops->family != PF_UNIX) {
-		/* Faking the connection */
-		return scribe->orig_ret;
+	if (sock->real_ops->family == PF_UNIX) {
+		/*
+		 * Unix socket: doing the real connect to go through the file
+		 * system traversal.
+		 */
+		return sock->real_ops->connect(sock, vaddr,
+					       sockaddr_len, flags);
 	}
 
-	return sock->real_ops->connect(sock, vaddr, sockaddr_len, flags);
+	err = scribe_result(
+		ret, sock->real_ops->connect(sock, vaddr, sockaddr_len, flags));
+	if (err)
+		return err;
+	return ret;
 }
 
 static int scribe_socketpair(struct socket *sock1, struct socket *sock2)
@@ -49,52 +61,44 @@ static int scribe_socketpair(struct socket *sock1, struct socket *sock2)
 
 static int scribe_accept(struct socket *sock, struct socket *newsock, int flags)
 {
-	struct scribe_ps *scribe = current->scribe;
+	int ret, err;
 
-	if (is_replaying(scribe)) {
-		/* Faking the accept. newsock will stay unconnected */
-		/* TODO do we have to do newsock->state SS_CONNECTED ? */
-		return 0;
-	}
+	/* Faking the accept. newsock will stay unconnected */
+	/* TODO do we have to do newsock->state SS_CONNECTED ? */
 
-	return sock->real_ops->accept(sock, newsock, flags);
+	err = scribe_result(ret, sock->real_ops->accept(sock, newsock, flags));
+	if (err)
+		return err;
+	return ret;
 }
 
 static int scribe_getname(struct socket *sock, struct sockaddr *addr,
 			  int *sockaddr_len, int peer)
 {
 	struct scribe_ps *scribe = current->scribe;
-	int ret;
+	int ret, err;
 
 	if (!is_scribed(scribe))
 		return sock->real_ops->getname(sock, addr, sockaddr_len, peer);
 
-	if (scribe_need_syscall_ret(scribe))
-		return -ENOMEM;
+	err = scribe_result(
+		ret, sock->real_ops->getname(sock, addr, sockaddr_len, peer));
+	if (err)
+		goto out;
+	if (ret < 0)
+		goto out;
 
-	if (is_replaying(scribe)) {
-		ret = scribe->orig_ret;
-		if (ret < 0)
-			return ret;
+	err = scribe_value(sockaddr_len);
+	if (err)
+		goto out;
 
-		if (scribe_interpose_value_replay(scribe,
-					  sockaddr_len, sizeof(*sockaddr_len)))
-			scribe_emergency_stop(scribe->ctx, ERR_PTR(-EDIVERGE));
+	err = scribe_buffer(addr, *sockaddr_len);
 
-		else if (scribe_interpose_value_replay(scribe,
-					  addr, *sockaddr_len))
-			scribe_emergency_stop(scribe->ctx, ERR_PTR(-EDIVERGE));
-	} else {
-		ret = sock->real_ops->getname(sock, addr, sockaddr_len, peer);
-		if (scribe_interpose_value_record(scribe,
-					  sockaddr_len, sizeof(*sockaddr_len)))
-			ret = -ENOMEM;
-
-		else if (scribe_interpose_value_record(scribe,
-					  addr, *sockaddr_len))
-			ret = -ENOMEM;
+out:
+	if (err) {
+		scribe_emergency_stop(scribe->ctx, ERR_PTR(err));
+		return err;
 	}
-
 	return ret;
 }
 
@@ -168,31 +172,24 @@ static int scribe_sendmsg(struct kiocb *iocb, struct socket *sock,
 			  struct msghdr *m, size_t total_len)
 {
 	struct scribe_ps *scribe = current->scribe;
-	int ret;
-
-	if (!is_scribed(scribe))
-		return sock->real_ops->sendmsg(iocb, sock, m, total_len);
-
-	/*
-	 * FIXME For now we'll use the syscall return value even though it's
-	 * incorrect.
-	 */
-	if (scribe_need_syscall_ret(scribe))
-		return -ENOMEM;
+	int ret, err;
 
 	scribe_data_need_info();
 
-	if (is_replaying(scribe)) {
-		ret = scribe->orig_ret;
-		if (ret <= 0)
-			goto out;
+	err = scribe_result(
+		ret, sock->real_ops->sendmsg(iocb, sock, m, total_len));
+	if (err)
+		goto out;
+	if (ret <= 0)
+		goto out;
 
+	if (is_replaying(scribe))
 		scribe_emul_copy_from_user(scribe, NULL, INT_MAX);
-	} else
-		ret = sock->real_ops->sendmsg(iocb, sock, m, total_len);
 
 out:
 	scribe_data_pop_flags();
+	if (err)
+		return err;
 	return ret;
 }
 
@@ -201,48 +198,29 @@ static int scribe_recvmsg(struct kiocb *iocb, struct socket *sock,
 			  int flags)
 {
 	struct scribe_ps *scribe = current->scribe;
-	int ret;
-
-	if (!is_scribed(scribe))
-		return sock->real_ops->recvmsg(iocb, sock, m, total_len, flags);
-
-	/*
-	 * FIXME For now we'll use the syscall return value even though it's
-	 * incorrect.
-	 */
-	if (scribe_need_syscall_ret(scribe))
-		return -ENOMEM;
+	int ret, err;
 
 	scribe_data_non_det_need_info();
 
-	if (is_replaying(scribe)) {
-		ret = scribe->orig_ret;
-		if (ret <= 0)
-			goto out;
+	err = scribe_result(
+		ret, sock->real_ops->recvmsg(iocb, sock, m, total_len, flags));
+	if (err)
+		goto out;
+	if (ret <= 0)
+		goto out;
 
+	if (is_replaying(scribe))
 		scribe_emul_copy_to_user(scribe, NULL, INT_MAX);
 
-		if (scribe_interpose_value_replay(scribe,
-					  &m->msg_namelen, sizeof(m->msg_namelen)))
-			scribe_emergency_stop(scribe->ctx, ERR_PTR(-EDIVERGE));
-		else if (scribe_interpose_value_replay(scribe,
-						  m->msg_name, m->msg_namelen))
-			scribe_emergency_stop(scribe->ctx, ERR_PTR(-EDIVERGE));
-	} else {
-		ret = sock->real_ops->recvmsg(iocb, sock, m, total_len, flags);
-
-		if (ret > 0) {
-			if (scribe_interpose_value_record(scribe,
-						  &m->msg_namelen, sizeof(m->msg_namelen)))
-				ret = -ENOMEM;
-			else if (scribe_interpose_value_record(scribe,
-							  m->msg_name, m->msg_namelen))
-				ret = -ENOMEM;
-		}
-	}
+	err = scribe_value(&m->msg_namelen);
+	if (err)
+		goto out;
+	err = scribe_buffer(m->msg_name, m->msg_namelen);
 
 out:
 	scribe_data_pop_flags();
+	if (err)
+		return err;
 	return ret;
 }
 
@@ -261,7 +239,7 @@ static ssize_t scribe_sendpage(struct socket *sock, struct page *page,
 			       int offset, size_t size, int flags)
 {
 	if (!sock->real_ops->sendpage)
-		sock_no_sendpage(sock, page, offset, size, flags);
+		return sock_no_sendpage(sock, page, offset, size, flags);
 	return sock->real_ops->sendpage(sock, page, offset, size, flags);
 }
 

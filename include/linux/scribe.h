@@ -689,29 +689,36 @@ extern void scribe_data_non_det_need_info(void);
 extern void scribe_data_ignore(void);
 extern void scribe_data_pop_flags(void);
 
-extern int scribe_interpose_value_record(struct scribe_ps *scribe,
-					 const void *data, size_t size);
-extern int scribe_interpose_value_replay(struct scribe_ps *scribe,
-					 void *data, size_t size);
+extern int __scribe_buffer_record(struct scribe_ps *scribe,
+				  scribe_insert_point_t *ip,
+				  const void *data, size_t size);
+extern int __scribe_buffer_replay(struct scribe_ps *scribe,
+				  void *data, size_t size);
+extern int scribe_buffer(void *buffer, size_t size);
 
-#define scribe_interpose_value(dst, src)				\
+#define scribe_result(dst, src)						\
 ({									\
 	int __ret;							\
+	scribe_insert_point_t __ip;					\
 	struct scribe_ps *__scribe = current->scribe;			\
 									\
 	if (!is_scribed(__scribe) || !should_scribe_data(__scribe)) {	\
 		(dst) = (src);						\
 		__ret = 0;						\
 	} else if (is_recording(__scribe)) {				\
+		scribe_create_insert_point(&__ip, &__scribe->queue->stream); \
 		(dst) = (src);						\
-		__ret = scribe_interpose_value_record(			\
-				__scribe, &(dst), sizeof(dst));		\
+		__ret = __scribe_buffer_record(__scribe, &__ip,		\
+					&(dst), sizeof(dst));		\
+		scribe_commit_insert_point(&__ip);			\
 	} else {							\
-		__ret = scribe_interpose_value_replay(			\
+		__ret = __scribe_buffer_replay(				\
 				__scribe, &(dst), sizeof(dst));		\
 	}								\
 	__ret;								\
 })
+
+#define scribe_value(pval) scribe_buffer(pval, sizeof(*pval))
 
 extern struct scribe_backtrace *scribe_alloc_backtrace(int backtrace_len);
 extern void scribe_free_backtrace(struct scribe_backtrace *bt);

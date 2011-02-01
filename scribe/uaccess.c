@@ -595,8 +595,8 @@ out:
 	return ret;
 }
 
-int scribe_interpose_value_record(struct scribe_ps *scribe,
-				  const void *data, size_t size)
+int __scribe_buffer_record(struct scribe_ps *scribe, scribe_insert_point_t *ip,
+			   const void *data, size_t size)
 {
 	int data_extra = should_scribe_data_extra(scribe);
 	union scribe_event_data_union event;
@@ -618,14 +618,12 @@ int scribe_interpose_value_record(struct scribe_ps *scribe,
 	} else {
 		memcpy(event.regular->data, data, size);
 	}
-	scribe_queue_event(scribe->queue, event.regular);
+	scribe_queue_event_at(ip, event.regular);
 	return 0;
 }
 
-int scribe_interpose_value_replay(struct scribe_ps *scribe,
-				  void *data, size_t size)
+int __scribe_buffer_replay(struct scribe_ps *scribe, void *data, size_t size)
 {
-
 	int data_extra = should_scribe_data_extra(scribe);
 	union scribe_event_data_union event;
 
@@ -654,6 +652,20 @@ int scribe_interpose_value_replay(struct scribe_ps *scribe,
 
 	scribe_free_event(event.generic);
 	return 0;
+}
+
+int scribe_buffer(void *buffer, size_t size)
+{
+	struct scribe_ps *scribe = current->scribe;
+
+	if (!is_scribed(scribe) || !should_scribe_data(scribe))
+		return 0;
+
+	if (is_recording(scribe))
+		return __scribe_buffer_record(scribe,
+				&scribe->queue->stream.master, buffer, size);
+	else
+		return __scribe_buffer_replay(scribe, buffer, size);
 }
 
 void scribe_allow_uaccess(void)

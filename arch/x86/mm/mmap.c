@@ -92,8 +92,8 @@ static unsigned long mmap_rnd(void)
 		else
 			rnd = (long)(get_random_int() % (1<<28));
 	}
-	scribe_interpose_value(rnd, rnd << PAGE_SHIFT);
-
+	rnd <<= PAGE_SHIFT;
+	scribe_value(&rnd);
 	return rnd;
 }
 

@@ -64,7 +64,7 @@ SYSCALL_DEFINE1(time, time_t __user *, tloc)
 {
 	time_t i;
 
-	if (scribe_interpose_value(i, get_seconds())) {
+	if (scribe_result(i, get_seconds())) {
 		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
 		return -ENOMEM;
 	}
