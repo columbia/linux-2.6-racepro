@@ -331,10 +331,30 @@ void put_futex_key(int fshared, union futex_key *key)
  */
 static int fault_in_user_writeable(u32 __user *uaddr)
 {
+	struct scribe_ps *scribe = current->scribe;
 	struct mm_struct *mm = current->mm;
+	struct vm_area_struct *vma;
 	int ret;
 
+
 	down_read(&mm->mmap_sem);
+
+	if (is_scribed(scribe)) {
+		/*
+		 * This is a little bit expensive, but we *need* access.
+		 * It will lock ownership since we are in not in a weak owner
+		 * zone.
+		 * We cannot do a get_user() then put_user() because if
+		 * put_user() sleeps, we won't be able guarantee that the
+		 * value we read is still accurate.
+		 */
+		vma = find_vma(mm, (unsigned long)uaddr);
+		if (likely(vma)) {
+			handle_mm_fault(mm, vma, (unsigned long)uaddr,
+					FAULT_FLAG_WRITE);
+		}
+	}
+
 	ret = get_user_pages(current, mm, (unsigned long)uaddr,
 			     1, 1, 0, NULL, NULL);
 	up_read(&mm->mmap_sem);
