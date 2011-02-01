@@ -133,14 +133,44 @@ static int scribe_setsockopt(struct socket *sock, int level,
 			     int optname, char __user *optval,
 			     unsigned int optlen)
 {
-	return sock->real_ops->setsockopt(sock, level, optname, optval, optlen);
+	struct scribe_ps *scribe = current->scribe;
+	int ret, err;
+
+	scribe_data_need_info();
+
+	err = scribe_result(
+		ret, sock->real_ops->setsockopt(sock, level, optname,
+						optval, optlen));
+	if (err)
+		return err;
+	if (ret < 0)
+		return ret;
+
+	if (is_replaying(scribe))
+		scribe_emul_copy_from_user(scribe, NULL, optlen);
+	return ret;
 }
 
 static int scribe_getsockopt(struct socket *sock, int level,
 			     int optname, char __user *optval,
 			     int __user *optlen)
 {
-	return sock->real_ops->getsockopt(sock, level, optname, optval, optlen);
+	struct scribe_ps *scribe = current->scribe;
+	int ret, err;
+
+	scribe_data_non_det_need_info();
+
+	err = scribe_result(
+		ret, sock->real_ops->getsockopt(sock, level, optname,
+						optval, optlen));
+	if (err)
+		return err;
+	if (ret < 0)
+		return ret;
+
+	if (is_replaying(scribe))
+		scribe_emul_copy_to_user(scribe, NULL, INT_MAX);
+	return ret;
 }
 
 #ifdef CONFIG_COMPAT
@@ -227,9 +257,12 @@ static int scribe_mmap(struct file *file, struct socket *sock,
 static ssize_t scribe_sendpage(struct socket *sock, struct page *page,
 			       int offset, size_t size, int flags)
 {
-	if (!sock->real_ops->sendpage)
-		return sock_no_sendpage(sock, page, offset, size, flags);
-	return sock->real_ops->sendpage(sock, page, offset, size, flags);
+	/*
+	 * Disabling sendpage: a accept() socket will have a different real_ops,
+	 * the unix socket to be specific. So we want to force the same
+	 * behavior
+	 */
+	return sock_no_sendpage(sock, page, offset, size, flags);
 }
 
 static ssize_t scribe_splice_read(struct socket *sock,  loff_t *ppos,
