@@ -511,7 +511,7 @@ static int get_all_objects(struct scribe_context *ctx, struct mm_struct *mm)
 		if (!(vma->vm_flags & VM_SHARED))
 			continue;
 
-		BUG_ON(vma->vm_flags & VM_SCRIBED);
+		WARN_ON(vma->vm_flags & VM_SCRIBED);
 		vma->vm_flags |= VM_SCRIBED;
 
 		ref = get_obj_ref(ctx, vma->vm_file->f_dentry->d_inode);
@@ -536,8 +536,10 @@ static void put_all_objects(struct scribe_context *ctx, struct mm_struct *mm)
 		if (!(vma->vm_flags & VM_SHARED))
 			continue;
 
-		if (vma->vm_flags & VM_SCRIBED)
+		if (vma->vm_flags & VM_SCRIBED) {
+			vma->vm_flags &= ~VM_SCRIBED;
 			put_obj(ctx, vma->vm_file->f_dentry->d_inode);
+		}
 	}
 }
 
