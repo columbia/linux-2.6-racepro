@@ -59,13 +59,8 @@ static int scribe_socketpair(struct socket *sock1, struct socket *sock2)
 
 static int scribe_accept(struct socket *sock, struct socket *newsock, int flags)
 {
-	int ret, err;
-
-	/* Faking the accept. newsock will stay unconnected */
-	/* TODO do we have to do newsock->state SS_CONNECTED ? */
-
-	err = scribe_result(ret, sock->real_ops->accept(sock, newsock, flags));
-	return err ?: ret;
+	/* Handled at the syscall level */
+	return sock->real_ops->accept(sock, newsock, flags);
 }
 
 static int scribe_getname(struct socket *sock, struct sockaddr *addr,

@@ -1476,10 +1476,14 @@ SYSCALL_DEFINE2(listen, int, fd, int, backlog)
 SYSCALL_DEFINE4(accept4, int, fd, struct sockaddr __user *, upeer_sockaddr,
 		int __user *, upeer_addrlen, int, flags)
 {
+	struct scribe_ps *scribe = current->scribe;
 	struct socket *sock, *newsock;
 	struct file *newfile;
 	int err, len, newfd, fput_needed;
 	struct sockaddr_storage address;
+
+	if (scribe_need_syscall_ret(scribe))
+		return -ENOMEM;
 
 	if (flags & ~(SOCK_CLOEXEC | SOCK_NONBLOCK))
 		return -EINVAL;
@@ -1490,6 +1494,25 @@ SYSCALL_DEFINE4(accept4, int, fd, struct sockaddr __user *, upeer_sockaddr,
 	sock = sockfd_lookup_light(fd, &err, &fput_needed);
 	if (!sock)
 		goto out;
+
+	if (is_replaying(scribe)) {
+		err = sock_create(PF_UNIX, SOCK_STREAM, 0, &newsock);
+		if (err < 0)
+			goto out_put;
+
+		newfd = sock_alloc_file(newsock, &newfile, flags);
+		if (unlikely(newfd < 0)) {
+			err = newfd;
+			sock_release(newsock);
+			goto out_put;
+		}
+
+		err = scribe->orig_ret;
+		if (err < 0)
+			goto out_fd;
+
+		goto skip_accept;
+	}
 
 	err = -ENFILE;
 	if (!(newsock = sock_alloc()))
@@ -1520,6 +1543,7 @@ SYSCALL_DEFINE4(accept4, int, fd, struct sockaddr __user *, upeer_sockaddr,
 	if (err < 0)
 		goto out_fd;
 
+skip_accept:
 	if (upeer_sockaddr) {
 		if (newsock->ops->getname(newsock, (struct sockaddr *)&address,
 					  &len, 2) < 0) {
@@ -3045,6 +3069,7 @@ int kernel_accept(struct socket *sock, struct socket **newsock, int flags)
 	}
 
 	(*newsock)->ops = sock->ops;
+	(*newsock)->real_ops = sock->real_ops;
 	__module_get((*newsock)->ops->owner);
 
 done:
