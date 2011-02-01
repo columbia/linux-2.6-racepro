@@ -301,6 +301,8 @@ static int poll_select_copy_remaining(struct timespec *end_time, void __user *p,
 	if (!end_time->tv_sec && !end_time->tv_nsec)
 		return ret;
 
+	scribe_data_non_det();
+
 	ktime_get_ts(&rts);
 	rts = timespec_sub(*end_time, rts);
 	if (rts.tv_sec < 0)
