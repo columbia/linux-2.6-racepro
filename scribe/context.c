@@ -468,9 +468,10 @@ void scribe_attach(struct scribe_ps *scribe)
 
 	scribe->in_syscall = 0;
 	scribe->need_syscall_ret = false;
-	scribe->data_flags = 0;
 	scribe->prepared_data_event.generic = NULL;
+	scribe->data_flags = 0;
 	scribe->can_uaccess = 0;
+	scribe->in_read_write = false;
 
 	scribe_attach_arch(scribe);
 

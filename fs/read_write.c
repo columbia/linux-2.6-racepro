@@ -370,9 +370,10 @@ static ssize_t scribe_do_read(struct file *file, char __user *buf,
 {
 	struct scribe_ps *scribe = current->scribe;
 	int force_block = 0;
+	ssize_t ret;
 
 	if (!is_scribed(scribe))
-		goto out;
+		return do_read(file, buf, len, ppos, force_block);
 
 	if (is_kernel_copy())
 		goto out;
@@ -400,7 +401,10 @@ static ssize_t scribe_do_read(struct file *file, char __user *buf,
 	return scribe_emul_copy_to_user(scribe, buf, len);
 
 out:
-	return do_read(file, buf, len, ppos, force_block);
+	scribe->in_read_write = true;
+	ret = do_read(file, buf, len, ppos, force_block);
+	scribe->in_read_write = false;
+	return ret;
 }
 #else
 static inline ssize_t scribe_do_read(struct file *file, char __user *buf,
@@ -510,15 +514,16 @@ static ssize_t scribe_do_write(struct file *file, const char __user *buf,
 {
 	struct scribe_ps *scribe = current->scribe;
 	int force_block = 0;
+	ssize_t ret;
 
 	if (!is_scribed(scribe))
-		goto bypass;
+		return do_write(file, buf, count, ppos, force_block);
 
 	if (is_kernel_copy())
-		goto bypass;
+		goto out;
 
 	if (!should_scribe_data(scribe))
-		goto bypass;
+		goto out;
 
 	scribe_need_syscall_ret(scribe);
 
@@ -529,8 +534,12 @@ static ssize_t scribe_do_write(struct file *file, const char __user *buf,
 		force_block = 1;
 	}
 
-bypass:
-	return do_write(file, buf, count, ppos, force_block);
+out:
+	scribe->in_read_write = true;
+	ret = do_write(file, buf, count, ppos, force_block);
+	scribe->in_read_write = false;
+
+	return ret;
 }
 #else
 static inline ssize_t scribe_do_write(struct file *file, const char __user *buf,

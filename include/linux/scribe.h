@@ -529,6 +529,7 @@ struct scribe_ps {
 	int data_flags;
 	int old_data_flags;
 	int can_uaccess;
+	bool in_read_write;
 
 	int waiting_for_serial;
 	struct scribe_res_user resources;
@@ -588,6 +589,14 @@ static inline int is_detaching(struct scribe_ps *scribe)
 #define is_ps_scribed_safe(t)	__call_scribe_safe(t, is_scribed)
 #define is_ps_recording_safe(t)	__call_scribe_safe(t, is_recording)
 #define is_ps_replaying_safe(t)	__call_scribe_safe(t, is_replaying)
+
+static inline int scribe_is_in_read_write(struct scribe_ps *scribe)
+{
+	if (!may_be_scribed(scribe))
+		return false;
+	return scribe->in_read_write;
+}
+
 
 
 static inline int should_scribe_syscalls(struct scribe_ps *scribe)
@@ -696,7 +705,7 @@ extern int __scribe_buffer_replay(struct scribe_ps *scribe,
 				  void *data, size_t size);
 extern int scribe_buffer(void *buffer, size_t size);
 
-#define scribe_result(dst, src)						\
+#define scribe_result_cond(dst, src, cond)				\
 ({									\
 	int __ret;							\
 	scribe_insert_point_t __ip;					\
@@ -708,8 +717,11 @@ extern int scribe_buffer(void *buffer, size_t size);
 	} else if (is_recording(__scribe)) {				\
 		scribe_create_insert_point(&__ip, &__scribe->queue->stream); \
 		(dst) = (src);						\
-		__ret = __scribe_buffer_record(__scribe, &__ip,		\
-					&(dst), sizeof(dst));		\
+		if (cond)						\
+			__ret = __scribe_buffer_record(__scribe,	\
+					&__ip, &(dst), sizeof(dst));	\
+		else							\
+			__ret = 0;					\
 		scribe_commit_insert_point(&__ip);			\
 	} else {							\
 		__ret = __scribe_buffer_replay(				\
@@ -717,6 +729,8 @@ extern int scribe_buffer(void *buffer, size_t size);
 	}								\
 	__ret;								\
 })
+
+#define scribe_result(dst, src) scribe_result_cond(dst, src, 1)
 
 #define scribe_value(pval) scribe_buffer(pval, sizeof(*pval))
 

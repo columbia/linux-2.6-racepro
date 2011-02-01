@@ -49,9 +49,7 @@ static int scribe_connect(struct socket *sock, struct sockaddr *vaddr,
 
 	err = scribe_result(
 		ret, sock->real_ops->connect(sock, vaddr, sockaddr_len, flags));
-	if (err)
-		return err;
-	return ret;
+	return err ?: ret;
 }
 
 static int scribe_socketpair(struct socket *sock1, struct socket *sock2)
@@ -67,9 +65,7 @@ static int scribe_accept(struct socket *sock, struct socket *newsock, int flags)
 	/* TODO do we have to do newsock->state SS_CONNECTED ? */
 
 	err = scribe_result(ret, sock->real_ops->accept(sock, newsock, flags));
-	if (err)
-		return err;
-	return ret;
+	return err ?: ret;
 }
 
 static int scribe_getname(struct socket *sock, struct sockaddr *addr,
@@ -176,8 +172,9 @@ static int scribe_sendmsg(struct kiocb *iocb, struct socket *sock,
 
 	scribe_data_need_info();
 
-	err = scribe_result(
-		ret, sock->real_ops->sendmsg(iocb, sock, m, total_len));
+	err = scribe_result_cond(
+		ret, sock->real_ops->sendmsg(iocb, sock, m, total_len),
+		!scribe_is_in_read_write(scribe) || ret > 0);
 	if (err)
 		goto out;
 	if (ret <= 0)
@@ -188,9 +185,7 @@ static int scribe_sendmsg(struct kiocb *iocb, struct socket *sock,
 
 out:
 	scribe_data_pop_flags();
-	if (err)
-		return err;
-	return ret;
+	return err ?: ret;
 }
 
 static int scribe_recvmsg(struct kiocb *iocb, struct socket *sock,
@@ -202,8 +197,9 @@ static int scribe_recvmsg(struct kiocb *iocb, struct socket *sock,
 
 	scribe_data_non_det_need_info();
 
-	err = scribe_result(
-		ret, sock->real_ops->recvmsg(iocb, sock, m, total_len, flags));
+	err = scribe_result_cond(
+		ret, sock->real_ops->recvmsg(iocb, sock, m, total_len, flags),
+		!scribe_is_in_read_write(scribe) || ret > 0);
 	if (err)
 		goto out;
 	if (ret <= 0)
@@ -219,9 +215,7 @@ static int scribe_recvmsg(struct kiocb *iocb, struct socket *sock,
 
 out:
 	scribe_data_pop_flags();
-	if (err)
-		return err;
-	return ret;
+	return err ?: ret;
 }
 
 static int scribe_mmap(struct file *file, struct socket *sock,
