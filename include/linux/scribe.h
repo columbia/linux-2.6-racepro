@@ -396,6 +396,9 @@ extern int scribe_golive_on_next_bookmark(struct scribe_bookmark *bmark);
 /* Resources */
 
 struct scribe_res_user {
+	struct hlist_head pre_alloc_idres;
+	int num_pre_alloc_idres;
+
 	struct list_head pre_alloc_hres;
 	int num_pre_alloc_hres;
 
@@ -447,9 +450,10 @@ extern void scribe_pre_fput(struct file *file);
 extern void scribe_lock_files_read(struct files_struct *files);
 extern void scribe_lock_files_write(struct files_struct *files);
 
-#define SCRIBE_ALL_TASKS (&init_task)
-extern void scribe_lock_task_read(struct task_struct *task);
-extern void scribe_lock_task_write(struct task_struct *task);
+extern void scribe_lock_pid_read(pid_t pid);
+extern void scribe_lock_pid_write(pid_t pid);
+extern void scribe_unlock_pid(pid_t pid);
+extern void scribe_unlock_pid_discard(pid_t pid);
 
 struct ipc_namespace;
 extern void scribe_lock_ipc(struct ipc_namespace *ns);
@@ -598,7 +602,6 @@ static inline int scribe_is_in_read_write(struct scribe_ps *scribe)
 }
 
 
-
 static inline int should_scribe_syscalls(struct scribe_ps *scribe)
 {
 	return scribe->flags & SCRIBE_PS_ENABLE_SYSCALL;
@@ -703,7 +706,12 @@ extern int __scribe_buffer_record(struct scribe_ps *scribe,
 				  const void *data, size_t size);
 extern int __scribe_buffer_replay(struct scribe_ps *scribe,
 				  void *data, size_t size);
-extern int scribe_buffer(void *buffer, size_t size);
+extern int scribe_buffer_at(void *buffer, size_t size,
+			    scribe_insert_point_t *ip);
+static inline int scribe_buffer(void *buffer, size_t size)
+{
+	return scribe_buffer_at(buffer, size, NULL);
+}
 
 #define scribe_result_cond(dst, src, cond)				\
 ({									\
@@ -733,6 +741,8 @@ extern int scribe_buffer(void *buffer, size_t size);
 #define scribe_result(dst, src) scribe_result_cond(dst, src, 1)
 
 #define scribe_value(pval) scribe_buffer(pval, sizeof(*pval))
+#define scribe_value_at(pval, ip) scribe_buffer_at(pval, sizeof(*pval), ip)
+
 
 extern struct scribe_backtrace *scribe_alloc_backtrace(int backtrace_len);
 extern void scribe_free_backtrace(struct scribe_backtrace *bt);

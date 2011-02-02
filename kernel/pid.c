@@ -36,6 +36,7 @@
 #include <linux/pid_namespace.h>
 #include <linux/init_task.h>
 #include <linux/syscalls.h>
+#include <linux/scribe.h>
 
 #define pid_hashfn(nr, ns)	\
 	hash_long((unsigned long)nr + (unsigned long)ns, pidhash_shift)
@@ -283,6 +284,7 @@ struct pid *alloc_pid(struct pid_namespace *ns, pid_t *target_pids)
 	int i, nr;
 	struct pid_namespace *tmp;
 	struct upid *upid;
+	int ret;
 	pid_t tpid;
 
 	pid = kmem_cache_alloc(ns->pid_cachep, GFP_KERNEL);
@@ -297,7 +299,31 @@ struct pid *alloc_pid(struct pid_namespace *ns, pid_t *target_pids)
 		if (target_pids)
 			tpid = target_pids[i];
 
+		/*
+		 * We need to keep the same values of pids from the recording.
+		 * TODO do it for all scribed pid namespaces.
+		 */
+		if (i == ns->level && is_ps_replaying(current)) {
+			ret = scribe_value(&nr);
+			if (ret < 0) {
+				nr = ret;
+				goto out_free;
+			}
+			if (nr < 0)
+				goto out_free;
+			tpid = nr;
+		}
+
 		nr = set_pidmap(tmp, tpid);
+
+		if (i == ns->level && is_ps_recording(current)) {
+			ret = scribe_value(&nr);
+			if (ret < 0) {
+				nr = ret;
+				goto out_free;
+			}
+		}
+
 		if (nr < 0)
 			goto out_free;
 

@@ -721,11 +721,14 @@ static struct task_struct *find_new_reaper(struct task_struct *father)
 	}
 
 	if (unlikely(pid_ns->child_reaper == father)) {
+		pid_t pid = task_pid_vnr(father);
 		write_unlock_irq(&tasklist_lock);
+		scribe_unlock_pid(pid);
 		if (unlikely(pid_ns == &init_pid_ns))
 			panic("Attempted to kill init!");
 
 		zap_pid_ns_processes(pid_ns);
+		scribe_lock_pid_write(pid);
 		write_lock_irq(&tasklist_lock);
 		/*
 		 * We can not clear ->child_reaper or leave it alone.
@@ -809,7 +812,7 @@ static void forget_original_parent(struct task_struct *father)
  * Send signals to all our closest relatives so that they know
  * to properly mourn us..
  */
-static void exit_notify(struct task_struct *tsk, int group_dead)
+static void __exit_notify(struct task_struct *tsk, int group_dead)
 {
 	int signal;
 	void *cookie;
@@ -865,6 +868,28 @@ static void exit_notify(struct task_struct *tsk, int group_dead)
 	if (signal == DEATH_REAP)
 		release_task(tsk);
 }
+
+#ifdef CONFIG_SCRIBE
+static void exit_notify(struct task_struct *tsk, int group_dead)
+{
+	pid_t pid = task_pid_vnr(tsk);
+
+	if (scribe_resource_prepare()) {
+		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		__exit_notify(tsk, group_dead);
+		return;
+	}
+
+	scribe_lock_pid_write(pid);
+	__exit_notify(tsk, group_dead);
+	scribe_unlock_pid(pid);
+}
+#else
+static void exit_notify(struct task_struct *tsk, int group_dead)
+{
+	__exit_notify(tsk, group_dead);
+}
+#endif
 
 #ifdef CONFIG_DEBUG_STACK_USAGE
 static void check_stack_usage(void)
@@ -933,46 +958,8 @@ void exit_scribe(struct task_struct *p)
 	call_rcu(&scribe->rcu, free_rcu_scribe);
 }
 
-static void scribe_exit_notify(struct task_struct *tsk, int group_dead)
-{
-	if (!is_ps_scribed(tsk))
-		goto no_sync;
-
-	if (unlikely(task_active_pid_ns(tsk)->child_reaper == tsk))
-		goto no_sync;
-
-	if (scribe_resource_prepare()) {
-		/*
-		 * FIXME preallocate this lock region in scribe_init() so that
-		 * we cannot fail.
-		 */
-		scribe_emergency_stop(tsk->scribe->ctx, ERR_PTR(-ENOMEM));
-		goto no_sync;
-	}
-
-
-	/*
-	 * We should lock only the parent that will get the SIGCHLD
-	 * signal instead of locking all tasks.
-	 * It's tricky because in reparent_leader(), do_notify_parent() is
-	 * called, so we might have to lock two parents.
-	 * Also all those calls are done with the tasklist locked, and we need
-	 * to sleep to get the resource lock, so would get quite horrible to
-	 * go the "proper" way.
-	 * Instead we'll lock all the tasks (SCRIBE_ALL_TASKS) and be done
-	 * with it.
-	 */
-	scribe_lock_task_write(SCRIBE_ALL_TASKS);
-	exit_notify(tsk, group_dead);
-	scribe_unlock(SCRIBE_ALL_TASKS);
-	return;
-
-no_sync:
-	exit_notify(tsk, group_dead);
-}
 #else
 static void scribe_do_exit(struct task_struct *p, long code) {}
-#define scribe_exit_notify exit_notify
 #endif
 
 NORET_TYPE void do_exit(long code)
@@ -1081,7 +1068,7 @@ NORET_TYPE void do_exit(long code)
 	 */
 	perf_event_exit_task(tsk);
 
-	scribe_exit_notify(tsk, group_dead);
+	exit_notify(tsk, group_dead);
 
 	scribe_do_exit(tsk, code);
 #ifdef CONFIG_NUMA
@@ -1188,6 +1175,7 @@ struct wait_opts {
 	enum pid_type		wo_type;
 	int			wo_flags;
 	struct pid		*wo_pid;
+	pid_t			wo_scribe_pid;
 
 	struct siginfo __user	*wo_info;
 	int __user		*wo_stat;
@@ -1583,8 +1571,8 @@ static int wait_task_continued(struct wait_opts *wo, struct task_struct *p)
  * then ->notask_error is 0 if @p is an eligible child,
  * or another error from security_task_wait(), or still -ECHILD.
  */
-static int wait_consider_task(struct wait_opts *wo, int ptrace,
-				struct task_struct *p)
+static int pre_wait_consider_task(struct wait_opts *wo, int ptrace,
+				  struct task_struct *p)
 {
 	int ret = eligible_child(wo, p);
 	if (!ret)
@@ -1616,6 +1604,30 @@ static int wait_consider_task(struct wait_opts *wo, int ptrace,
 	if (p->exit_state == EXIT_DEAD)
 		return 0;
 
+	wo->notask_error = 0;
+
+	if (p->exit_state == EXIT_ZOMBIE && !delay_group_leader(p))
+		return 1;
+
+	if (task_stopped_code(p, ptrace)) {
+		if (ptrace || (wo->wo_flags & WUNTRACED))
+			return 1;
+	}
+
+	if (unlikely(wo->wo_flags & WCONTINUED))
+		return 1;
+
+	if (p->signal->flags & SIGNAL_STOP_CONTINUED)
+		return 1;
+
+	return 0;
+}
+
+static int post_wait_consider_task(struct wait_opts *wo, int ptrace,
+				   struct task_struct *p)
+{
+	/* pre_wait_consider_task() must have returned 1 */
+
 	/*
 	 * We don't reap group leaders with subthreads.
 	 */
@@ -1626,14 +1638,75 @@ static int wait_consider_task(struct wait_opts *wo, int ptrace,
 	 * It's stopped or running now, so it might
 	 * later continue, exit, or stop again.
 	 */
-	wo->notask_error = 0;
-
 	if (task_stopped_code(p, ptrace))
 		return wait_task_stopped(wo, ptrace, p);
 
 	return wait_task_continued(wo, p);
 }
 
+#ifdef CONFIG_SCRIBE
+static int wait_consider_task(struct wait_opts *wo, int ptrace,
+			      struct task_struct *p)
+{
+	struct scribe_ps *scribe = current->scribe;
+	pid_t pid;
+	int ret;
+
+	if (!pre_wait_consider_task(wo, ptrace, p))
+		return 0;
+
+	/* This task is interesting :) */
+
+	if (!is_recording(scribe)) {
+		/* if we are replaying, the task is already locked */
+		return post_wait_consider_task(wo, ptrace, p);
+	}
+
+	get_task_struct(p);
+	read_unlock(&tasklist_lock);
+
+	/*
+	 * scribe_lock() might sleep, and do_wait() set the status to
+	 * interruptible
+	 */
+	__set_current_state(TASK_RUNNING);
+
+	/*
+	 * From now on, we'll have to return -EAGAIN because we dropped the
+	 * lock.
+	 */
+	pid = task_pid_vnr(p);
+	if (unlikely(wo->wo_flags & WNOWAIT))
+		scribe_lock_pid_read(pid);
+	else
+		scribe_lock_pid_write(pid);
+
+	read_lock(&tasklist_lock);
+	put_task_struct(p);
+
+	if (!pre_wait_consider_task(wo, ptrace, p))
+		goto again;
+	ret = post_wait_consider_task(wo, ptrace, p);
+	if (!ret && ret != -EFAULT)
+		goto again;
+
+	wo->wo_scribe_pid = pid;
+	scribe_unlock_pid(pid);
+	return ret;
+
+again:
+	scribe_unlock_pid_discard(pid);
+	return -EAGAIN;
+}
+#else
+static int wait_consider_task(struct wait_opts *wo, int ptrace,
+			      struct task_struct *p)
+{
+	if (!pre_wait_consider_task(wo, ptrace, p))
+		return 0;
+	return post_wait_consider_task(wo, ptrace, p);
+}
+#endif /* CONFIG_SCRIBE */
 /*
  * Do the work of do_wait() for one thread in the group, @tsk.
  *
@@ -1696,22 +1769,12 @@ static long do_wait(struct wait_opts *wo)
 	struct task_struct *tsk;
 	int retval;
 
-	if (scribe_resource_prepare()) {
-		/*
-		 * We're not really allowed to return -ENOMEM, so we'll do an
-		 * emergency stop :(
-		 */
-		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
-		return -ENOMEM;
-	}
-
 	trace_sched_process_wait(wo->wo_pid);
 
 	init_waitqueue_func_entry(&wo->child_wait, child_wait_callback);
 	wo->child_wait.private = current;
 	add_wait_queue(&current->signal->wait_chldexit, &wo->child_wait);
 repeat:
-	scribe_lock_task_write(SCRIBE_ALL_TASKS);
 	/*
 	 * If there is nothing that can match our critiera just get out.
 	 * We will clear ->notask_error to zero if we see any child that
@@ -1719,21 +1782,41 @@ repeat:
 	 * it yet.
 	 */
 	wo->notask_error = -ECHILD;
+	if ((wo->wo_type < PIDTYPE_MAX) && !wo->wo_pid)
+		goto notask;
+
+	if (is_ps_replaying(current)) {
+		/* The task might have to get reparented, so we wait */
+		wo->notask_error = 0;
+	}
+
+	/*
+	 * Scribe: we cannot read the hlist_empty() value because we are not
+	 * synchronizing on the pid. So we're skipping that optimization.
+	 */
 	if ((wo->wo_type < PIDTYPE_MAX) &&
-	   (!wo->wo_pid || hlist_empty(&wo->wo_pid->tasks[wo->wo_type])))
+	    hlist_empty(&wo->wo_pid->tasks[wo->wo_type]) &&
+	    !is_ps_scribed(current))
 		goto notask;
 
 	set_current_state(TASK_INTERRUPTIBLE);
 	read_lock(&tasklist_lock);
+again:
 	tsk = current;
 	do {
 		retval = do_wait_thread(wo, tsk);
-		if (retval)
+		if (retval) {
+			if (retval == -EAGAIN)
+				goto again;
 			goto end;
+		}
 
 		retval = ptrace_do_wait(wo, tsk);
-		if (retval)
+		if (retval) {
+			if (retval == -EAGAIN)
+				goto again;
 			goto end;
+		}
 
 		if (wo->wo_flags & __WNOTHREAD)
 			break;
@@ -1745,13 +1828,11 @@ notask:
 	if (!retval && !(wo->wo_flags & WNOHANG)) {
 		retval = -ERESTARTSYS;
 		if (!signal_pending(current)) {
-			scribe_unlock_discard(SCRIBE_ALL_TASKS);
 			schedule();
 			goto repeat;
 		}
 	}
 end:
-	scribe_unlock(SCRIBE_ALL_TASKS);
 	__set_current_state(TASK_RUNNING);
 	remove_wait_queue(&current->signal->wait_chldexit, &wo->child_wait);
 	return retval;
@@ -1831,6 +1912,9 @@ SYSCALL_DEFINE5(waitid, int, which, pid_t, upid, struct siginfo __user *,
 SYSCALL_DEFINE4(wait4, pid_t, upid, int __user *, stat_addr,
 		int, options, struct rusage __user *, ru)
 {
+	struct scribe_ps *scribe = current->scribe;
+	scribe_insert_point_t scribe_ip;
+
 	struct wait_opts wo;
 	struct pid *pid = NULL;
 	enum pid_type type;
@@ -1839,6 +1923,34 @@ SYSCALL_DEFINE4(wait4, pid_t, upid, int __user *, stat_addr,
 	if (options & ~(WNOHANG|WUNTRACED|WCONTINUED|
 			__WNOTHREAD|__WCLONE|__WALL))
 		return -EINVAL;
+
+	if (scribe_resource_prepare()) {
+		/*
+		 * We're not really allowed to return -ENOMEM, so we'll do an
+		 * emergency stop :(
+		 */
+		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		return -ENOMEM;
+	}
+
+	if (is_recording(scribe)) {
+		/* We'll save the pid right here */
+		scribe_create_insert_point(&scribe_ip, &scribe->queue->stream);
+	} else if (is_replaying(scribe)) {
+		ret = scribe_value(&upid);
+		if (ret)
+			return ret;
+		if (upid == -ECHILD) {
+			if (signal_pending(current))
+				return -ERESTARTSYS;
+			return -ECHILD;
+		}
+
+		if (unlikely(options & WNOWAIT))
+			scribe_lock_pid_read(upid);
+		else
+			scribe_lock_pid_write(upid);
+	}
 
 	if (upid == -1)
 		type = PIDTYPE_MAX;
@@ -1855,12 +1967,20 @@ SYSCALL_DEFINE4(wait4, pid_t, upid, int __user *, stat_addr,
 
 	wo.wo_type	= type;
 	wo.wo_pid	= pid;
+	wo.wo_scribe_pid = -ECHILD;
 	wo.wo_flags	= options | WEXITED;
 	wo.wo_info	= NULL;
 	wo.wo_stat	= stat_addr;
 	wo.wo_rusage	= ru;
 	ret = do_wait(&wo);
 	put_pid(pid);
+
+	if (is_recording(scribe)) {
+		if (scribe_value_at(&wo.wo_scribe_pid, &scribe_ip))
+			scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
+		scribe_commit_insert_point(&scribe_ip);
+	} else if (is_replaying(scribe))
+		scribe_unlock_pid(upid);
 
 	/* avoid REGPARM breakage on x86: */
 	asmlinkage_protect(4, ret, upid, stat_addr, options, ru);

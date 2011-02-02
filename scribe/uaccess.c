@@ -640,17 +640,18 @@ int __scribe_buffer_replay(struct scribe_ps *scribe, void *data, size_t size)
 	return 0;
 }
 
-int scribe_buffer(void *buffer, size_t size)
+int scribe_buffer_at(void *buffer, size_t size, scribe_insert_point_t *ip)
 {
 	struct scribe_ps *scribe = current->scribe;
 
 	if (!is_scribed(scribe) || !should_scribe_data(scribe))
 		return 0;
 
-	if (is_recording(scribe))
-		return __scribe_buffer_record(scribe,
-				&scribe->queue->stream.master, buffer, size);
-	else
+	if (is_recording(scribe)) {
+		if (!ip)
+			ip = &scribe->queue->stream.master;
+		return __scribe_buffer_record(scribe, ip, buffer, size);
+	} else
 		return __scribe_buffer_replay(scribe, buffer, size);
 }
 

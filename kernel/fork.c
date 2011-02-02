@@ -1263,10 +1263,7 @@ static struct task_struct *copy_process(unsigned long long clone_flags,
 		if (retval)
 			goto bad_fork_cleanup_scribe;
 
-		scribe_lock_task_write(SCRIBE_ALL_TASKS);
 		pid = alloc_pid(p->nsproxy->pid_ns, target_pids);
-		scribe_unlock(SCRIBE_ALL_TASKS);
-
 		if (IS_ERR(pid)) {
 			retval = PTR_ERR(pid);
 			goto bad_fork_cleanup_scribe;
@@ -1338,6 +1335,13 @@ static struct task_struct *copy_process(unsigned long long clone_flags,
 	cgroup_fork_callbacks(p);
 	cgroup_callbacks_done = 1;
 
+	if (is_ps_replaying(current)) {
+		if (current->scribe->orig_ret == -ERESTARTNOINTR)
+			goto bad_fork_free_pid;
+	}
+
+	scribe_lock_pid_write(pid->numbers[pid->level].nr);
+
 	/* Need tasklist lock for parent etc handling! */
 	write_lock_irq(&tasklist_lock);
 
@@ -1352,11 +1356,6 @@ static struct task_struct *copy_process(unsigned long long clone_flags,
 
 	spin_lock(&current->sighand->siglock);
 
-	if (is_ps_replaying(current)) {
-		if (current->scribe->orig_ret != -ERESTARTNOINTR)
-			goto skip_signaling;
-	}
-
 	/*
 	 * Process group and session signals need to be delivered to just the
 	 * parent before the fork or both the parent and the child after the
@@ -1369,10 +1368,10 @@ static struct task_struct *copy_process(unsigned long long clone_flags,
 	if (signal_pending(current)) {
 		spin_unlock(&current->sighand->siglock);
 		write_unlock_irq(&tasklist_lock);
+		scribe_unlock_pid_discard(pid->numbers[pid->level].nr);
 		retval = -ERESTARTNOINTR;
 		goto bad_fork_free_pid;
 	}
-skip_signaling:
 
 	if (clone_flags & CLONE_THREAD) {
 		current->signal->nr_threads++;
@@ -1404,6 +1403,7 @@ skip_signaling:
 	total_forks++;
 	spin_unlock(&current->sighand->siglock);
 	write_unlock_irq(&tasklist_lock);
+	scribe_unlock_pid(pid->numbers[pid->level].nr);
 
 #ifdef CONFIG_SCRIBE
 	if (p->scribe) {

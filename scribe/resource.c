@@ -56,9 +56,112 @@ static inline int should_handle_resources(struct scribe_ps *scribe)
 	return should_scribe_resources(scribe);
 }
 
-struct scribe_resources {
-	struct scribe_resource tasks_res;
+#define SCRIBE_ID_RES_HASH_BITS	10
+#define SCRIBE_ID_RES_HASH_SIZE	(1 << SCRIBE_ID_RES_HASH_BITS)
 
+/*
+ * On demand mapping @id -> @resource. The resources are persistent.
+ * The @id is different from the resource id:
+ * e.g. we want to map a pid to a resource, but that resource may have a
+ * totally different id.
+ */
+struct scribe_res_map {
+	spinlock_t lock;
+	int res_type;
+	struct hlist_head hash[SCRIBE_ID_RES_HASH_SIZE];
+};
+
+struct scribe_idres {
+	struct scribe_res_map *map;
+	int id;
+	struct hlist_node node;
+	struct scribe_resource res;
+	struct rcu_head rcu;
+};
+
+static void scribe_init_res_map(struct scribe_res_map *map, int res_type)
+{
+	int i;
+	spin_lock_init(&map->lock);
+	map->res_type = res_type;
+	for (i = 0; i < SCRIBE_ID_RES_HASH_SIZE; i++)
+		INIT_HLIST_HEAD(&map->hash[i]);
+}
+
+static inline unsigned long idres_hashfn(int id)
+{
+	return hash_long(id, SCRIBE_ID_RES_HASH_BITS);
+}
+
+static struct scribe_idres *__find_idres(struct hlist_head *head, int id)
+{
+	struct scribe_idres *idres;
+	struct hlist_node *node;
+
+	hlist_for_each_entry_rcu(idres, node, head, node) {
+		if (idres->id == id)
+			return idres;
+	}
+	return NULL;
+}
+
+static struct scribe_idres *get_pre_alloc_idres(struct scribe_res_user *user);
+
+/*
+ * XXX get_mapped_res() must be followed by __lock_object() to add the
+ * resource into the tracked resources (and thus allowing it to be removed)
+ */
+static struct scribe_idres *get_mapped_res(struct scribe_res_map *map, int id,
+					   struct scribe_res_user *user)
+{
+	struct scribe_idres *idres;
+	struct hlist_head *head;
+
+	head = &map->hash[idres_hashfn(id)];
+
+	rcu_read_lock();
+	idres = __find_idres(head, id);
+	rcu_read_unlock();
+
+	if (idres)
+		return idres;
+
+	spin_lock(&map->lock);
+	idres = __find_idres(head, id);
+	if (unlikely(idres)) {
+		spin_unlock(&map->lock);
+		return idres;
+	}
+
+	idres = get_pre_alloc_idres(user);
+	idres->map = map;
+	idres->id = id;
+	scribe_init_resource(&idres->res, map->res_type);
+
+	hlist_add_head_rcu(&idres->node, head);
+	spin_unlock(&map->lock);
+
+	return idres;
+}
+
+static void free_rcu_idres(struct rcu_head *rcu)
+{
+	struct scribe_idres *idres;
+	idres = container_of(rcu, struct scribe_idres, rcu);
+	kfree(idres);
+}
+
+static void remove_idres(struct scribe_idres *idres)
+{
+	struct scribe_res_map *map = idres->map;
+
+	spin_lock(&map->lock);
+	hlist_del_rcu(&idres->node);
+	spin_unlock(&map->lock);
+	call_rcu(&idres->rcu, free_rcu_idres);
+}
+
+struct scribe_resources {
 	/*
 	 * Only resources with a potentially > serial will be in that list.
 	 * In other words, only used resources are kept in that list.
@@ -66,6 +169,8 @@ struct scribe_resources {
 	spinlock_t lock;
 	int next_id;
 	struct list_head tracked;
+
+	struct scribe_res_map pid_map;
 };
 
 struct scribe_resources *scribe_alloc_resources(void)
@@ -80,10 +185,11 @@ struct scribe_resources *scribe_alloc_resources(void)
 	resources->next_id = 0;
 	INIT_LIST_HEAD(&resources->tracked);
 
-	scribe_init_resource(&resources->tasks_res, SCRIBE_RES_TYPE_TASK);
+	scribe_init_res_map(&resources->pid_map, SCRIBE_RES_TYPE_PID);
 
 	return resources;
 }
+
 
 struct scribe_resource_handle {
 	struct scribe_handle handle;
@@ -103,9 +209,17 @@ void scribe_init_resource(struct scribe_resource *res, int type)
 	res->serial = 0;
 }
 
+static int on_reset_idres(struct scribe_context *ctx,
+			  struct scribe_resource *res)
+{
+	struct scribe_idres *idres;
+	idres = container_of(res, struct scribe_idres, res);
+	remove_idres(idres);
+	return 0;
+}
 
 static int on_reset_hres(struct scribe_context *ctx,
-			  struct scribe_resource *res)
+			 struct scribe_resource *res)
 {
 	struct scribe_resource_handle *hres;
 	hres = container_of(res, struct scribe_resource_handle, res);
@@ -135,7 +249,7 @@ static void on_create_res_inode(struct scribe_resource *res)
 }
 
 static int on_reset_res_inode(struct scribe_context *ctx,
-			       struct scribe_resource *res)
+			      struct scribe_resource *res)
 {
 	struct inode *inode = __get_inode_from_res(res);
 	on_reset_hres(ctx, res);
@@ -166,6 +280,9 @@ static void track_resource(struct scribe_context *ctx,
 		break;
 	case SCRIBE_RES_TYPE_FUTEX:
 		on_reset = on_reset_hres;
+		break;
+	case SCRIBE_RES_TYPE_PID:
+		on_reset = on_reset_idres;
 		break;
 	}
 
@@ -347,6 +464,8 @@ static void free_lock_region(struct scribe_lock_region *lock_region)
 
 void scribe_resource_init_user(struct scribe_res_user *user)
 {
+	INIT_HLIST_HEAD(&user->pre_alloc_idres);
+	user->num_pre_alloc_idres = 0;
 	INIT_LIST_HEAD(&user->pre_alloc_hres);
 	user->num_pre_alloc_hres = 0;
 	INIT_LIST_HEAD(&user->pre_alloc_regions);
@@ -364,8 +483,18 @@ void scribe_resource_init_user(struct scribe_res_user *user)
 int scribe_resource_pre_alloc(struct scribe_res_user *user,
 			      int doing_recording, int res_extra)
 {
+	struct scribe_idres *idres;
 	struct scribe_lock_region *lock_region;
 	struct scribe_resource_handle *hres;
+
+	while (user->num_pre_alloc_idres < MAX_PRE_ALLOC) {
+		idres = kmalloc(sizeof(*idres), GFP_KERNEL);
+		if (!idres)
+			return -ENOMEM;
+
+		hlist_add_head(&idres->node, &user->pre_alloc_idres);
+		user->num_pre_alloc_idres++;
+	}
 
 	while (user->num_pre_alloc_hres < MAX_PRE_ALLOC) {
 		hres = kmalloc(sizeof(*hres), GFP_KERNEL);
@@ -411,11 +540,19 @@ int scribe_resource_prepare(void)
 
 void scribe_resource_exit_user(struct scribe_res_user *user)
 {
+	struct scribe_idres *idres;
+	struct hlist_node *tmp1, *tmp2;
 	struct scribe_lock_region *lockr, *ltmp;
 	struct scribe_resource_handle *hres, *htmp;
 
 	WARN(!list_empty(&user->locked_regions),
 	     "Some regions are left unlocked\n");
+
+	hlist_for_each_entry_safe(idres, tmp1, tmp2,
+				 &user->pre_alloc_idres, node) {
+		hlist_del(&idres->node);
+		kfree(idres);
+	}
 
 	list_for_each_entry_safe(hres, htmp,
 				 &user->pre_alloc_hres, handle.node) {
@@ -430,18 +567,39 @@ void scribe_resource_exit_user(struct scribe_res_user *user)
 	}
 }
 
+static struct scribe_idres *get_pre_alloc_idres(struct scribe_res_user *user)
+{
+	struct scribe_idres *idres;
+	BUG_ON(hlist_empty(&user->pre_alloc_idres));
+	idres = hlist_entry(user->pre_alloc_idres.first,
+			    struct scribe_idres, node);
+	hlist_del(&idres->node);
+	user->num_pre_alloc_idres--;
+	return idres;
+}
+
 static struct scribe_resource_handle *get_pre_alloc_hres(
 						struct scribe_res_user *user)
 {
 	struct scribe_resource_handle *hres;
-
 	BUG_ON(list_empty(&user->pre_alloc_hres));
 	hres = list_first_entry(&user->pre_alloc_hres,
 				struct scribe_resource_handle, handle.node);
 	list_del(&hres->handle.node);
 	user->num_pre_alloc_hres--;
-
 	return hres;
+}
+
+static struct scribe_lock_region *get_pre_alloc_lock_region(
+						struct scribe_res_user *user)
+{
+	struct scribe_lock_region *lock_region;
+	BUG_ON(list_empty(&user->pre_alloc_regions));
+	lock_region = list_first_entry(&user->pre_alloc_regions,
+				       struct scribe_lock_region, node);
+	list_del(&lock_region->node);
+	user->num_pre_alloc_regions--;
+	return lock_region;
 }
 
 static bool is_locking_necessary(struct scribe_ps *scribe,
@@ -468,7 +626,7 @@ static bool is_locking_necessary(struct scribe_ps *scribe,
 	 * The only resource we need for the init process is the task one.
 	 * Forcing the synchronization on it is an easy way to avoid races
 	 */
-	if (res->type == SCRIBE_RES_TYPE_TASK)
+	if (res->type == SCRIBE_RES_TYPE_PID)
 		return true;
 
 	return false;
@@ -781,19 +939,6 @@ static void do_unlock_discard(struct scribe_ps *scribe,
 	}
 }
 
-static inline struct scribe_lock_region *get_pre_alloc_lock_region(
-						struct scribe_res_user *user)
-{
-	struct scribe_lock_region *lock_region;
-
-	BUG_ON(list_empty(&user->pre_alloc_regions));
-	lock_region = list_first_entry(&user->pre_alloc_regions,
-				       struct scribe_lock_region, node);
-	list_del(&lock_region->node);
-	user->num_pre_alloc_regions--;
-	return lock_region;
-}
-
 /* Will always succeed if (@flags & SCRIBE_INTERRUPTIBLE) is not set */
 static int __lock_object(struct scribe_ps *scribe,
 			 void *object, struct scribe_resource *res, int flags)
@@ -828,6 +973,24 @@ void scribe_lock_object(void *object, struct scribe_resource *res, int flags)
 		return;
 
 	__lock_object(scribe, object, res, flags);
+}
+
+static int __lock_id(struct scribe_ps *scribe,
+		     struct scribe_res_map *map, int id, int flags)
+{
+	struct scribe_idres *idres;
+	idres = get_mapped_res(map, id, &scribe->resources);
+
+	/*
+	 * FIXME We need an object to be able to find the lock region in
+	 * scribe_unlock(), and unlock the resource.
+	 * Unfortunately, we only have an id, no unique pointer.
+	 * We'll cast the id to a pointer, but this is limiting:
+	 * we cannot lock the same id from two different maps at the same
+	 * time. For now this is not a problem.
+	 */
+
+	return __lock_object(scribe, (void *)id, &idres->res, flags);
 }
 
 static void free_resource_handle(struct scribe_handle *handle)
@@ -1210,25 +1373,34 @@ void scribe_lock_files_write(struct files_struct *files)
 	lock_files(files, SCRIBE_WRITE);
 }
 
-static void lock_task(struct task_struct *task, int flags)
+static void lock_pid(pid_t pid, int flags)
 {
 	struct scribe_ps *scribe = current->scribe;
 
 	if (!should_handle_resources(scribe))
 		return;
 
-	/* For now all the tasks are synchronized on the same resource */
-	__lock_object(scribe, task, &scribe->ctx->resources->tasks_res, flags);
+	__lock_id(scribe, &scribe->ctx->resources->pid_map, pid, flags);
 }
 
-void scribe_lock_task_read(struct task_struct *task)
+void scribe_lock_pid_read(pid_t pid)
 {
-	lock_task(task, SCRIBE_READ);
+	lock_pid(pid, SCRIBE_READ);
 }
 
-void scribe_lock_task_write(struct task_struct *task)
+void scribe_lock_pid_write(pid_t pid)
 {
-	lock_task(task, SCRIBE_WRITE);
+	lock_pid(pid, SCRIBE_WRITE);
+}
+
+void scribe_unlock_pid(pid_t pid)
+{
+	scribe_unlock((void*)pid);
+}
+
+void scribe_unlock_pid_discard(pid_t pid)
+{
+	scribe_unlock_discard((void*)pid);
 }
 
 void scribe_lock_ipc(struct ipc_namespace *ns)
