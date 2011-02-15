@@ -689,6 +689,8 @@ static void do_unlock_record(struct scribe_ps *scribe,
 		lock_region->unlock_event = NULL;
 
 		lock_event->type = res->type;
+		lock_event->write_access = !!(lock_region->flags &
+					      SCRIBE_WRITE);
 		lock_event->id = res->id;
 		lock_event->serial = serial;
 		scribe_queue_event_at(&lock_region->ip, lock_event);
