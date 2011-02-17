@@ -159,6 +159,7 @@ static int filldir(void * __buf, const char * name, int namlen, loff_t offset,
 	struct getdents_callback * buf = (struct getdents_callback *) __buf;
 	unsigned long d_ino;
 	int reclen = ALIGN(NAME_OFFSET(dirent) + namlen + 2, sizeof(long));
+	int ret;
 
 	buf->error = -EINVAL;	/* only used if we fail.. */
 	if (reclen > buf->count)
@@ -174,8 +175,13 @@ static int filldir(void * __buf, const char * name, int namlen, loff_t offset,
 			goto efault;
 	}
 	dirent = buf->current_dir;
-	if (__put_user(d_ino, &dirent->d_ino))
+
+	scribe_data_non_det();
+	ret = __put_user(d_ino, &dirent->d_ino);
+	scribe_data_pop_flags();
+	if (ret)
 		goto efault;
+
 	if (__put_user(reclen, &dirent->d_reclen))
 		goto efault;
 	if (copy_to_user(dirent->d_name, name, namlen))
