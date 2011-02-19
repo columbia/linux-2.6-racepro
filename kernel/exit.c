@@ -1846,6 +1846,12 @@ SYSCALL_DEFINE5(waitid, int, which, pid_t, upid, struct siginfo __user *,
 	enum pid_type type;
 	long ret;
 
+	if (is_ps_scribed(current)) {
+		/* Not implemented yet */
+		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOSYS));
+		return -ENOSYS;
+	}
+
 	if (options & ~(WNOHANG|WNOWAIT|WEXITED|WSTOPPED|WCONTINUED))
 		return -EINVAL;
 	if (!(options & (WEXITED|WSTOPPED|WCONTINUED)))
