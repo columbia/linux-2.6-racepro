@@ -289,6 +289,7 @@ void scribe_emergency_stop(struct scribe_context *ctx,
 		 * gone, and the task is waiting on a resource in do_exit()
 		 * during the replay. wake_up_process() is necessary in that
 		 * case.
+		 * It may also fail because the init process is unkillable.
 		 */
 		wake_up_process(scribe->p);
 	}

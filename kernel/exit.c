@@ -1175,7 +1175,7 @@ struct wait_opts {
 	enum pid_type		wo_type;
 	int			wo_flags;
 	struct pid		*wo_pid;
-	pid_t			wo_scribe_pid;
+	pid_t			wo_scribe_target_pid;
 
 	struct siginfo __user	*wo_info;
 	int __user		*wo_stat;
@@ -1690,7 +1690,7 @@ static int wait_consider_task(struct wait_opts *wo, int ptrace,
 	if (!ret && ret != -EFAULT)
 		goto again;
 
-	wo->wo_scribe_pid = pid;
+	wo->wo_scribe_target_pid = pid;
 	scribe_unlock_pid(pid);
 	return ret;
 
@@ -1766,6 +1766,7 @@ void __wake_up_parent(struct task_struct *p, struct task_struct *parent)
 
 static long do_wait(struct wait_opts *wo)
 {
+	struct scribe_ps *scribe = current->scribe;
 	struct task_struct *tsk;
 	int retval;
 
@@ -1785,7 +1786,7 @@ repeat:
 	if ((wo->wo_type < PIDTYPE_MAX) && !wo->wo_pid)
 		goto notask;
 
-	if (is_ps_replaying(current)) {
+	if (is_replaying(scribe) && scribe->ctx->flags != SCRIBE_IDLE) {
 		/* The task might have to get reparented, so we wait */
 		wo->notask_error = 0;
 	}
@@ -1796,7 +1797,7 @@ repeat:
 	 */
 	if ((wo->wo_type < PIDTYPE_MAX) &&
 	    hlist_empty(&wo->wo_pid->tasks[wo->wo_type]) &&
-	    !is_ps_scribed(current))
+	    !is_scribed(scribe))
 		goto notask;
 
 	set_current_state(TASK_INTERRUPTIBLE);
@@ -1827,7 +1828,14 @@ notask:
 	retval = wo->notask_error;
 	if (!retval && !(wo->wo_flags & WNOHANG)) {
 		retval = -ERESTARTSYS;
-		if (!signal_pending(current)) {
+		/*
+		 * Scribe: the init process is not killable. Since we may hold
+		 * a scribe lock, the target pid won't be able to exit.
+		 * We'll have a deadlock.
+		 */
+		if (!signal_pending(current) &&
+		    !(is_replaying(scribe) &&
+		      scribe->ctx->flags == SCRIBE_IDLE)) {
 			schedule();
 			goto repeat;
 		}
@@ -1920,6 +1928,7 @@ SYSCALL_DEFINE4(wait4, pid_t, upid, int __user *, stat_addr,
 {
 	struct scribe_ps *scribe = current->scribe;
 	scribe_insert_point_t scribe_ip;
+	bool scribe_locked = false;
 
 	struct wait_opts wo;
 	struct pid *pid = NULL;
@@ -1933,24 +1942,27 @@ SYSCALL_DEFINE4(wait4, pid_t, upid, int __user *, stat_addr,
 	if (scribe_resource_prepare()) {
 		/*
 		 * We're not really allowed to return -ENOMEM, so we'll do an
-		 * emergency stop :(
+		 * emergency stop.
+		 * We don't return an error because reaping children is
+		 * important (zap_pid_ns_processes())
 		 */
 		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
-		return -ENOMEM;
 	}
 
 	if (is_recording(scribe)) {
 		/* We'll save the pid right here */
 		scribe_create_insert_point(&scribe_ip, &scribe->queue->stream);
-	} else if (is_replaying(scribe)) {
+	} else if (is_replaying(scribe) && scribe->ctx->flags != SCRIBE_IDLE) {
 		ret = scribe_value(&upid);
 		if (ret)
 			return ret;
-		if (upid == -ECHILD) {
+		if (!upid) {
 			if (signal_pending(current))
 				return -ERESTARTSYS;
 			return -ECHILD;
 		}
+
+		scribe_locked = true;
 
 		if (unlikely(options & WNOWAIT))
 			scribe_lock_pid_read(upid);
@@ -1973,7 +1985,7 @@ SYSCALL_DEFINE4(wait4, pid_t, upid, int __user *, stat_addr,
 
 	wo.wo_type	= type;
 	wo.wo_pid	= pid;
-	wo.wo_scribe_pid = -ECHILD;
+	wo.wo_scribe_target_pid = 0;
 	wo.wo_flags	= options | WEXITED;
 	wo.wo_info	= NULL;
 	wo.wo_stat	= stat_addr;
@@ -1982,10 +1994,10 @@ SYSCALL_DEFINE4(wait4, pid_t, upid, int __user *, stat_addr,
 	put_pid(pid);
 
 	if (is_recording(scribe)) {
-		if (scribe_value_at(&wo.wo_scribe_pid, &scribe_ip))
+		if (scribe_value_at(&wo.wo_scribe_target_pid, &scribe_ip))
 			scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
 		scribe_commit_insert_point(&scribe_ip);
-	} else if (is_replaying(scribe))
+	} else if (is_replaying(scribe) && scribe_locked)
 		scribe_unlock_pid(upid);
 
 	/* avoid REGPARM breakage on x86: */
