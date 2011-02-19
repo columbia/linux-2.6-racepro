@@ -2267,7 +2267,9 @@ void exit_mmap(struct mm_struct *mm)
 	while (vma)
 		vma = remove_vma(vma);
 
+#ifndef CONFIG_SCRIBE
 	BUG_ON(mm->nr_ptes > (FIRST_USER_ADDRESS+PMD_SIZE-1)>>PMD_SHIFT);
+#endif
 }
 
 /* Insert vm structure into process list sorted by address
