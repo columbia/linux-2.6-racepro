@@ -40,7 +40,7 @@ Installing Scribe
 
 - GCC and its friends
 - CMake
-- Python 3 (**Make sure you are using Python 3, not 2**)
+- Python
 - Cython (**At least version 0.13**)
 
 ### Instructions:
