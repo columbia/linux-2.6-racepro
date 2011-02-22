@@ -12,10 +12,12 @@
 #include <linux/shm.h>
 #include <linux/syscalls.h>
 #include <linux/uaccess.h>
+#include <linux/scribe.h>
 
 SYSCALL_DEFINE6(ipc, unsigned int, call, int, first, unsigned long, second,
 		unsigned long, third, void __user *, ptr, long, fifth)
 {
+	struct ipc_namespace *ns;
 	int version, ret;
 
 	version = call >> 16; /* hack for backward compatibility */
@@ -72,8 +74,16 @@ SYSCALL_DEFINE6(ipc, unsigned int, call, int, first, unsigned long, second,
 		switch (version) {
 		default: {
 			unsigned long raddr;
+
+			if (scribe_resource_prepare())
+				return -ENOMEM;
+
+			ns = current->nsproxy->ipc_ns;
+			scribe_lock_ipc(ns);
+
 			ret = do_shmat(first, (char __user *)ptr,
 				       second, &raddr);
+			scribe_unlock(ns);
 			if (ret)
 				return ret;
 			return put_user(raddr, (unsigned long __user *) third);
