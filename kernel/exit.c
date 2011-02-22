@@ -1933,7 +1933,7 @@ SYSCALL_DEFINE4(wait4, pid_t, upid, int __user *, stat_addr,
 	struct wait_opts wo;
 	struct pid *pid = NULL;
 	enum pid_type type;
-	long ret;
+	long ret, orig_ret;
 
 	if (options & ~(WNOHANG|WUNTRACED|WCONTINUED|
 			__WNOTHREAD|__WCLONE|__WALL))
@@ -1957,9 +1957,14 @@ SYSCALL_DEFINE4(wait4, pid_t, upid, int __user *, stat_addr,
 		if (ret)
 			return ret;
 		if (!upid) {
-			if (signal_pending(current))
-				return -ERESTARTSYS;
-			return -ECHILD;
+			/*
+			 * We don't use scribe->orig_ret because
+			 * zap_pid_ns_processes() calls sys_wait().
+			 */
+			ret = scribe_value(&orig_ret);
+			if (ret)
+				return ret;
+			return orig_ret;
 		}
 
 		scribe_locked = true;
@@ -1994,8 +1999,11 @@ SYSCALL_DEFINE4(wait4, pid_t, upid, int __user *, stat_addr,
 	put_pid(pid);
 
 	if (is_recording(scribe)) {
-		if (scribe_value_at(&wo.wo_scribe_target_pid, &scribe_ip))
+		if (scribe_value_at(&wo.wo_scribe_target_pid, &scribe_ip) ||
+		    (!wo.wo_scribe_target_pid &&
+		     scribe_value_at(&ret, &scribe_ip)))
 			scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
+
 		scribe_commit_insert_point(&scribe_ip);
 	} else if (is_replaying(scribe) && scribe_locked)
 		scribe_unlock_pid(upid);
