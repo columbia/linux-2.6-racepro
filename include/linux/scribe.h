@@ -353,6 +353,7 @@ extern void scribe_exit_context(struct scribe_context *ctx);
 extern int scribe_start(struct scribe_context *ctx, unsigned long flags,
 			int backtrace_len);
 extern int scribe_stop(struct scribe_context *ctx);
+extern int scribe_check_deadlock(struct scribe_context *ctx);
 extern void scribe_wake_all_fake_sig(struct scribe_context *ctx);
 
 #define scribe_get_diverge_event(sp, _type)				\

@@ -93,6 +93,8 @@ static int handle_command(struct scribe_dev *dev, struct scribe_event *event)
 	case SCRIBE_EVENT_GOLIVE_ON_BOOKMARK_ID:
 		return scribe_golive_on_bookmark_id(dev->ctx->bmark,
 		      ((struct scribe_event_golive_on_bookmark_id *)event)->id);
+	case SCRIBE_EVENT_CHECK_DEADLOCK:
+		return scribe_check_deadlock(dev->ctx);
 	default:
 		return -EINVAL;
 	}

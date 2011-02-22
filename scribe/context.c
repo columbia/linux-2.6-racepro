@@ -328,6 +328,29 @@ int scribe_stop(struct scribe_context *ctx)
 	return ret;
 }
 
+int scribe_check_deadlock(struct scribe_context *ctx)
+{
+	struct scribe_ps *scribe;
+	bool has_runners = false;
+
+	if (!(ctx->flags & SCRIBE_REPLAY))
+		return -EINVAL;
+
+	spin_lock(&ctx->tasks_lock);
+	list_for_each_entry(scribe, &ctx->tasks, node) {
+		if (scribe->p->se.on_rq) {
+			has_runners = true;
+			break;
+		}
+	}
+	spin_unlock(&ctx->tasks_lock);
+
+	if (!has_runners)
+		scribe_emergency_stop(ctx, ERR_PTR(-EDEADLK));
+
+	return 0;
+}
+
 /* scribe_wake_all_fake_sig() interrupts syscalls */
 void scribe_wake_all_fake_sig(struct scribe_context *ctx)
 {
