@@ -110,6 +110,7 @@
 #include <linux/tcp.h>
 #include <linux/init.h>
 #include <linux/highmem.h>
+#include <linux/scribe.h>
 
 #include <asm/uaccess.h>
 #include <asm/system.h>
@@ -769,6 +770,8 @@ int sock_getsockopt(struct socket *sock, int level, int optname,
 		return -EINVAL;
 
 	memset(&v, 0, sizeof(v));
+
+	scribe_data_non_det();
 
 	switch (optname) {
 	case SO_DEBUG:
