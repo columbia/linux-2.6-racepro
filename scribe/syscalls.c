@@ -298,6 +298,9 @@ void scribe_exit_syscall(struct pt_regs *regs)
 	 * we are not clearing the sigpending flag either.
 	 */
 	recalc_sigpending_and_wake(current);
+
+	if (unlikely(!scribe->can_uaccess))
+		scribe_emergency_stop(scribe->ctx, ERR_PTR(-EINVAL));
 }
 
 SYSCALL_DEFINE0(get_scribe_flags)

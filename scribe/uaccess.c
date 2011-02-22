@@ -86,12 +86,8 @@ static void post_init_data_desc(struct scribe_ps *scribe,
 
 static bool need_action(struct scribe_ps *scribe, struct data_desc *desc)
 {
-	/*
-	 * @desc.size is the number of bytes that have been copied from/to
-	 * userspace.
-	 * For convenience during the replay, we will record a 0 sized
-	 * data event.
-	 */
+	if (!desc->size)
+		return false;
 
 	if (!should_scribe_data(scribe))
 		return false;
@@ -205,7 +201,7 @@ void scribe_pre_uaccess(const void *data, const void __user *user_ptr,
 	if (!is_scribed(scribe))
 		return;
 
-	if (!is_kernel_copy())
+	if (!is_kernel_copy() && size)
 		__scribe_allow_uaccess(scribe);
 }
 EXPORT_SYMBOL(scribe_pre_uaccess);
@@ -404,7 +400,7 @@ static void __scribe_post_uaccess(struct scribe_ps *scribe,
 		scribe_post_uaccess_replay(scribe, desc);
 
 out:
-	if (!is_kernel_copy())
+	if (!is_kernel_copy() && desc->size)
 		__scribe_forbid_uaccess(scribe);
 	WARN(scribe->prepared_data_event.generic,
 	     "pre-allocated data event not used\n");
