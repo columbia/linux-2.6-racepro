@@ -743,6 +743,7 @@ SYSCALL_DEFINE3(shmctl, int, shmid, int, cmd, struct shmid_ds __user *, buf)
 		tbuf.shm_lpid	= shp->shm_lprid;
 		tbuf.shm_nattch	= shp->shm_nattch;
 		shm_unlock(shp);
+		scribe_data_non_det();
 		if(copy_shmid_to_user (buf, &tbuf, version))
 			err = -EFAULT;
 		else

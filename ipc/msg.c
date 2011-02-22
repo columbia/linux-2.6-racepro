@@ -576,6 +576,7 @@ SYSCALL_DEFINE3(msgctl, int, msqid, int, cmd, struct msqid_ds __user *, buf)
 		tbuf.msg_lrpid  = msq->q_lrpid;
 		msg_unlock(msq);
 		err = -EFAULT;
+		scribe_data_non_det();
 		if (copy_msqid_to_user(buf, &tbuf, version))
 			goto out;
 		err = success_return;

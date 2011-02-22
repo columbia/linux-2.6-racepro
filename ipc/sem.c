@@ -831,6 +831,7 @@ static int semctl_nolock(struct ipc_namespace *ns, int semid,
 		tbuf.sem_ctime  = sma->sem_ctime;
 		tbuf.sem_nsems  = sma->sem_nsems;
 		sem_unlock(sma);
+		scribe_data_non_det();
 		if (copy_semid_to_user (arg.buf, &tbuf, version))
 			return -EFAULT;
 		return id;
