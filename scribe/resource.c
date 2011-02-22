@@ -867,6 +867,32 @@ static void do_unlock_record(struct scribe_ps *scribe,
 	}
 }
 
+static void print_unlock_on_failure(struct scribe_ps *scribe,
+				    struct scribe_lock_region *lock_region)
+{
+	int type = lock_region->res->type & SCRIBE_RES_TYPE_MASK;
+	struct file *file;
+	char *tmp, *pathname;
+
+	switch (type) {
+	case SCRIBE_RES_TYPE_FILE:
+		file = lock_region->object;
+
+		tmp = (char*)__get_free_page(GFP_TEMPORARY);
+		if (!tmp)
+			return;
+
+		pathname = d_path(&file->f_path, tmp, PAGE_SIZE);
+		if (IS_ERR(pathname))
+			pathname = "??";
+
+		printk("[%d] unlocking resource of file %s\n",
+		       task_pid_vnr(scribe->p), pathname);
+
+		free_page((unsigned long)tmp);
+	}
+}
+
 static void do_unlock_replay(struct scribe_ps *scribe,
 			     struct scribe_lock_region *lock_region,
 			     struct scribe_resource *res, int serial)
@@ -874,6 +900,11 @@ static void do_unlock_replay(struct scribe_ps *scribe,
 	struct scribe_event_resource_unlock *event;
 
 	wake_up_for_serial(res);
+
+	if (unlikely(scribe->ctx->flags == SCRIBE_IDLE)) {
+		print_unlock_on_failure(scribe, lock_region);
+		return;
+	}
 
 	if (!should_scribe_res_extra(scribe))
 		return;
