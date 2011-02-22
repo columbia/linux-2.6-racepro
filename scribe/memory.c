@@ -1542,7 +1542,7 @@ void scribe_mem_schedule_in(struct scribe_ps *scribe)
 	if (!scribe->mm->weak_owner) {
 		WARN(scribe->p->state == TASK_INTERRUPTIBLE &&
 		     !(preempt_count() & PREEMPT_ACTIVE),
-		     "warning: sleeping while not in a sync point");
+		     "warning: sleeping while not in a sync point\n");
 		return;
 	}
 
