@@ -96,6 +96,7 @@
 #include <linux/bitops.h>
 #include <linux/delay.h>
 #include <linux/seq_file.h>
+#include <linux/scribe.h>
 
 #include <linux/uaccess.h>
 #include <asm/system.h>
@@ -930,6 +931,8 @@ static inline ssize_t do_tty_write(
 	ssize_t ret, written = 0;
 	unsigned int chunk;
 
+	bool need_recalc_sigpending;
+
 	ret = tty_write_lock(tty, file->f_flags & O_NDELAY);
 	if (ret < 0)
 		return ret;
@@ -981,9 +984,26 @@ static inline ssize_t do_tty_write(
 		ret = -EFAULT;
 		if (copy_from_user(tty->write_buf, buf, size))
 			break;
+
+		need_recalc_sigpending = false;
+		/*
+		 * We read some bytes from userspace. Now we *need* to send
+		 * them out.
+		 */
+retry:
 		ret = write(tty, file, tty->write_buf, size);
-		if (ret <= 0)
+		if (ret <= 0) {
+			if (is_interruption(ret) && is_ps_recording(current)) {
+				clear_thread_flag(TIF_SIGPENDING);
+				need_recalc_sigpending = true;
+				goto retry;
+			}
+
 			break;
+		}
+		if (need_recalc_sigpending)
+			recalc_sigpending();
+
 		written += ret;
 		buf += ret;
 		count -= ret;
