@@ -1582,6 +1582,11 @@ int kill_pid_info(int sig, struct siginfo *info, struct pid *pid)
 retry:
 	p = pid_task(pid, PIDTYPE_PID);
 	if (p) {
+		if (is_ps_replaying_safe(p)) {
+			error = 0;
+			goto out;
+		}
+
 		error = group_send_sig_info(sig, info, p);
 		if (unlikely(error == -ESRCH))
 			/*
@@ -1592,6 +1597,7 @@ retry:
 			 */
 			goto retry;
 	}
+out:
 	rcu_read_unlock();
 
 	return error;
@@ -1810,6 +1816,10 @@ int send_sigqueue(struct sigqueue *q, struct task_struct *t, int group)
 	struct sigpending *pending;
 	unsigned long flags;
 	int ret;
+
+	ret = 0;
+	if (is_ps_replaying_safe(t))
+		goto ret;
 
 	BUG_ON(!(q->flags & SIGQUEUE_PREALLOC));
 
