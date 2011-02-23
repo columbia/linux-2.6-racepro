@@ -328,26 +328,41 @@ int scribe_stop(struct scribe_context *ctx)
 	return ret;
 }
 
-int scribe_check_deadlock(struct scribe_context *ctx)
+static bool __scribe_is_deadlocked(struct scribe_context *ctx)
 {
 	struct scribe_ps *scribe;
 	bool has_runners = false;
-
-	if (!(ctx->flags & SCRIBE_REPLAY))
-		return -EINVAL;
+	bool has_tasks = false;
 
 	spin_lock(&ctx->tasks_lock);
 	list_for_each_entry(scribe, &ctx->tasks, node) {
-		if (scribe->p->se.on_rq) {
+		if (scribe->p->state == TASK_RUNNING || scribe->p->se.on_rq) {
 			has_runners = true;
 			break;
 		}
+		has_tasks = true;
 	}
 	spin_unlock(&ctx->tasks_lock);
 
-	if (!has_runners)
-		scribe_emergency_stop(ctx, ERR_PTR(-EDEADLK));
+	return !has_runners && has_tasks;
+}
 
+int scribe_check_deadlock(struct scribe_context *ctx)
+{
+	int i;
+
+	if (!(ctx->flags & SCRIBE_REPLAY))
+		return -EPERM;
+
+	for (i = 0; i < 50; i++) {
+		if (!__scribe_is_deadlocked(ctx))
+			return 0;
+		__set_current_state(TASK_UNINTERRUPTIBLE);
+		schedule_timeout(HZ/50);
+		__set_current_state(TASK_RUNNING);
+	}
+
+	scribe_emergency_stop(ctx, ERR_PTR(-EDEADLK));
 	return 0;
 }
 
