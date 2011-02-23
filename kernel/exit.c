@@ -1923,7 +1923,7 @@ SYSCALL_DEFINE5(waitid, int, which, pid_t, upid, struct siginfo __user *,
 	return ret;
 }
 
-SYSCALL_DEFINE4(wait4, pid_t, upid, int __user *, stat_addr,
+SYSCALL_DEFINE4(wait4, pid_t, _upid, int __user *, stat_addr,
 		int, options, struct rusage __user *, ru)
 {
 	struct scribe_ps *scribe = current->scribe;
@@ -1934,6 +1934,7 @@ SYSCALL_DEFINE4(wait4, pid_t, upid, int __user *, stat_addr,
 	struct pid *pid = NULL;
 	enum pid_type type;
 	long ret, orig_ret;
+	pid_t upid = _upid;
 
 	if (options & ~(WNOHANG|WUNTRACED|WCONTINUED|
 			__WNOTHREAD|__WCLONE|__WALL))
@@ -1955,16 +1956,16 @@ SYSCALL_DEFINE4(wait4, pid_t, upid, int __user *, stat_addr,
 	} else if (is_replaying(scribe) && scribe->ctx->flags != SCRIBE_IDLE) {
 		ret = scribe_value(&upid);
 		if (ret)
-			return ret;
+			goto out;
 		if (!upid) {
 			/*
 			 * We don't use scribe->orig_ret because
 			 * zap_pid_ns_processes() calls sys_wait().
 			 */
 			ret = scribe_value(&orig_ret);
-			if (ret)
-				return ret;
-			return orig_ret;
+			if (!ret)
+				ret = orig_ret;
+			goto out;
 		}
 
 		scribe_locked = true;
@@ -2008,8 +2009,9 @@ SYSCALL_DEFINE4(wait4, pid_t, upid, int __user *, stat_addr,
 	} else if (is_replaying(scribe) && scribe_locked)
 		scribe_unlock_pid(upid);
 
+out:
 	/* avoid REGPARM breakage on x86: */
-	asmlinkage_protect(4, ret, upid, stat_addr, options, ru);
+	asmlinkage_protect(4, ret, _upid, stat_addr, options, ru);
 	return ret;
 }
 
