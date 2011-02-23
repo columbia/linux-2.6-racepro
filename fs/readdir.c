@@ -255,6 +255,7 @@ static int filldir64(void * __buf, const char * name, int namlen, loff_t offset,
 	struct linux_dirent64 __user *dirent;
 	struct getdents_callback64 * buf = (struct getdents_callback64 *) __buf;
 	int reclen = ALIGN(NAME_OFFSET(dirent) + namlen + 1, sizeof(u64));
+	int ret;
 
 	buf->error = -EINVAL;	/* only used if we fail.. */
 	if (reclen > buf->count)
@@ -265,8 +266,13 @@ static int filldir64(void * __buf, const char * name, int namlen, loff_t offset,
 			goto efault;
 	}
 	dirent = buf->current_dir;
-	if (__put_user(ino, &dirent->d_ino))
+
+	scribe_data_non_det();
+	ret = __put_user(ino, &dirent->d_ino);
+	scribe_data_pop_flags();
+	if (ret)
 		goto efault;
+
 	if (__put_user(0, &dirent->d_off))
 		goto efault;
 	if (__put_user(reclen, &dirent->d_reclen))
