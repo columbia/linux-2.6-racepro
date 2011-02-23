@@ -9,6 +9,7 @@
 
 #include <linux/sched.h>
 #include <linux/seq_file.h>
+#include <linux/jiffies.h>
 #include <linux/scribe.h>
 
 struct scribe_context *scribe_alloc_context(void)
@@ -32,6 +33,7 @@ struct scribe_context *scribe_alloc_context(void)
 	spin_lock_init(&ctx->queues_lock);
 	INIT_LIST_HEAD(&ctx->queues);
 	init_waitqueue_head(&ctx->queues_wait);
+	ctx->last_event_jiffies = jiffies;
 
 	scribe_init_stream(&ctx->notifications);
 
@@ -349,12 +351,17 @@ static bool __scribe_is_deadlocked(struct scribe_context *ctx)
 
 int scribe_check_deadlock(struct scribe_context *ctx)
 {
+	unsigned long deadline;
 	int i;
 
 	if (!(ctx->flags & SCRIBE_REPLAY))
 		return -EPERM;
 
+	deadline = jiffies - HZ/10;
+
 	for (i = 0; i < 50; i++) {
+		if (time_after(ctx->last_event_jiffies, deadline))
+			return 0;
 		if (!__scribe_is_deadlocked(ctx))
 			return 0;
 		__set_current_state(TASK_UNINTERRUPTIBLE);
@@ -503,6 +510,13 @@ void scribe_attach(struct scribe_ps *scribe)
 
 		BUG_ON(scribe->queue->stream.wait !=
 		       &scribe->queue->stream.default_wait);
+
+		/*
+		 * During the replay, we update the global @last_event_jiffies
+		 * for deadlock detection.
+		 */
+		scribe->queue->stream.last_event_jiffies =
+			&ctx->last_event_jiffies;
 	}
 
 	scribe->in_syscall = 0;

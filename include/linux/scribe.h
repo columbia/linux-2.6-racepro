@@ -54,6 +54,8 @@ struct scribe_stream {
 
 	struct scribe_substream master;
 
+	unsigned long *last_event_jiffies;
+
 	/*
 	 * When sealed == 1 and list_empty(events), the queue can be
 	 * considered as dead.
@@ -310,6 +312,7 @@ struct scribe_context {
 	spinlock_t queues_lock;
 	struct list_head queues;
 	wait_queue_head_t queues_wait;
+	unsigned long last_event_jiffies;
 
 	struct scribe_stream notifications;
 

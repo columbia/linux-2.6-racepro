@@ -24,6 +24,7 @@ void scribe_init_stream(struct scribe_stream *stream)
 {
 	spin_lock_init(&stream->lock);
 	init_substream(stream, &stream->master);
+	stream->last_event_jiffies = NULL;
 	stream->sealed = 0;
 	init_waitqueue_head(&stream->default_wait);
 	stream->wait = &stream->default_wait;
@@ -387,8 +388,11 @@ retry:
 		return ERR_PTR(-EAGAIN);
 	}
 	event = list_first_entry(&substream->events, __typeof__(*event), node);
-	if (likely(remove))
+	if (likely(remove)) {
 		list_del(&event->node);
+		if (stream->last_event_jiffies)
+			*stream->last_event_jiffies = jiffies;
+	}
 	spin_unlock_irqrestore(&stream->lock, flags);
 
 	return event;
