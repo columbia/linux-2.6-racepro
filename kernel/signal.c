@@ -2031,7 +2031,8 @@ static int sigkill_pending(struct task_struct *tsk)
  * If we actually decide not to stop at all because the tracer
  * is gone, we keep current->exit_code unless clear_code.
  */
-static void ptrace_stop(int exit_code, int clear_code, siginfo_t *info)
+static void ptrace_stop(pid_t pid, int exit_code,
+			int clear_code, siginfo_t *info)
 {
 	if (arch_ptrace_stop_needed(exit_code, info)) {
 		/*
@@ -2077,7 +2078,15 @@ static void ptrace_stop(int exit_code, int clear_code, siginfo_t *info)
 		preempt_disable();
 		read_unlock(&tasklist_lock);
 		preempt_enable_no_resched();
-		schedule();
+
+		scribe_forbid_uaccess();
+		if (pid != -1) {
+			scribe_unlock_pid(pid);
+			schedule();
+			scribe_lock_pid_write(pid);
+		} else
+			schedule();
+		scribe_allow_uaccess();
 	} else {
 		/*
 		 * By the time we got the lock, our tracer went away.
@@ -2112,7 +2121,7 @@ static void ptrace_stop(int exit_code, int clear_code, siginfo_t *info)
 	recalc_sigpending_tsk(current);
 }
 
-void ptrace_notify(int exit_code)
+static void __ptrace_notify(pid_t pid, int exit_code)
 {
 	siginfo_t info;
 
@@ -2126,9 +2135,26 @@ void ptrace_notify(int exit_code)
 
 	/* Let the debugger run.  */
 	spin_lock_irq(&current->sighand->siglock);
-	ptrace_stop(exit_code, 1, &info);
+	ptrace_stop(pid, exit_code, 1, &info);
 	spin_unlock_irq(&current->sighand->siglock);
 }
+
+void ptrace_notify(int exit_code)
+{
+	pid_t pid;
+
+	if (scribe_resource_prepare()) {
+		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		__ptrace_notify(-1, exit_code);
+		return;
+	}
+
+	pid = task_pid_vnr(current);
+	scribe_lock_pid_write(pid);
+	__ptrace_notify(pid, exit_code);
+	scribe_unlock_pid(pid);
+}
+
 
 /*
  * This performs the stopping for SIGSTOP and other stop signals.
@@ -2136,7 +2162,7 @@ void ptrace_notify(int exit_code)
  * Returns nonzero if we've actually stopped and released the siglock.
  * Returns zero if we didn't stop and still hold the siglock.
  */
-static int do_signal_stop(int signr)
+static int do_signal_stop(pid_t pid, int signr)
 {
 	struct signal_struct *sig = current->signal;
 	int notify;
@@ -2196,6 +2222,9 @@ static int do_signal_stop(int signr)
 		read_unlock(&tasklist_lock);
 	}
 
+	if (pid != -1)
+		scribe_unlock_pid(pid);
+	scribe_forbid_uaccess();
 	if (is_ps_replaying(current)) {
 		/*
 		 * FIXME We need to properly set the
@@ -2207,7 +2236,9 @@ static int do_signal_stop(int signr)
 			schedule();
 		} while (try_to_freeze());
 	}
-
+	scribe_allow_uaccess();
+	if (pid != -1)
+		scribe_lock_pid_write(pid);
 
 	tracehook_finish_jctl();
 	current->exit_code = 0;
@@ -2215,7 +2246,7 @@ static int do_signal_stop(int signr)
 	return 1;
 }
 
-static int ptrace_signal(int signr, siginfo_t *info,
+static int ptrace_signal(pid_t pid, int signr, siginfo_t *info,
 			 struct pt_regs *regs, void *cookie)
 {
 	if (!task_ptrace(current))
@@ -2224,7 +2255,7 @@ static int ptrace_signal(int signr, siginfo_t *info,
 	ptrace_signal_deliver(regs, cookie);
 
 	/* Let the debugger run.  */
-	ptrace_stop(signr, 0, info);
+	ptrace_stop(pid, signr, 0, info);
 
 	/* We're back.  Did the debugger cancel the sig?  */
 	signr = current->exit_code;
@@ -2257,11 +2288,43 @@ static int ptrace_signal(int signr, siginfo_t *info,
 int get_signal_to_deliver(siginfo_t *info, struct k_sigaction *return_ka,
 			  struct pt_regs *regs, void *cookie)
 {
+	pid_t pid = -1;
 	struct sighand_struct *sighand = current->sighand;
 	struct signal_struct *signal = current->signal;
+	unsigned long flags;
 	int signr;
 
+	try_to_freeze();
+
+	if (is_ps_scribed(current)) {
+		/*
+		 * We don't want to take the lock if nothing is happening
+		 */
+		recalc_sigpending();
+		if (!signal_pending(current))
+			return 0;
+
+		local_save_flags(flags);
+		local_irq_enable();
+
+		pid = task_pid_vnr(current);
+		if (scribe_resource_prepare()) {
+			scribe_emergency_stop(current->scribe->ctx,
+					      ERR_PTR(-ENOMEM));
+			pid = -1;
+		} else
+			scribe_lock_pid_write(pid);
+		local_irq_restore(flags);
+	}
+
 relock:
+	if (scribe_resource_prepare()) {
+		scribe_emergency_stop(current->scribe->ctx,
+				      ERR_PTR(-ENOMEM));
+		scribe_unlock_pid(pid);
+		pid = -1;
+	}
+
 	/*
 	 * We'll jump back here after any time we were stopped in TASK_STOPPED.
 	 * While in TASK_STOPPED, we were considered "frozen enough".
@@ -2306,7 +2369,7 @@ relock:
 			ka = return_ka;
 		else {
 			if (unlikely(signal->group_stop_count > 0) &&
-			    do_signal_stop(0))
+			    do_signal_stop(pid, 0))
 				goto relock;
 
 			signr = dequeue_signal(current, &current->blocked,
@@ -2316,7 +2379,7 @@ relock:
 				break; /* will return 0 */
 
 			if (signr != SIGKILL) {
-				signr = ptrace_signal(signr, info,
+				signr = ptrace_signal(pid, signr, info,
 						      regs, cookie);
 				if (!signr)
 					continue;
@@ -2382,7 +2445,7 @@ relock:
 				spin_lock_irq(&sighand->siglock);
 			}
 
-			if (likely(do_signal_stop(info->si_signo))) {
+			if (likely(do_signal_stop(pid, info->si_signo))) {
 				/* It released the siglock.  */
 				goto relock;
 			}
@@ -2395,6 +2458,9 @@ relock:
 		}
 
 		spin_unlock_irq(&sighand->siglock);
+
+		if (pid != -1)
+			scribe_unlock_pid(pid);
 
 		scribe_forbid_uaccess();
 		scribe_signal_enter_sync_point(NULL);
@@ -2425,13 +2491,15 @@ relock:
 		/* NOTREACHED */
 	}
 	spin_unlock_irq(&sighand->siglock);
+	if (pid != -1)
+		scribe_unlock_pid(pid);
 
 	/* That's a hint for all the do_signal() user accesses */
 	scribe_data_det();
 	return signr;
 }
 
-void exit_signals(struct task_struct *tsk)
+static void __exit_signals(struct task_struct *tsk)
 {
 	int group_stop = 0;
 	struct task_struct *t;
@@ -2471,6 +2539,22 @@ out:
 		do_notify_parent_cldstop(tsk, group_stop);
 		read_unlock(&tasklist_lock);
 	}
+}
+
+void exit_signals(struct task_struct *tsk)
+{
+	pid_t pid;
+
+	if (scribe_resource_prepare()) {
+		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		__exit_signals(tsk);
+		return;
+	}
+
+	pid = task_pid_vnr(tsk);
+	scribe_lock_pid_write(pid);
+	__exit_signals(tsk);
+	scribe_unlock_pid(pid);
 }
 
 EXPORT_SYMBOL(recalc_sigpending);

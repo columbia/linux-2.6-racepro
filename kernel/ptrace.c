@@ -22,6 +22,7 @@
 #include <linux/syscalls.h>
 #include <linux/uaccess.h>
 #include <linux/regset.h>
+#include <linux/scribe.h>
 
 
 /*
@@ -202,7 +203,9 @@ int ptrace_attach(struct task_struct *task)
 		task->ptrace |= PT_PTRACE_CAP;
 
 	__ptrace_link(task, current);
-	send_sig_info(SIGSTOP, SEND_SIG_FORCED, task);
+
+	if (!is_ps_replaying_safe(task))
+		send_sig_info(SIGSTOP, SEND_SIG_FORCED, task);
 
 	retval = 0;
 unlock_tasklist:
@@ -697,10 +700,17 @@ SYSCALL_DEFINE4(ptrace, long, request, long, pid, long, addr, long, data)
 		goto out;
 	}
 
+	if (scribe_resource_prepare()) {
+		ret = -ENOMEM;
+		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		goto out;
+	}
+
+	scribe_lock_pid_write(pid);
 	child = ptrace_get_task_struct(pid);
 	if (IS_ERR(child)) {
 		ret = PTR_ERR(child);
-		goto out;
+		goto out_unlock;
 	}
 
 	if (request == PTRACE_ATTACH) {
@@ -722,6 +732,8 @@ SYSCALL_DEFINE4(ptrace, long, request, long, pid, long, addr, long, data)
 
  out_put_task_struct:
 	put_task_struct(child);
+ out_unlock:
+	scribe_unlock_pid(pid);
  out:
 	return ret;
 }
