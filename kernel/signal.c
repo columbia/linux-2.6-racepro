@@ -1249,14 +1249,6 @@ static int __send_signal(int sig, struct siginfo *info, struct task_struct *t,
 	struct scribe_ps *scribe = t->scribe;
 	if (!is_recording(scribe) || !should_scribe_signals(scribe))
 		scribe = NULL;
-
-	/*
-	 * We are ignoring stop/cont signals: they can't be replayed properly
-	 * since the target sends signals to himself during replay (and if it
-	 * stops, it won't send a cont signal).
-	 */
-	if (sig_kernel_stop_cont(sig))
-		scribe = NULL;
 #endif
 
 	trace_signal_generate(sig, info, t);
@@ -1988,7 +1980,8 @@ static void do_notify_parent_cldstop(struct task_struct *tsk, int why)
 	sighand = parent->sighand;
 	spin_lock_irqsave(&sighand->siglock, flags);
 	if (sighand->action[SIGCHLD-1].sa.sa_handler != SIG_IGN &&
-	    !(sighand->action[SIGCHLD-1].sa.sa_flags & SA_NOCLDSTOP))
+	    !(sighand->action[SIGCHLD-1].sa.sa_flags & SA_NOCLDSTOP) &&
+	    !is_ps_replaying_safe(parent))
 		__group_send_sig_info(SIGCHLD, &info, parent);
 	/*
 	 * Even if SIGCHLD is not generated, we must wake up wait4 calls.
@@ -2172,6 +2165,10 @@ static int do_signal_stop(int signr)
 				sig->group_stop_count++;
 				signal_wake_up(t, 0);
 			}
+			/*
+			 * Scribe: FIXME we need to send a SIGSTOP to each
+			 * thread, so we know where to replay them...
+			 */
 	}
 	/*
 	 * If there are no other threads in the group, or if there is
@@ -2199,10 +2196,18 @@ static int do_signal_stop(int signr)
 		read_unlock(&tasklist_lock);
 	}
 
-	/* Now we don't run again until woken by SIGCONT or SIGKILL */
-	do {
-		schedule();
-	} while (try_to_freeze());
+	if (is_ps_replaying(current)) {
+		/*
+		 * FIXME We need to properly set the
+		 * signal->flags & SIGNAL_CLD_MASK value
+		 */
+	} else {
+		/* Now we don't run again until woken by SIGCONT or SIGKILL */
+		do {
+			schedule();
+		} while (try_to_freeze());
+	}
+
 
 	tracehook_finish_jctl();
 	current->exit_code = 0;
