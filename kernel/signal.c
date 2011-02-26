@@ -2291,7 +2291,6 @@ int get_signal_to_deliver(siginfo_t *info, struct k_sigaction *return_ka,
 	pid_t pid = -1;
 	struct sighand_struct *sighand = current->sighand;
 	struct signal_struct *signal = current->signal;
-	unsigned long flags;
 	int signr;
 
 	try_to_freeze();
@@ -2304,7 +2303,6 @@ int get_signal_to_deliver(siginfo_t *info, struct k_sigaction *return_ka,
 		if (!signal_pending(current))
 			return 0;
 
-		local_save_flags(flags);
 		local_irq_enable();
 
 		pid = task_pid_vnr(current);
@@ -2314,7 +2312,6 @@ int get_signal_to_deliver(siginfo_t *info, struct k_sigaction *return_ka,
 			pid = -1;
 		} else
 			scribe_lock_pid_write(pid);
-		local_irq_restore(flags);
 	}
 
 relock:
