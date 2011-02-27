@@ -141,6 +141,7 @@ extern pgprot_t protection_map[16];
 #define FAULT_FLAG_WRITE	0x01	/* Fault was a write access */
 #define FAULT_FLAG_NONLINEAR	0x02	/* Fault was via a nonlinear mapping */
 #define FAULT_FLAG_MKWRITE	0x04	/* Fault was mkwrite of existing pte */
+#define FAULT_FLAG_NOSCRIBE	0x08	/* Fault should not be scribed */
 
 /*
  * This interface is used by x86 PAT code to identify a pfn mapping that is

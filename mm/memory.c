@@ -1457,7 +1457,8 @@ int __get_user_pages(struct task_struct *tsk, struct mm_struct *mm,
 
 				ret = handle_mm_fault(mm, vma, start,
 					(foll_flags & FOLL_WRITE) ?
-					FAULT_FLAG_WRITE : 0);
+					FAULT_FLAG_WRITE | FAULT_FLAG_NOSCRIBE :
+					FAULT_FLAG_NOSCRIBE);
 
 				if (ret & VM_FAULT_ERROR) {
 					if (ret & VM_FAULT_OOM)
@@ -3116,7 +3117,7 @@ static inline int handle_pte_fault(struct scribe_ps *scribe,
 
 	/* if page is marked as COW, we don't want to call do_scribe_page() */
 	if (!(flags & FAULT_FLAG_WRITE) || pte_write(entry)) {
-		if (may_be_scribed(scribe))
+		if (may_be_scribed(scribe) && !(flags & FAULT_FLAG_NOSCRIBE))
 			return do_scribe_page(scribe, mm, vma, address,
 					      pte, pmd, flags);
 	}
@@ -3187,7 +3188,8 @@ scribe_retry:
 
 	ret = handle_pte_fault(scribe, mm, vma, address, pte, pmd, flags);
 	if (may_be_scribed(scribe) && scribe->mm &&
-	    ret != VM_FAULT_SCRIBE && ret != VM_FAULT_OOM)
+	    ret != VM_FAULT_SCRIBE && ret != VM_FAULT_OOM &&
+	    !(flags & FAULT_FLAG_NOSCRIBE))
 		goto scribe_retry;
 
 	if (ret == VM_FAULT_SCRIBE)
