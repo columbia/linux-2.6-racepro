@@ -18,6 +18,7 @@
 #include <linux/rmap.h>
 #include <linux/mmzone.h>
 #include <linux/hugetlb.h>
+#include <linux/scribe.h>
 
 #include "internal.h"
 
@@ -167,6 +168,8 @@ static long __mlock_vma_pages_range(struct vm_area_struct *vma,
 	if (vma->vm_flags & VM_WRITE)
 		gup_flags |= FOLL_WRITE;
 
+	scribe_allow_uaccess();
+
 	while (nr_pages > 0) {
 		int i;
 
@@ -222,6 +225,8 @@ static long __mlock_vma_pages_range(struct vm_area_struct *vma,
 		nr_pages -= ret;
 		ret = 0;
 	}
+
+	scribe_forbid_uaccess();
 
 	return ret;	/* 0 or negative error code */
 }
