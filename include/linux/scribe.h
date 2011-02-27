@@ -534,6 +534,7 @@ struct scribe_ps {
 	long orig_ret;
 
 	union scribe_event_data_union prepared_data_event;
+	size_t to_be_copied_size;
 	int data_flags;
 	int old_data_flags;
 	int can_uaccess;

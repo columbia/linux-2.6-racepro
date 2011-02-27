@@ -201,8 +201,9 @@ void scribe_pre_uaccess(const void *data, const void __user *user_ptr,
 	if (!is_scribed(scribe))
 		return;
 
-	if (!is_kernel_copy())
+	if (!is_kernel_copy() && size)
 		__scribe_allow_uaccess(scribe);
+	scribe->to_be_copied_size = size;
 }
 EXPORT_SYMBOL(scribe_pre_uaccess);
 
@@ -400,7 +401,7 @@ static void __scribe_post_uaccess(struct scribe_ps *scribe,
 		scribe_post_uaccess_replay(scribe, desc);
 
 out:
-	if (!is_kernel_copy())
+	if (!is_kernel_copy() && scribe->to_be_copied_size)
 		__scribe_forbid_uaccess(scribe);
 	WARN(scribe->prepared_data_event.generic,
 	     "pre-allocated data event not used\n");
@@ -768,5 +769,3 @@ void scribe_data_pop_flags(void)
 
 	scribe->data_flags = scribe->old_data_flags;
 }
-
-
