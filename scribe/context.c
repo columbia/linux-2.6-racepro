@@ -603,7 +603,8 @@ static bool should_detach(struct scribe_ps *scribe)
 	if (scribe->ctx->flags & SCRIBE_STOP)
 		return true;
 
-	if (scribe_is_queue_dead(scribe->queue))
+	if (is_replaying(scribe) &&
+	    scribe_is_queue_dead(scribe->queue, SCRIBE_WAIT))
 		return true;
 
 	return false;

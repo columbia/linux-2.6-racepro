@@ -469,8 +469,14 @@ void scribe_kill_stream(struct scribe_stream *stream)
 	scribe_free_all_events(stream);
 }
 
-bool scribe_is_stream_dead(struct scribe_stream *stream)
+bool scribe_is_stream_dead(struct scribe_stream *stream, int wait)
 {
+	if (!scribe_is_stream_empty(stream))
+		return false;
+
+	if (wait == SCRIBE_WAIT)
+		__scribe_peek_event(stream, SCRIBE_WAIT, 0);
+
 	return stream->sealed && scribe_is_stream_empty(stream);
 }
 

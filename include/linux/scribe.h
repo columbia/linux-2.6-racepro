@@ -210,10 +210,10 @@ static inline void scribe_seal_queue(struct scribe_queue *queue)
 	scribe_seal_stream(&queue->stream);
 }
 
-extern bool scribe_is_stream_dead(struct scribe_stream *stream);
-static inline bool scribe_is_queue_dead(struct scribe_queue *queue)
+extern bool scribe_is_stream_dead(struct scribe_stream *stream, int wait);
+static inline bool scribe_is_queue_dead(struct scribe_queue *queue, int wait)
 {
-	return scribe_is_stream_dead(&queue->stream);
+	return scribe_is_stream_dead(&queue->stream, wait);
 }
 
 extern void scribe_kill_stream(struct scribe_stream *stream);
