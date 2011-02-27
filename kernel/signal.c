@@ -1163,10 +1163,9 @@ static void complete_signal(int sig, struct task_struct *p, int group)
 	}
 
 	/*
-	 * We don't want to send signals that won't get logged, going the slow
-	 * path.
+	 * These SIGKILL will get handled with zap_other_threads()
 	 */
-	if (is_ps_recording(p))
+	if (is_ps_scribed(p))
 		goto skip_killall;
 
 	/*
@@ -1484,6 +1483,7 @@ force_sig_info(int sig, struct siginfo *info, struct task_struct *t)
  */
 int zap_other_threads(struct task_struct *p)
 {
+	struct scribe_ps *scribe;
 	struct task_struct *t = p;
 	int count = 0;
 
@@ -1497,9 +1497,14 @@ int zap_other_threads(struct task_struct *p)
 			continue;
 
 #ifdef CONFIG_SCRIBE
-		if (t->scribe) {
+		/*
+		 * We don't need the safe version since the sighand is locked
+		 */
+		scribe = t->scribe;
+		if (may_be_scribed(scribe)) {
 			/* We need to log the signal, going the slow path */
-			specific_send_sig_info(SIGKILL, SEND_SIG_FORCED, t);
+			if (!is_replaying(scribe))
+				specific_send_sig_info(SIGKILL, SEND_SIG_FORCED, t);
 			continue;
 		}
 #endif
