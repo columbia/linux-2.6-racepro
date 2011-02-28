@@ -51,6 +51,84 @@ static int scribe_regs(struct scribe_ps *scribe, struct pt_regs *regs)
 	return 0;
 }
 
+static void do_inject_msleep(struct scribe_event_inject_action *event)
+{
+	long arg = (long) event->arg1;
+
+	printk("[%d] msleep for %ld\n", task_pid_vnr(current), arg);
+	msleep_interruptible(event->arg1);
+}
+
+static int do_inject_psflags(struct scribe_event_inject_action *event)
+{
+	long add = (long) event->arg1;
+	long del = (long) event->arg2;
+	long flags;
+
+	printk("[%d] psflags add %#lx del %#lx\n",
+	       task_pid_vnr(current), add, del);
+
+	flags = sys_get_scribe_flags();
+	flags = (flags & ~del) | add;
+	return sys_set_scribe_flags(flags);
+}
+static int do_inject_action(struct scribe_event_inject_action *event)
+{
+	int ret = 0;
+
+	switch (event->action) {
+	case SCRIBE_INJECT_ACTION_SLEEP:
+		do_inject_msleep(event);
+		break;
+	case SCRIBE_INJECT_ACTION_PSFLAGS:
+		ret = do_inject_psflags(event);
+		break;
+	default:
+		printk("[%d] unknown action %d\n",
+		       task_pid_vnr(current), event->action);
+	}
+	return ret;
+}
+
+static int scribe_inject_action(struct scribe_ps *scribe)
+{
+	struct scribe_event *event;
+	struct scribe_event_inject_action *event_inject;
+	int ret;
+
+	if (!is_replaying(scribe))
+		return 0;
+
+	if (!should_scribe_syscalls(scribe))
+		return 0;
+
+	/* execute pending inject_action events, if any */
+
+	while (1) {
+		event = scribe_peek_event(scribe->queue, SCRIBE_WAIT);
+		if (IS_ERR(event) || event->type != SCRIBE_EVENT_INJECT_ACTION)
+			break;
+		event_inject = scribe_dequeue_event_specific(
+				     scribe, SCRIBE_EVENT_INJECT_ACTION);
+		if (IS_ERR(event_inject))
+			return PTR_ERR(event);
+
+		ret = do_inject_action(event_inject);
+
+		scribe_free_event(event_inject);
+
+		if (ret < 0) {
+			/*
+			 * There is no reason to abort the replay if the
+			 * injected syscall failed.
+			 */
+			WARN(1, "Injected action failed with %d\n", ret);
+		}
+	}
+
+	return 0;
+}
+
 static inline int is_scribe_syscall(int nr)
 {
 	return nr == __NR_get_scribe_flags ||
@@ -193,6 +271,10 @@ void scribe_enter_syscall(struct pt_regs *regs)
 	__scribe_forbid_uaccess(scribe);
 
 	scribe_bookmark_point();
+
+	/* execute pending injects */
+	if (scribe_inject_action(scribe) < 0)
+		return;
 
 	if (scribe_maybe_detach(scribe))
 		return;
