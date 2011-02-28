@@ -117,6 +117,17 @@ void down_read_nested(struct rw_semaphore *sem, int subclass)
 
 EXPORT_SYMBOL(down_read_nested);
 
+int down_read_trylock_nested(struct rw_semaphore *sem, int subclass)
+{
+	int ret = __down_read_trylock(sem);
+
+	if (ret == 1)
+		rwsem_acquire_read(&sem->dep_map, subclass, 1, _RET_IP_);
+	return ret;
+}
+
+EXPORT_SYMBOL(down_read_trylock);
+
 void down_read_non_owner(struct rw_semaphore *sem)
 {
 	might_sleep();
@@ -135,6 +146,17 @@ void down_write_nested(struct rw_semaphore *sem, int subclass)
 }
 
 EXPORT_SYMBOL(down_write_nested);
+
+int down_write_trylock_nested(struct rw_semaphore *sem, int subclass)
+{
+	int ret = __down_write_trylock(sem);
+
+	if (ret == 1)
+		rwsem_acquire(&sem->dep_map, subclass, 1, _RET_IP_);
+	return ret;
+}
+
+EXPORT_SYMBOL(down_write_trylock);
 
 void up_read_non_owner(struct rw_semaphore *sem)
 {

@@ -73,6 +73,10 @@ extern void downgrade_write(struct rw_semaphore *sem);
  */
 extern void down_read_nested(struct rw_semaphore *sem, int subclass);
 extern void down_write_nested(struct rw_semaphore *sem, int subclass);
+
+extern int down_read_trylock_nested(struct rw_semaphore *sem, int subclass);
+extern int down_write_trylock_nested(struct rw_semaphore *sem, int subclass);
+
 /*
  * Take/release a lock when not the owner will release it.
  *
@@ -84,6 +88,10 @@ extern void up_read_non_owner(struct rw_semaphore *sem);
 #else
 # define down_read_nested(sem, subclass)		down_read(sem)
 # define down_write_nested(sem, subclass)	down_write(sem)
+
+# define down_read_trylock_nested(sem, subclass) down_read_trylock(sem)
+# define down_write_trylock_nested(sem, subclass) down_write_trylock(sem)
+
 # define down_read_non_owner(sem)		down_read(sem)
 # define up_read_non_owner(sem)			up_read(sem)
 #endif
