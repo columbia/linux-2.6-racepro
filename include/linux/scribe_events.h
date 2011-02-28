@@ -117,6 +117,12 @@ SCRIBE_EVENT(syscall_extra,
 
 SCRIBE_EVENT(syscall_end)
 
+SCRIBE_EVENT(inject_action,
+	__field(__u32, action)
+	__field(__u32, arg1)
+	__field(__u32, arg2)
+)
+
 SCRIBE_EVENT(queue_eof)
 
 SCRIBE_EVENT(resource_lock,

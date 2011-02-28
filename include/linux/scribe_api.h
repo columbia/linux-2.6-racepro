@@ -74,6 +74,12 @@
 #define SCRIBE_FLAGS_MASK		0xffffff00
 
 /*
+ * These flags are used for scribe inject actions
+ */
+#define SCRIBE_INJECT_ACTION_SLEEP	1
+#define SCRIBE_INJECT_ACTION_PSFLAGS	2
+
+/*
  * These flags are used for the scribe syscalls such as sys_set_scribe_flags().
  */
 #define SCRIBE_PS_RECORD		0x00000001
