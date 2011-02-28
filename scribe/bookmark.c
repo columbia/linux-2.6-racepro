@@ -186,33 +186,32 @@ static void sync_on_bookmark(struct scribe_ps *scribe,
 		wait_event(bmark->wait, bookmark_is_wait_over(bmark, *id));
 }
 
-void scribe_bookmark_point(void)
+void scribe_bookmark_point_record(struct scribe_ps *scribe,
+				  struct scribe_bookmark *bmark)
 {
-	struct scribe_ps *scribe = current->scribe;
-	struct scribe_event *generic_event;
-	struct scribe_event_bookmark *event;
-	struct scribe_bookmark *bmark;
 	int npr, id;
 	int ret;
 
-	if (!is_scribed(scribe))
+	if (!bmark->npr_total)
 		return;
 
-	bmark = scribe->ctx->bmark;
+	sync_on_bookmark(scribe, bmark, &id, &npr);
 
-	if (is_recording(scribe)) {
-		if (!bmark->npr_total)
-			return;
+	ret = scribe_queue_new_event(scribe->queue,
+				     SCRIBE_EVENT_BOOKMARK,
+				     .id = id, .npr = npr);
+	if (ret)
+		scribe_emergency_stop(scribe->ctx, ERR_PTR(ret));
+}
 
-		sync_on_bookmark(scribe, bmark, &id, &npr);
+void scribe_bookmark_point_replay(struct scribe_ps *scribe,
+				  struct scribe_bookmark *bmark)
+{
+	struct scribe_event *generic_event;
+	struct scribe_event_bookmark *event;
+	int npr, id;
 
-		ret = scribe_queue_new_event(scribe->queue,
-					     SCRIBE_EVENT_BOOKMARK,
-					     .id = id, .npr = npr);
-		if (ret)
-			scribe_emergency_stop(scribe->ctx, ERR_PTR(ret));
-
-	} else {
+	while (1) {
 		generic_event = scribe_peek_event(scribe->queue, SCRIBE_WAIT);
 		if (IS_ERR(generic_event))
 			return;
@@ -228,7 +227,22 @@ void scribe_bookmark_point(void)
 		scribe_free_event(event);
 		sync_on_bookmark(scribe, bmark, &id, &npr);
 	}
+}
 
+void scribe_bookmark_point(void)
+{
+	struct scribe_ps *scribe = current->scribe;
+	struct scribe_bookmark *bmark;
+
+	if (!is_scribed(scribe))
+		return;
+
+	bmark = scribe->ctx->bmark;
+
+	if (is_recording(scribe))
+		scribe_bookmark_point_record(scribe, bmark);
+	else
+		scribe_bookmark_point_replay(scribe, bmark);
 }
 
 static int scribe_golive_on_bookmark(struct scribe_bookmark *bmark,
