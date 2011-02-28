@@ -618,6 +618,8 @@ bool scribe_maybe_detach(struct scribe_ps *scribe)
 	if (!should_detach(scribe))
 		return false;
 
+	scribe_assert_no_locked_region(&scribe->resources);
+
 	p = scribe->p;
 
 	scribe_get_context(ctx);

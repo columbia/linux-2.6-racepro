@@ -420,6 +420,7 @@ extern void scribe_resource_init_user(struct scribe_res_user *user);
 extern void scribe_resource_exit_user(struct scribe_res_user *user);
 extern int scribe_resource_pre_alloc(struct scribe_res_user *user,
 				     int doing_recording, int res_extra);
+extern void scribe_assert_no_locked_region(struct scribe_res_user *user);
 extern int scribe_resource_prepare(void);
 
 #define SCRIBE_INTERRUPTIBLE	0x01
@@ -446,6 +447,7 @@ extern int scribe_track_next_file_read(void);
 extern int scribe_track_next_file_write(void);
 extern int scribe_track_next_file_read_interruptible(void);
 extern int scribe_track_next_file_write_interruptible(void);
+extern bool scribe_was_file_locking_interrupted(void);
 extern void scribe_pre_fget(struct files_struct *files, int *lock_flags);
 extern int scribe_post_fget(struct files_struct *files, struct file *file,
 			    int lock_flags);
@@ -466,8 +468,6 @@ extern void scribe_unlock(void *object);
 extern void scribe_unlock_discard(void *object);
 extern void scribe_unlock_err(void *object, int err);
 extern void scribe_assert_locked(void *object);
-
-extern bool scribe_was_locking_interrupted(void);
 
 /* Signals */
 
@@ -544,7 +544,7 @@ struct scribe_ps {
 	struct scribe_res_user resources;
 	int lock_next_file;
 	struct file *locked_file;
-	bool locking_was_interrupted;
+	bool was_file_locking_interrupted;
 
 	struct scribe_ps_arch arch;
 

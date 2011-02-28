@@ -15,8 +15,9 @@
 #ifdef CONFIG_SCRIBE
 
 #include <linux/spinlock.h>
-#include <linux/mutex.h>
+#include <linux/rwsem.h>
 #include <linux/wait.h>
+#include <asm/atomic.h>
 
 /*
  * This is not in scribe.h because of the compilation overhead: linux/fs.h
@@ -35,9 +36,24 @@ struct scribe_resource {
 
 	int id;
 	int type;
-	u32 serial;
-	struct mutex lock;
-	spinlock_t slock;
+
+	/*
+	 * @first_read_serial is used during the recording to save the first
+	 * serial number of read accesses.
+	 */
+	unsigned long first_read_serial;
+
+	/*
+	 * An atomic type is needed here because the replay doesn't take any
+	 * locks.
+	 */
+	atomic_t serial;
+
+	union {
+		struct rw_semaphore semaphore;
+		spinlock_t spinlock;
+	} lock;
+
 	wait_queue_head_t wait;
 };
 

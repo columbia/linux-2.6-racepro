@@ -601,7 +601,7 @@ SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
 		ret = vfs_read(file, buf, count, &pos);
 		file_pos_write(file, pos);
 		fput_light(file, fput_needed);
-	} else if (scribe_was_locking_interrupted())
+	} else if (scribe_was_file_locking_interrupted())
 		ret = -ERESTARTSYS;
 
 	return ret;
@@ -623,7 +623,7 @@ SYSCALL_DEFINE3(write, unsigned int, fd, const char __user *, buf,
 		ret = vfs_write(file, buf, count, &pos);
 		file_pos_write(file, pos);
 		fput_light(file, fput_needed);
-	} else if (scribe_was_locking_interrupted())
+	} else if (scribe_was_file_locking_interrupted())
 		ret = -ERESTARTSYS;
 
 	return ret;
@@ -648,7 +648,7 @@ SYSCALL_DEFINE(pread64)(unsigned int fd, char __user *buf,
 		if (file->f_mode & FMODE_PREAD)
 			ret = vfs_read(file, buf, count, &pos);
 		fput_light(file, fput_needed);
-	} else if (scribe_was_locking_interrupted())
+	} else if (scribe_was_file_locking_interrupted())
 		ret = -ERESTARTSYS;
 
 	return ret;
@@ -681,7 +681,7 @@ SYSCALL_DEFINE(pwrite64)(unsigned int fd, const char __user *buf,
 		if (file->f_mode & FMODE_PWRITE)  
 			ret = vfs_write(file, buf, count, &pos);
 		fput_light(file, fput_needed);
-	} else if (scribe_was_locking_interrupted())
+	} else if (scribe_was_file_locking_interrupted())
 		ret = -ERESTARTSYS;
 
 	return ret;
@@ -938,7 +938,7 @@ SYSCALL_DEFINE3(readv, unsigned long, fd, const struct iovec __user *, vec,
 		ret = vfs_readv(file, vec, vlen, &pos);
 		file_pos_write(file, pos);
 		fput_light(file, fput_needed);
-	} else if (scribe_was_locking_interrupted())
+	} else if (scribe_was_file_locking_interrupted())
 		ret = -ERESTARTSYS;
 
 	if (ret > 0)
@@ -963,7 +963,7 @@ SYSCALL_DEFINE3(writev, unsigned long, fd, const struct iovec __user *, vec,
 		ret = vfs_writev(file, vec, vlen, &pos);
 		file_pos_write(file, pos);
 		fput_light(file, fput_needed);
-	} else if (scribe_was_locking_interrupted())
+	} else if (scribe_was_file_locking_interrupted())
 		ret = -ERESTARTSYS;
 
 	if (ret > 0)
@@ -998,7 +998,7 @@ SYSCALL_DEFINE5(preadv, unsigned long, fd, const struct iovec __user *, vec,
 		if (file->f_mode & FMODE_PREAD)
 			ret = vfs_readv(file, vec, vlen, &pos);
 		fput_light(file, fput_needed);
-	} else if (scribe_was_locking_interrupted())
+	} else if (scribe_was_file_locking_interrupted())
 		ret = -ERESTARTSYS;
 
 	if (ret > 0)
@@ -1027,7 +1027,7 @@ SYSCALL_DEFINE5(pwritev, unsigned long, fd, const struct iovec __user *, vec,
 		if (file->f_mode & FMODE_PWRITE)
 			ret = vfs_writev(file, vec, vlen, &pos);
 		fput_light(file, fput_needed);
-	} else if (scribe_was_locking_interrupted())
+	} else if (scribe_was_file_locking_interrupted())
 		ret = -ERESTARTSYS;
 
 	if (ret > 0)

@@ -17,6 +17,7 @@
 #include <linux/pid_namespace.h>
 #include <linux/ipc_namespace.h>
 #include <linux/writeback.h>
+#include <asm/cmpxchg.h>
 
 /*
  * A few notes:
@@ -196,17 +197,27 @@ struct scribe_resource_handle {
 	struct scribe_resource res;
 };
 
+static inline int use_spinlock(struct scribe_resource *res)
+{
+	return res->type & SCRIBE_RES_SPINLOCK;
+}
+
 void scribe_init_resource(struct scribe_resource *res, int type)
 {
 	res->ctx = NULL;
 	res->on_reset = NULL;
 	res->id = -1; /* The id will be set once the resource is tracked */
 	res->type = type;
-	mutex_init(&res->lock);
-	spin_lock_init(&res->slock);
+
+	res->first_read_serial = -1;
+	atomic_set(&res->serial, 0);
+
+	if (use_spinlock(res))
+		spin_lock_init(&res->lock.spinlock);
+	else
+		init_rwsem(&res->lock.semaphore);
+
 	init_waitqueue_head(&res->wait);
-	scribe_reset_resource(res);
-	res->serial = 0;
 }
 
 static int on_reset_idres(struct scribe_context *ctx,
@@ -289,7 +300,7 @@ static void track_resource(struct scribe_context *ctx,
 	resources = ctx->resources;
 	spin_lock(&resources->lock);
 	if (likely(!res->ctx)) {
-		BUG_ON(res->serial);
+		BUG_ON(atomic_read(&res->serial));
 		res->ctx = ctx;
 		res->id = resources->next_id++;
 		list_add(&res->node, &resources->tracked);
@@ -305,12 +316,16 @@ static int __scribe_reset_resource(struct scribe_resource *res)
 	struct scribe_context *ctx;
 	int ret = 0;
 
-	res->serial = 0;
 	ctx = res->ctx;
 	res->ctx = NULL;
 	list_del(&res->node);
+
+	res->first_read_serial = -1;
+	atomic_set(&res->serial, 0);
+
 	if (res->on_reset)
 		ret = res->on_reset(ctx, res);
+
 	return ret;
 }
 
@@ -538,6 +553,12 @@ int scribe_resource_prepare(void)
 	return __resource_prepare(scribe);
 }
 
+void scribe_assert_no_locked_region(struct scribe_res_user *user)
+{
+	WARN(!list_empty(&user->locked_regions),
+	     "Some regions are left unlocked\n");
+}
+
 void scribe_resource_exit_user(struct scribe_res_user *user)
 {
 	struct scribe_idres *idres;
@@ -545,8 +566,7 @@ void scribe_resource_exit_user(struct scribe_res_user *user)
 	struct scribe_lock_region *lockr, *ltmp;
 	struct scribe_resource_handle *hres, *htmp;
 
-	WARN(!list_empty(&user->locked_regions),
-	     "Some regions are left unlocked\n");
+	scribe_assert_no_locked_region(user);
 
 	hlist_for_each_entry_safe(idres, tmp1, tmp2,
 				 &user->pre_alloc_idres, node) {
@@ -632,26 +652,6 @@ static bool is_locking_necessary(struct scribe_ps *scribe,
 	return false;
 }
 
-static int serial_match(struct scribe_ps *scribe,
-			struct scribe_resource *res, int serial)
-{
-	if (serial == res->serial)
-		return 1;
-
-	if (serial < res->serial) {
-		WARN(1, "Waiting for serial = %d, but the current one is %d\n",
-		     serial, res->serial);
-		scribe_emergency_stop(scribe->ctx, ERR_PTR(-EDIVERGE));
-		return 1;
-	}
-
-	if (scribe->ctx->flags == SCRIBE_IDLE) {
-		/* emergency_stop() has been triggered, we need to leave */
-		return 1;
-	}
-	return 0;
-}
-
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 static int get_lockdep_subclass(int type)
 {
@@ -665,38 +665,95 @@ static inline int get_lockdep_subclass(int type)
 }
 #endif
 
-static inline int use_spinlock(struct scribe_resource *res)
+static int __do_lock_record(struct scribe_ps *scribe,
+			    struct scribe_resource *res,
+			    int do_write, int do_intr)
 {
-	return res->type & SCRIBE_RES_SPINLOCK;
+	int class;
+	int ret;
+
+	class = get_lockdep_subclass(res->type);
+
+	if (use_spinlock(res)) {
+		spin_lock_nested(&res->lock.spinlock, class);
+		return 0;
+	}
+
+	if (!do_intr) {
+		if (do_write)
+			down_write_nested(&res->lock.semaphore, class);
+		else
+			down_read_nested(&res->lock.semaphore, class);
+		return 0;
+	}
+
+	if (do_write)
+		ret = wait_event_interruptible_exclusive(res->wait,
+		  down_write_trylock_nested(&res->lock.semaphore, class));
+	else
+		ret = wait_event_interruptible(res->wait,
+		  down_read_trylock_nested(&res->lock.semaphore, class));
+
+	return ret;
 }
 
-static void do_lock_record(struct scribe_ps *scribe,
-			   struct scribe_lock_region *lock_region,
-			   struct scribe_resource *res)
-{
-	scribe_create_insert_point(&lock_region->ip, &scribe->queue->stream);
-}
-
-static void do_lock_record_intr(struct scribe_ps *scribe,
-				struct scribe_lock_region *lock_region)
-{
-	struct scribe_event_resource_lock_intr *event;
-
-	event = lock_region->lock_event.intr;
-	lock_region->lock_event.intr = NULL;
-
-	/*
-	 * The lock_intr event is smaller than the allocated one, so casting
-	 * the event works.
-	 */
-	event->h.type = SCRIBE_EVENT_RESOURCE_LOCK_INTR;
-	scribe_queue_event_at(&lock_region->ip, event);
-	scribe_commit_insert_point(&lock_region->ip);
-}
-
-static int do_lock_replay(struct scribe_ps *scribe,
+static int do_lock_record(struct scribe_ps *scribe,
 			  struct scribe_lock_region *lock_region,
 			  struct scribe_resource *res)
+{
+	struct scribe_event_resource_lock_intr *event;
+	int do_intr = lock_region->flags & SCRIBE_INTERRUPTIBLE;
+	int do_write = lock_region->flags & SCRIBE_WRITE;
+
+	scribe_create_insert_point(&lock_region->ip, &scribe->queue->stream);
+
+	if (__do_lock_record(scribe, res, do_write, do_intr)) {
+		/* Interrupted ... */
+		event = lock_region->lock_event.intr;
+		lock_region->lock_event.intr = NULL;
+
+		/*
+		 * The lock_intr event is smaller than the allocated one, so
+		 * casting the event works.
+		 */
+		event->h.type = SCRIBE_EVENT_RESOURCE_LOCK_INTR;
+		scribe_queue_event_at(&lock_region->ip, event);
+		scribe_commit_insert_point(&lock_region->ip);
+		return -EINTR;
+	}
+
+	if (do_write)
+		res->first_read_serial = -1;
+	else {
+		/*
+		 * This works because when @first_read_serial is equal to -1,
+		 * @res->serial cannot change because it gets incremented only
+		 * during the unlock(). So once @res->serial changes,
+		 * @first_read_serial would already be assigned.
+		 */
+		cmpxchg(&res->first_read_serial, -1, atomic_read(&res->serial));
+	}
+
+	return 0;
+}
+
+static int serial_match(struct scribe_ps *scribe,
+			struct scribe_resource *res, int serial)
+{
+	if (serial <= atomic_read(&res->serial))
+		return 1;
+
+	if (unlikely(scribe->ctx->flags == SCRIBE_IDLE)) {
+		/* emergency_stop() has been triggered, we need to leave */
+		return 1;
+	}
+
+	return 0;
+}
+
+static int __do_lock_replay(struct scribe_ps *scribe,
+			    struct scribe_lock_region *lock_region,
+			    struct scribe_resource *res)
 {
 	struct scribe_event *intr_event;
 	int type;
@@ -745,34 +802,21 @@ static int do_lock_replay(struct scribe_ps *scribe,
 	/* That's for avoiding a thundering herd */
 	scribe->waiting_for_serial = serial;
 	wmb();
-
 	wait_event(res->wait, serial_match(scribe, res, serial));
+
 	return 0;
 }
 
-static int __do_lock(struct scribe_ps *scribe,
-		  struct scribe_lock_region *lock_region,
-		  struct scribe_resource *res)
+static int do_lock_replay(struct scribe_ps *scribe,
+			  struct scribe_lock_region *lock_region,
+			  struct scribe_resource *res)
 {
-	int class;
-	int intr;
-
-	class = get_lockdep_subclass(res->type);
-
-	if (use_spinlock(res)) {
-		spin_lock_nested(&res->slock, class);
-		return 0;
+	if (__do_lock_replay(scribe, lock_region, res)) {
+		if (lock_region->flags & SCRIBE_INTERRUPTIBLE)
+			return -EINTR;
 	}
 
-	if (!(lock_region->flags & SCRIBE_INTERRUPTIBLE)) {
-		mutex_lock_nested(&res->lock, class);
-		return 0;
-	}
-
-	intr = mutex_lock_interruptible_nested(&res->lock, class) ? -EINTR : 0;
-	scribe->locking_was_interrupted = !!intr;
-	return intr;
-
+	return 0;
 }
 
 static int do_lock(struct scribe_ps *scribe,
@@ -787,57 +831,55 @@ static int do_lock(struct scribe_ps *scribe,
 	if (unlikely(is_detaching(scribe))) {
 		if (lock_region->flags & SCRIBE_INTERRUPTIBLE)
 			return -EINTR;
-		return __do_lock(scribe, lock_region, res);
+		return 0;
 	}
+
+	BUG_ON(!(lock_region->flags & (SCRIBE_READ|SCRIBE_WRITE)));
 
 	if (is_recording(scribe))
-		do_lock_record(scribe, lock_region, res);
-	else {
-		/*
-		 * Even in case of replay errors while trying to pump events,
-		 * we want to take the lock if we cannot fail with EINT, so
-		 * that we stay consistent with the paired unlock().
-		 */
-		if (do_lock_replay(scribe, lock_region, res)) {
-			if (lock_region->flags & SCRIBE_INTERRUPTIBLE) {
-				scribe->locking_was_interrupted = true;
-				return -EINTR;
-			}
-		}
-		scribe->locking_was_interrupted = false;
-
-		/* During the replay we never wait in a interruptible state */
-		lock_region->flags &= ~SCRIBE_INTERRUPTIBLE;
-	}
-
-	if (__do_lock(scribe, lock_region, res)) {
-		/* Reached only when recording */
-		do_lock_record_intr(scribe, lock_region);
-		return -EINTR;
-	}
-	return 0;
+		return do_lock_record(scribe, lock_region, res);
+	else
+		return do_lock_replay(scribe, lock_region, res);
 }
 
-static void wake_up_for_serial(struct scribe_resource *res)
+static void __do_unlock_record(struct scribe_resource *res, int do_write)
 {
-	wait_queue_head_t *q = &res->wait;
-	wait_queue_t *wq;
+	if (use_spinlock(res))
+		spin_unlock(&res->lock.spinlock);
+	else {
+		if (do_write)
+			up_write(&res->lock.semaphore);
+		else
+			up_read(&res->lock.semaphore);
 
-	spin_lock(&q->lock);
-	list_for_each_entry(wq, &q->task_list, task_list) {
-		struct task_struct *p = wq->private;
-		if (p->scribe->waiting_for_serial == res->serial) {
-			wq->func(wq, TASK_NORMAL, 0, NULL);
-			break;
-		}
+		/* We need to wake the ones in wait_event_interruptible */
+		wake_up(&res->wait);
 	}
-	spin_unlock(&q->lock);
 }
 
 static void do_unlock_record(struct scribe_ps *scribe,
 			     struct scribe_lock_region *lock_region,
-			     struct scribe_resource *res, int serial)
+			     struct scribe_resource *res)
 {
+	int do_write = lock_region->flags & SCRIBE_WRITE;
+	unsigned long serial;
+
+	if (do_write) {
+		/*
+		 * We have a lock write on the resource, so there won't be no
+		 * race.
+		 * @serial has already been incremented.
+		 */
+		serial = atomic_read(&res->serial) - 1;
+	} else {
+		/*
+		 * The value is stable until we release the read lock.
+		 */
+		serial = res->first_read_serial;
+	}
+
+	__do_unlock_record(res, do_write);
+
 	if (should_scribe_res_extra(scribe)) {
 		struct scribe_event_resource_lock_extra *lock_event;
 		struct scribe_event_resource_unlock *unlock_event;
@@ -847,8 +889,7 @@ static void do_unlock_record(struct scribe_ps *scribe,
 		lock_region->unlock_event = NULL;
 
 		lock_event->type = res->type;
-		lock_event->write_access = !!(lock_region->flags &
-					      SCRIBE_WRITE);
+		lock_event->write_access = !!do_write;
 		lock_event->id = res->id;
 		lock_event->serial = serial;
 		scribe_queue_event_at(&lock_region->ip, lock_event);
@@ -893,13 +934,28 @@ static void print_unlock_on_failure(struct scribe_ps *scribe,
 	}
 }
 
+static void __do_unlock_replay(struct scribe_resource *res)
+{
+	unsigned long serial = atomic_read(&res->serial);
+	wait_queue_head_t *q = &res->wait;
+	wait_queue_t *wq, *tmp;
+
+	spin_lock(&q->lock);
+	list_for_each_entry_safe(wq, tmp, &q->task_list, task_list) {
+		struct task_struct *p = wq->private;
+		if (p->scribe->waiting_for_serial <= serial)
+			wq->func(wq, TASK_NORMAL, 0, NULL);
+	}
+	spin_unlock(&q->lock);
+}
+
 static void do_unlock_replay(struct scribe_ps *scribe,
 			     struct scribe_lock_region *lock_region,
-			     struct scribe_resource *res, int serial)
+			     struct scribe_resource *res)
 {
 	struct scribe_event_resource_unlock *event;
 
-	wake_up_for_serial(res);
+	__do_unlock_replay(res);
 
 	if (unlikely(scribe->ctx->flags == SCRIBE_IDLE)) {
 		print_unlock_on_failure(scribe, lock_region);
@@ -919,31 +975,21 @@ static void do_unlock(struct scribe_ps *scribe,
 		      struct scribe_lock_region *lock_region)
 {
 	struct scribe_resource *res = lock_region->res;
-	int serial = 0;
-	int detaching;
 
 	if (!is_locking_necessary(scribe, res))
 		return;
 
-	detaching = is_detaching(scribe);
-
-	if (likely(!detaching))
-		serial = res->serial++;
-
-	if (use_spinlock(res))
-		spin_unlock(&res->slock);
-	else
-		mutex_unlock(&res->lock);
-
-	might_sleep();
-
-	if (unlikely(detaching))
+	if (unlikely(is_detaching(scribe)))
 		return;
 
+	atomic_inc(&res->serial);
+
 	if (is_recording(scribe))
-		do_unlock_record(scribe, lock_region, res, serial);
+		do_unlock_record(scribe, lock_region, res);
 	else
-		do_unlock_replay(scribe, lock_region, res, serial);
+		do_unlock_replay(scribe, lock_region, res);
+
+	might_sleep();
 }
 
 static void do_unlock_discard(struct scribe_ps *scribe,
@@ -954,17 +1000,14 @@ static void do_unlock_discard(struct scribe_ps *scribe,
 	if (!is_locking_necessary(scribe, res))
 		return;
 
-	if (use_spinlock(res))
-		spin_unlock(&res->slock);
-	else
-		mutex_unlock(&res->lock);
-
 	if (unlikely(is_detaching(scribe)))
 		return;
 
-	if (is_recording(scribe))
+	if (is_recording(scribe)) {
+		int do_write = lock_region->flags & SCRIBE_WRITE;
+		__do_unlock_record(res, do_write);
 		scribe_commit_insert_point(&lock_region->ip);
-	else {
+	} else {
 		WARN(scribe->ctx->flags != SCRIBE_IDLE,
 		     "Discarding resource lock on replay\n");
 	}
@@ -1300,6 +1343,7 @@ static int __track_next_file(int flags)
 		return -ENOMEM;
 
 	scribe->lock_next_file = flags;
+	scribe->was_file_locking_interrupted = false;
 	return 0;
 }
 
@@ -1359,13 +1403,13 @@ int scribe_post_fget(struct files_struct *files, struct file *file,
 
 	scribe_unlock(files);
 
-	if (!file) {
-		current->scribe->locking_was_interrupted = false;
+	if (!file)
 		return 0;
-	}
 
-	if (lock_file(file, lock_flags))
+	if (lock_file(file, lock_flags)) {
+		current->scribe->was_file_locking_interrupted = true;
 		return -EINTR;
+	}
 
 	current->scribe->locked_file = file;
 	return 0;
@@ -1382,6 +1426,16 @@ void scribe_pre_fput(struct file *file)
 		scribe_unlock(scribe->locked_file);
 		scribe->locked_file = NULL;
 	}
+}
+
+bool scribe_was_file_locking_interrupted(void)
+{
+	struct scribe_ps *scribe = current->scribe;
+
+	if (!may_be_scribed(scribe))
+		return false;
+
+	return scribe->was_file_locking_interrupted;
 }
 
 static void lock_files(struct files_struct *files, int flags)
@@ -1443,14 +1497,4 @@ void scribe_lock_ipc(struct ipc_namespace *ns)
 
 	/* For now all IPC things are synchronized on the same resource */
 	__lock_object(scribe, ns, &ns->scribe_resource, SCRIBE_WRITE);
-}
-
-bool scribe_was_locking_interrupted(void)
-{
-	struct scribe_ps *scribe = current->scribe;
-
-	if (!may_be_scribed(scribe))
-		return false;
-
-	return scribe->locking_was_interrupted;
 }
