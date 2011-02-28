@@ -126,7 +126,7 @@ int down_read_trylock_nested(struct rw_semaphore *sem, int subclass)
 	return ret;
 }
 
-EXPORT_SYMBOL(down_read_trylock);
+EXPORT_SYMBOL(down_read_trylock_nested);
 
 void down_read_non_owner(struct rw_semaphore *sem)
 {
@@ -156,7 +156,7 @@ int down_write_trylock_nested(struct rw_semaphore *sem, int subclass)
 	return ret;
 }
 
-EXPORT_SYMBOL(down_write_trylock);
+EXPORT_SYMBOL(down_write_trylock_nested);
 
 void up_read_non_owner(struct rw_semaphore *sem)
 {
