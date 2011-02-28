@@ -288,6 +288,11 @@ void scribe_exit_syscall(struct pt_regs *regs)
 	scribe_commit_syscall(scribe, regs,
 			      syscall_get_return_value(current, regs));
 
+	scribe_bookmark_point();
+
+	if (scribe_maybe_detach(scribe))
+		return;
+
 	__scribe_allow_uaccess(scribe);
 	scribe_signal_leave_sync_point();
 
