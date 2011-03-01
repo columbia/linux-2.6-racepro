@@ -1788,7 +1788,8 @@ repeat:
 	if ((wo->wo_type < PIDTYPE_MAX) && !wo->wo_pid)
 		goto notask;
 
-	if (is_replaying(scribe) && scribe->ctx->flags != SCRIBE_IDLE) {
+	if (is_replaying(scribe) &&
+	    !is_scribe_context_dead(scribe->ctx)) {
 		/* The task might have to get reparented, so we wait */
 		wo->notask_error = 0;
 	}
@@ -1837,7 +1838,7 @@ notask:
 		 */
 		if (!signal_pending(current) &&
 		    !(is_replaying(scribe) &&
-		      scribe->ctx->flags == SCRIBE_IDLE)) {
+		      is_scribe_context_dead(scribe->ctx))) {
 			schedule();
 			goto repeat;
 		}
@@ -1881,7 +1882,8 @@ static int scribe_pre_wait(struct wait_opts *wo, long *ret, int options)
 		return 0;
 	}
 
-	if (is_replaying(scribe) && scribe->ctx->flags != SCRIBE_IDLE) {
+	if (is_replaying(scribe) &&
+	    !is_scribe_context_dead(scribe->ctx)) {
 		*ret = scribe_value(&pid);
 		if (*ret)
 			return -1;

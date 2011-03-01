@@ -46,10 +46,11 @@
  * record/replay command
  */
 #ifdef __KERNEL__
-#define SCRIBE_IDLE			0x00000000
 #define SCRIBE_RECORD			0x00000001
 #define SCRIBE_REPLAY			0x00000002
 #define SCRIBE_STOP			0x00000004
+#define SCRIBE_STATE_MASK		(SCRIBE_RECORD |  SCRIBE_REPLAY | \
+					 SCRIBE_STOP)
 #endif
 
 #define SCRIBE_SYSCALL_RET		0x00000100

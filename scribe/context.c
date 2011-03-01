@@ -22,7 +22,7 @@ struct scribe_context *scribe_alloc_context(void)
 
 	atomic_set(&ctx->ref_cnt, 1);
 	ctx->id = current->pid;
-	ctx->flags = SCRIBE_IDLE;
+	ctx->flags = 0;
 
 	spin_lock_init(&ctx->tasks_lock);
 	INIT_LIST_HEAD(&ctx->tasks);
@@ -105,7 +105,7 @@ static int context_start(struct scribe_context *ctx, unsigned long flags,
 {
 	assert_spin_locked(&ctx->tasks_lock);
 
-	if (ctx->flags != SCRIBE_IDLE)
+	if (!is_scribe_context_dead(ctx))
 		return -EPERM;
 
 	/*
@@ -158,7 +158,7 @@ static void context_idle(struct scribe_context *ctx,
 		spin_unlock(&ctx->queues_lock);
 	}
 
-	ctx->flags = SCRIBE_IDLE;
+	ctx->flags &= ~SCRIBE_STATE_MASK;
 
 	spin_lock(&ctx->backtrace_lock);
 	backtrace = ctx->backtrace;
@@ -262,17 +262,17 @@ void scribe_emergency_stop(struct scribe_context *ctx,
 
 	spin_lock(&ctx->tasks_lock);
 
-	if (ctx->flags == SCRIBE_IDLE) {
+	if (is_scribe_context_dead(ctx)) {
 		if (!IS_ERR(reason))
 			scribe_free_event(reason);
 		goto out;
 	}
 
 	/*
-	 * The SCRIBE_IDLE flag has to be set here (as opposed to after the
-	 * killing) to guard against races with scribe_attach() called from
-	 * copy_process() or execve(). See in scribe_attach() for more
-	 * details.
+	 * The SCRIBE_STATE_MASK flags has to be clear here (as opposed to
+	 * after the killing) to guard against races with scribe_attach()
+	 * called from copy_process() or execve(). See in scribe_attach() for
+	 * more details.
 	 */
 	context_idle(ctx, reason);
 	wake_up(&ctx->tasks_wait);
@@ -313,7 +313,7 @@ int scribe_stop(struct scribe_context *ctx)
 	int ret = 0;
 
 	spin_lock(&ctx->tasks_lock);
-	if (ctx->flags == SCRIBE_IDLE)
+	if (is_scribe_context_dead(ctx))
 		ret = -EPERM;
 	else if (list_empty(&ctx->tasks))
 		context_idle(ctx, NULL);
@@ -399,7 +399,7 @@ int scribe_set_attach_on_exec(struct scribe_context *ctx, int enable)
 	if (is_ps_scribed(p))
 		return -EPERM;
 
-	if (ctx->flags == SCRIBE_IDLE)
+	if (is_scribe_context_dead(ctx))
 		return -EPERM;
 
 	exit_scribe(p);
@@ -447,7 +447,7 @@ void scribe_attach(struct scribe_ps *scribe)
 	spin_lock(&ctx->tasks_lock);
 	BUG_ON(is_scribed(scribe));
 
-	if (unlikely(ctx->flags == SCRIBE_IDLE)) {
+	if (unlikely(is_scribe_context_dead(ctx))) {
 		spin_unlock(&ctx->tasks_lock);
 
 		/*
@@ -462,9 +462,8 @@ void scribe_attach(struct scribe_ps *scribe)
 		 * some SIGKILLs, but only to the parent.
 		 *
 		 * We can SIGKILL the current process because if we attached
-		 * right before the context went SCRIBE_IDLE, we would have
-		 * received the SIGKILL from emergency_stop() anyways. It's a
-		 * race.
+		 * right before the context went dead, we would have received
+		 * the SIGKILL from emergency_stop() anyways. It's a race.
 		 *
 		 * Note: During replay, in case a new event comes in for our
 		 * pid, a new queue will be instantiated by the device, and
@@ -542,7 +541,7 @@ void __scribe_detach(struct scribe_ps *scribe)
 
 	BUG_ON(!is_scribed(scribe));
 
-	WARN_ON(scribe->can_uaccess && ctx->flags != SCRIBE_IDLE);
+	WARN_ON(scribe->can_uaccess && !is_scribe_context_dead(ctx));
 	WARN_ON(is_recording(scribe) && scribe->signal.should_defer);
 
 	scribe_detach_arch(scribe);
@@ -561,7 +560,7 @@ void __scribe_detach(struct scribe_ps *scribe)
 	 * The last task in the context is detaching, it's time to set it to
 	 * idle. Userspace will get notified.
 	 */
-	if (list_empty(&ctx->tasks) && ctx->flags != SCRIBE_IDLE)
+	if (list_empty(&ctx->tasks) && !is_scribe_context_dead(ctx))
 		context_idle(ctx, NULL);
 	spin_unlock(&ctx->tasks_lock);
 	wake_up(&ctx->tasks_wait);

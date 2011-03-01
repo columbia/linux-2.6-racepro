@@ -1889,7 +1889,7 @@ static int serial_match(struct scribe_ps *scribe,
 	if (atomic_read(&page->serial) >= serial)
 		return 1;
 
-	if (scribe->ctx->flags == SCRIBE_IDLE) {
+	if (is_scribe_context_dead(scribe->ctx)) {
 		/* emergency_stop() has been triggered, we need to leave */
 		return 1;
 	}

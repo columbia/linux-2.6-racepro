@@ -743,7 +743,7 @@ static int serial_match(struct scribe_ps *scribe,
 	if (serial <= atomic_read(&res->serial))
 		return 1;
 
-	if (unlikely(scribe->ctx->flags == SCRIBE_IDLE)) {
+	if (unlikely(is_scribe_context_dead(scribe->ctx))) {
 		/* emergency_stop() has been triggered, we need to leave */
 		return 1;
 	}
@@ -957,7 +957,7 @@ static void do_unlock_replay(struct scribe_ps *scribe,
 
 	__do_unlock_replay(res);
 
-	if (unlikely(scribe->ctx->flags == SCRIBE_IDLE)) {
+	if (unlikely(is_scribe_context_dead(scribe->ctx))) {
 		print_unlock_on_failure(scribe, lock_region);
 		return;
 	}
@@ -1008,7 +1008,7 @@ static void do_unlock_discard(struct scribe_ps *scribe,
 		__do_unlock_record(res, do_write);
 		scribe_commit_insert_point(&lock_region->ip);
 	} else {
-		WARN(scribe->ctx->flags != SCRIBE_IDLE,
+		WARN(!is_scribe_context_dead(scribe->ctx),
 		     "Discarding resource lock on replay\n");
 	}
 }

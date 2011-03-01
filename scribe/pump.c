@@ -72,13 +72,13 @@ static int __get_active_queue(struct scribe_context *ctx,
 		/*
 		 * There are no more queues in the context, which means that
 		 * there are no tasks attached as well. Thus the context
-		 * status is either set to:
-		 * - SCRIBE_IDLE: the recording is over, and so we want
+		 * state is either:
+		 * - dead: the recording is over, and so we want
 		 *   serialize_events() to return 0
 		 * - SCRIBE_RECORD: the recording has not started yet, we want
 		 *   to wait.
 		 */
-		if (ctx->flags == SCRIBE_IDLE)
+		if (is_scribe_context_dead(ctx))
 			ret = -ENODATA;
 	}
 out:
@@ -254,7 +254,7 @@ static void event_pump_record(struct scribe_context *ctx,
 		 */
 		if (!buffer_full) {
 			wait_event_timeout(ctx->tasks_wait,
-					   ctx->flags == SCRIBE_IDLE, HZ);
+					   is_scribe_context_dead(ctx), HZ);
 		}
 
 		ret = serialize_events(ctx, buf, PUMP_BUFFER_SIZE,
@@ -499,7 +499,7 @@ retry:
 		if (ret >= 0 && !queue->stream.sealed)
 			ret = -EPIPE;
 		if (ret < 0) {
-			if (ctx->flags != SCRIBE_IDLE) {
+			if (!is_scribe_context_dead(ctx)) {
 				spin_unlock(&ctx->queues_lock);
 				scribe_emergency_stop(ctx, ERR_PTR(ret));
 				/*

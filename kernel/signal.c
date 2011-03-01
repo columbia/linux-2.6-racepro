@@ -1227,14 +1227,14 @@ static bool scribe_should_defer_signal(struct scribe_ps *scribe, int sig)
 	 * - We don't care about being in a sync point because the signal to
 	 *   get delivered will not need a sync point (but fences are still
 	 *   needed).
-	 * - If the context state is set to SCRIBE_IDLE, it means that
-	 *   emergency_stop() got called, and we have a SIGKILL to process ASAP,
-	 *   synchronizing doesn't really matter here because something has
-	 *   already gone wrong.
+	 * - If the context is dead, it means that emergency_stop() got
+	 *   called, and we have a SIGKILL to process ASAP, synchronizing
+	 *   doesn't really matter here because something has already gone
+	 *   wrong.
 	 */
 	return scribe->signal.should_defer &&
 		!sig_kernel_synchronous(sig) &&
-		likely(scribe->ctx->flags != SCRIBE_IDLE);
+		likely(!is_scribe_context_dead(scribe->ctx));
 }
 
 static bool scribe_should_replay_signal(struct scribe_ps *scribe, int sig)
@@ -1263,7 +1263,7 @@ static int __send_signal(int sig, struct siginfo *info, struct task_struct *t,
 
 	if (!is_scribed(scribe) ||
 	    !should_scribe_signals(scribe) ||
-	    unlikely(scribe->ctx->flags == SCRIBE_IDLE))
+	    unlikely(is_scribe_context_dead(scribe->ctx)))
 		scribe = NULL;
 
 	if (is_replaying(scribe)) {

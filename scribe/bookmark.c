@@ -117,7 +117,7 @@ static inline int bookmark_is_wait_over(struct scribe_bookmark *bmark, int id)
 	if (bmark->golive_latch)
 		return 0;
 
-	if (bmark->ctx->flags == SCRIBE_IDLE)
+	if (is_scribe_context_dead(bmark->ctx))
 		return 1;
 
 	return bmark->npr == 0 || bmark->id != id;
@@ -145,8 +145,8 @@ static void sync_on_bookmark(struct scribe_ps *scribe,
 		/* First we have to wait for the right bookmark... */
 		BUG_ON(bmark->id > *id);
 		wait_event(bmark->wait, bmark->id == *id ||
-					bmark->ctx->flags == SCRIBE_IDLE);
-		if (bmark->ctx->flags == SCRIBE_IDLE)
+					is_scribe_context_dead(bmark->ctx));
+		if (is_scribe_context_dead(bmark->ctx))
 			return;
 	}
 
