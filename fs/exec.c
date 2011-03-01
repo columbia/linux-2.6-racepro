@@ -486,6 +486,9 @@ EXPORT_SYMBOL(copy_strings_kernel);
 
 #ifdef CONFIG_SCRIBE
 
+#define SCRIBE_TOUCHED_PF_FLAGS (PF_RANDOMIZE)
+#define SCRIBE_TOUCHED_PERSONALITY (ADDR_NO_RANDOMIZE)
+
 static void scribe_prepare_attach_on_exec(int *old_flags, int *old_personality)
 {
 	struct scribe_ps *scribe = current->scribe;
@@ -504,14 +507,21 @@ static void scribe_prepare_attach_on_exec(int *old_flags, int *old_personality)
 	}
 }
 
+static void scribe_restore_flags(int old_flags, int old_personality)
+{
+	current->flags &= ~SCRIBE_TOUCHED_PF_FLAGS;
+	current->flags |= old_flags & SCRIBE_TOUCHED_PF_FLAGS;
+
+	current->personality &= ~SCRIBE_TOUCHED_PERSONALITY;
+	current->personality |= old_personality & SCRIBE_TOUCHED_PERSONALITY;
+}
+
 static void scribe_cleanup_attach_on_exec(int old_flags, int old_personality)
 {
 	struct scribe_ps *scribe = current->scribe;
 
-	if (scribe && (scribe->flags & SCRIBE_PS_ATTACH_ON_EXEC)) {
-		current->flags = old_flags;
-		current->personality = old_personality;
-	}
+	if (scribe && (scribe->flags & SCRIBE_PS_ATTACH_ON_EXEC))
+		scribe_restore_flags(old_flags, old_personality);
 }
 
 static void scribe_attach_on_exec(int old_flags, int old_personality)
@@ -519,8 +529,7 @@ static void scribe_attach_on_exec(int old_flags, int old_personality)
 	struct scribe_ps *scribe = current->scribe;
 
 	if (scribe && (scribe->flags & SCRIBE_PS_ATTACH_ON_EXEC)) {
-		current->flags = old_flags;
-		current->personality = old_personality;
+		scribe_restore_flags(old_flags, old_personality);
 		if (!(old_personality & ADDR_NO_RANDOMIZE))
 			current->flags |= PF_RANDOMIZE;
 
