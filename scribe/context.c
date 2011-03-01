@@ -285,6 +285,8 @@ void scribe_emergency_stop(struct scribe_context *ctx,
 	 */
 	rcu_read_lock();
 	list_for_each_entry(scribe, &ctx->tasks, node) {
+		/* The init process must die too */
+		scribe->p->signal->flags &= ~SIGNAL_UNKILLABLE;
 		do_send_sig_info(SIGKILL, SEND_SIG_PRIV, scribe->p, 1);
 		/*
 		 * do_send_sig_info() may fail because the signal handler is
@@ -474,7 +476,7 @@ void scribe_attach(struct scribe_ps *scribe)
 		scribe_put_queue(scribe->queue);
 		scribe->queue = NULL;
 
-		do_send_sig_info(SIGKILL, SEND_SIG_PRIV, scribe->p, 1);
+		force_sig(SIGKILL, scribe->p);
 		exit_scribe(scribe->p);
 		return;
 	}
@@ -632,7 +634,7 @@ bool scribe_maybe_detach(struct scribe_ps *scribe)
 	 * have started again, and other tasks might have joined the context.
 	 */
 	if (ctx->last_error)
-		do_send_sig_info(SIGKILL, SEND_SIG_PRIV, p, 1);
+		force_sig(SIGKILL, p);
 	scribe_put_context(ctx);
 
 	return true;
