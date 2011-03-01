@@ -1000,8 +1000,14 @@ static struct vfsmount *pipe_mnt __read_mostly;
  */
 static char *pipefs_dname(struct dentry *dentry, char *buffer, int buflen)
 {
-	return dynamic_dname(dentry, buffer, buflen, "pipe:[%lu]",
-				dentry->d_inode->i_ino);
+	unsigned long i_ino = dentry->d_inode->i_ino;
+	int ret;
+
+	ret = scribe_value(&i_ino);
+	if (ret < 0)
+		return ERR_PTR(ret);
+
+	return dynamic_dname(dentry, buffer, buflen, "pipe:[%lu]", i_ino);
 }
 
 static const struct dentry_operations pipefs_dentry_operations = {

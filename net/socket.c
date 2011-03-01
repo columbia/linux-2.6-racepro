@@ -339,8 +339,14 @@ static struct file_system_type sock_fs_type = {
  */
 static char *sockfs_dname(struct dentry *dentry, char *buffer, int buflen)
 {
-	return dynamic_dname(dentry, buffer, buflen, "socket:[%lu]",
-				dentry->d_inode->i_ino);
+	unsigned long i_ino = dentry->d_inode->i_ino;
+	int ret;
+
+	ret = scribe_value(&i_ino);
+	if (ret < 0)
+		return ERR_PTR(ret);
+
+	return dynamic_dname(dentry, buffer, buflen, "socket:[%lu]", i_ino);
 }
 
 static const struct dentry_operations sockfs_dentry_operations = {
