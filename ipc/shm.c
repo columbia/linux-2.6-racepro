@@ -987,7 +987,7 @@ SYSCALL_DEFINE3(shmat, int, shmid, char __user *, shmaddr, int, shmflg)
  * detach and kill segment if marked destroyed.
  * The work is done in shm_close.
  */
-static int do_shmdt(char __user * shmaddr)
+static int do_shmdt(char __user *shmaddr)
 {
 	struct mm_struct *mm = current->mm;
 	struct vm_area_struct *vma;

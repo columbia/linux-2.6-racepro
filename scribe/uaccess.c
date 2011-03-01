@@ -76,7 +76,7 @@ static void post_init_data_desc(struct scribe_ps *scribe,
 
 	if (desc->do_non_det)
 		desc->do_det = false;
-	
+
 	if (desc->do_det || desc->do_non_det) {
 		if (desc->do_info)
 			desc->do_extra = true;

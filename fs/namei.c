@@ -1097,7 +1097,6 @@ static int do_path_lookup(int dfd, const char *name,
 		path_put(&nd->root);
 		nd->root.mnt = NULL;
 	}
-
 	return retval;
 }
 
@@ -1811,7 +1810,7 @@ static struct file *do_last(struct nameidata *nd, struct path *path,
  * open_to_namei_flags() for more details.
  */
 struct file *do_filp_open(int dfd, const char *pathname,
-			  int open_flag, int mode, int acc_mode)
+		int open_flag, int mode, int acc_mode)
 {
 	struct file *filp;
 	struct nameidata nd;

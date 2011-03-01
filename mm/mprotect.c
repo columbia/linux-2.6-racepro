@@ -83,7 +83,7 @@ static void change_pte_range(struct mm_struct *mm, struct vm_area_struct *vma,
 
 static inline void change_pmd_range(struct mm_struct *mm,
 				    struct vm_area_struct *vma, pud_t *pud,
-				    unsigned long addr,unsigned long end,
+				    unsigned long addr, unsigned long end,
 				    pgprot_t newprot, int dirty_accountable)
 {
 	pmd_t *pmd;
@@ -94,7 +94,8 @@ static inline void change_pmd_range(struct mm_struct *mm,
 		next = pmd_addr_end(addr, end);
 		if (pmd_none_or_clear_bad(pmd))
 			continue;
-		change_pte_range(mm, vma, pmd, addr, next, newprot, dirty_accountable);
+		change_pte_range(mm, vma, pmd, addr, next,
+				 newprot, dirty_accountable);
 	} while (pmd++, addr = next, addr != end);
 }
 
@@ -111,7 +112,8 @@ static inline void change_pud_range(struct mm_struct *mm,
 		next = pud_addr_end(addr, end);
 		if (pud_none_or_clear_bad(pud))
 			continue;
-		change_pmd_range(mm, vma, pud, addr, next, newprot, dirty_accountable);
+		change_pmd_range(mm, vma, pud, addr, next,
+				 newprot, dirty_accountable);
 	} while (pud++, addr = next, addr != end);
 }
 
@@ -131,7 +133,8 @@ static void change_protection(struct vm_area_struct *vma,
 		next = pgd_addr_end(addr, end);
 		if (pgd_none_or_clear_bad(pgd))
 			continue;
-		change_pud_range(mm, vma, pgd, addr, next, newprot, dirty_accountable);
+		change_pud_range(mm, vma, pgd, addr, next,
+				 newprot, dirty_accountable);
 	} while (pgd++, addr = next, addr != end);
 	flush_tlb_range(vma, start, end);
 }

@@ -919,7 +919,7 @@ static void print_unlock_on_failure(struct scribe_ps *scribe,
 	case SCRIBE_RES_TYPE_FILE:
 		file = lock_region->object;
 
-		tmp = (char*)__get_free_page(GFP_TEMPORARY);
+		tmp = (char *)__get_free_page(GFP_TEMPORARY);
 		if (!tmp)
 			return;
 
@@ -927,7 +927,7 @@ static void print_unlock_on_failure(struct scribe_ps *scribe,
 		if (IS_ERR(pathname))
 			pathname = "??";
 
-		printk("[%d] unlocking resource of file %s\n",
+		printk(KERN_ERR "[%d] unlocking resource of file %s\n",
 		       task_pid_vnr(scribe->p), pathname);
 
 		free_page((unsigned long)tmp);
@@ -1480,12 +1480,12 @@ void scribe_lock_pid_write(pid_t pid)
 
 void scribe_unlock_pid(pid_t pid)
 {
-	scribe_unlock((void*)pid);
+	scribe_unlock((void *)pid);
 }
 
 void scribe_unlock_pid_discard(pid_t pid)
 {
-	scribe_unlock_discard((void*)pid);
+	scribe_unlock_discard((void *)pid);
 }
 
 void scribe_lock_ipc(struct ipc_namespace *ns)

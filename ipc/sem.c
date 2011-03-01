@@ -1297,8 +1297,8 @@ static int get_queue_result(struct sem_queue *q)
 }
 
 static int do_semtimedop(struct ipc_namespace *ns, int semid,
-			struct sembuf __user * tsops, unsigned nsops,
-			const struct timespec __user * timeout)
+			struct sembuf __user *tsops, unsigned nsops,
+			const struct timespec __user *timeout)
 {
 	int error = -EINVAL;
 	struct sem_array *sma;

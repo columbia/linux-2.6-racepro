@@ -983,7 +983,6 @@ static int futex_wake(u32 __user *uaddr, int fshared, int nr_wake, u32 bitset)
 	spin_unlock(&hb->lock);
 	scribe_unlock(hb);
 	put_futex_key(fshared, &key);
-
 out:
 	return ret;
 }

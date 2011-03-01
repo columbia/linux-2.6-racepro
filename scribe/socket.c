@@ -244,7 +244,7 @@ out:
 }
 
 static int scribe_mmap(struct file *file, struct socket *sock,
-		       struct vm_area_struct * vma)
+		       struct vm_area_struct *vma)
 {
 	struct scribe_ps *scribe = current->scribe;
 

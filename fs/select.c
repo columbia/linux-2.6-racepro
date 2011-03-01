@@ -888,8 +888,7 @@ int do_sys_poll(struct pollfd __user *ufds, unsigned int nfds,
 		fdcount = scribe->orig_ret;
 		if (fdcount == -ERESTART_RESTARTBLOCK)
 			fdcount = -EINTR;
-	}
-	else
+	} else
 		fdcount = do_poll(nfds, head, &table, end_time);
 	poll_freewait(&table);
 

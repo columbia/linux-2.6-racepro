@@ -1310,7 +1310,6 @@ static int __send_signal(int sig, struct siginfo *info, struct task_struct *t,
 	 */
 	if (legacy_queue(pending, sig))
 		return 0;
-
 	/*
 	 * fast-pathed signals for kernel-internal things like SIGSTOP
 	 * or SIGKILL.
@@ -1508,7 +1507,6 @@ force_sig_info(int sig, struct siginfo *info, struct task_struct *t)
  */
 int zap_other_threads(struct task_struct *p)
 {
-	struct scribe_ps *scribe;
 	struct task_struct *t = p;
 	int count = 0;
 
@@ -1525,11 +1523,9 @@ int zap_other_threads(struct task_struct *p)
 		/*
 		 * We don't need the safe version since the sighand is locked
 		 */
-		scribe = t->scribe;
-		if (may_be_scribed(scribe)) {
+		if (is_ps_recording(t)) {
 			/* We need to log the signal, going the slow path */
-			if (!is_replaying(scribe))
-				specific_send_sig_info(SIGKILL, SEND_SIG_FORCED, t);
+			specific_send_sig_info(SIGKILL, SEND_SIG_FORCED, t);
 			continue;
 		}
 #endif
@@ -1950,7 +1946,6 @@ int do_notify_parent(struct task_struct *tsk, int sig)
 		if (psig->action[SIGCHLD-1].sa.sa_handler == SIG_IGN)
 			sig = -1;
 	}
-
 	if (valid_signal(sig) && sig > 0)
 		__group_send_sig_info(sig, &info, tsk->parent);
 	__wake_up_parent(tsk, tsk->parent);
