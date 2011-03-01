@@ -82,6 +82,7 @@
 #include <linux/pid_namespace.h>
 #include <linux/fs_struct.h>
 #include <linux/slab.h>
+#include <linux/scribe.h>
 #include "internal.h"
 
 /* NOTE:
@@ -1527,6 +1528,33 @@ out_unlock:
 	return NULL;
 }
 
+struct task_struct *get_proc_task(struct inode *inode)
+{
+	struct scribe_ps *scribe = current->scribe;
+	struct pid *pid = proc_pid(inode);
+	struct task_struct *tsk;
+	pid_t pid_nr;
+
+	if (!is_scribed(scribe) || scribe->in_read_write) {
+		/* 
+		 * Don't want to sync because the read emulation code is too
+		 * stupid to lock the right pid.
+		 */
+		return get_pid_task(pid, PIDTYPE_PID);
+	}
+
+	pid_nr = pid->numbers[pid->level].nr;
+
+	if (scribe_resource_prepare())
+		return NULL;
+
+	scribe_lock_pid_read(pid_nr);
+	tsk = get_pid_task(pid, PIDTYPE_PID);
+	scribe_unlock_pid(pid_nr);
+
+	return tsk;
+}
+
 static int pid_getattr(struct vfsmount *mnt, struct dentry *dentry, struct kstat *stat)
 {
 	struct inode *inode = dentry->d_inode;
@@ -2795,12 +2823,20 @@ struct dentry *proc_pid_lookup(struct inode *dir, struct dentry * dentry, struct
 	if (tgid == ~0U)
 		goto out;
 
+	result = ERR_PTR(-ENOMEM);
+	if (scribe_resource_prepare())
+		goto out;
+
 	ns = dentry->d_sb->s_fs_info;
+
+	scribe_lock_pid_read(tgid);
 	rcu_read_lock();
 	task = find_task_by_pid_ns(tgid, ns);
 	if (task)
 		get_task_struct(task);
 	rcu_read_unlock();
+	scribe_unlock_pid(tgid);
+
 	if (!task)
 		goto out;
 

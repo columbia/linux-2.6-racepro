@@ -68,10 +68,7 @@ static inline struct pid *proc_pid(struct inode *inode)
 	return PROC_I(inode)->pid;
 }
 
-static inline struct task_struct *get_proc_task(struct inode *inode)
-{
-	return get_pid_task(proc_pid(inode), PIDTYPE_PID);
-}
+extern struct task_struct *get_proc_task(struct inode *inode);
 
 static inline int proc_fd(struct inode *inode)
 {
