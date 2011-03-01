@@ -1245,9 +1245,6 @@ static bool scribe_should_replay_signal(struct scribe_ps *scribe, int sig)
 	if (sig_kernel_synchronous(sig))
 		return true;
 
-	if (unlikely(scribe->ctx->flags == SCRIBE_IDLE))
-		return true;
-
 	return false;
 }
 #endif /* CONFIG_SCRIBE */
@@ -1264,7 +1261,9 @@ static int __send_signal(int sig, struct siginfo *info, struct task_struct *t,
 	/* We don't need the rcu version because we hold siglock */
 	struct scribe_ps *scribe = t->scribe;
 
-	if (!is_scribed(scribe) || !should_scribe_signals(scribe))
+	if (!is_scribed(scribe) ||
+	    !should_scribe_signals(scribe) ||
+	    unlikely(scribe->ctx->flags == SCRIBE_IDLE))
 		scribe = NULL;
 
 	if (is_replaying(scribe)) {
