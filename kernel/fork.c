@@ -1080,8 +1080,11 @@ static struct task_struct *copy_process(unsigned long long clone_flags,
 	if ((clone_flags & (CLONE_NEWNS|CLONE_FS)) == (CLONE_NEWNS|CLONE_FS))
 		return ERR_PTR(-EINVAL);
 
-	if ((clone_flags & CLONE_NEWPID) && is_ps_scribed(current))
+	if ((clone_flags & CLONE_NEWPID) && is_ps_scribed(current)) {
+		/* Not implemented yet */
+		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOSYS));
 		return ERR_PTR(-ENOSYS);
+	}
 
 	/*
 	 * Thread groups must share signals as well, and detached threads
