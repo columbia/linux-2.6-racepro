@@ -1175,7 +1175,9 @@ struct wait_opts {
 	enum pid_type		wo_type;
 	int			wo_flags;
 	struct pid		*wo_pid;
-	pid_t			wo_scribe_target_pid;
+	pid_t			wo_scribe_pid;
+	scribe_insert_point_t	wo_scribe_pid_ip;
+	bool			wo_scribe_pid_locked;
 
 	struct siginfo __user	*wo_info;
 	int __user		*wo_stat;
@@ -1687,10 +1689,10 @@ static int wait_consider_task(struct wait_opts *wo, int ptrace,
 	if (!pre_wait_consider_task(wo, ptrace, p))
 		goto again;
 	ret = post_wait_consider_task(wo, ptrace, p);
-	if (!ret && ret != -EFAULT)
+	if (!ret)
 		goto again;
 
-	wo->wo_scribe_target_pid = pid;
+	wo->wo_scribe_pid = pid;
 	scribe_unlock_pid(pid);
 	return ret;
 
@@ -1846,19 +1848,95 @@ end:
 	return retval;
 }
 
-SYSCALL_DEFINE5(waitid, int, which, pid_t, upid, struct siginfo __user *,
+/*
+ * when @scribe_pre_wait() returns -1, @ret is filled with the value the
+ * syscall should return.
+ */
+static int scribe_pre_wait(struct wait_opts *wo, long *ret, int options)
+{
+	struct scribe_ps *scribe = current->scribe;
+	pid_t pid;
+	int orig_ret;
+
+	wo->wo_scribe_pid = 0;
+	wo->wo_scribe_pid_locked = false;
+
+	if (!is_scribed(scribe))
+		return 0;
+
+	if (scribe_resource_prepare()) {
+		/*
+		 * We're not really allowed to return -ENOMEM, so we'll do an
+		 * emergency stop.
+		 * We don't return an error because reaping children is
+		 * important (zap_pid_ns_processes())
+		 */
+		scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
+	}
+
+	if (is_recording(scribe)) {
+		/* We'll save the pid right here */
+		scribe_create_insert_point(&wo->wo_scribe_pid_ip,
+					   &scribe->queue->stream);
+		return 0;
+	}
+
+	if (is_replaying(scribe) && scribe->ctx->flags != SCRIBE_IDLE) {
+		*ret = scribe_value(&pid);
+		if (*ret)
+			return -1;
+		if (!pid) {
+			/*
+			 * We don't use scribe->orig_ret because
+			 * zap_pid_ns_processes() calls sys_wait().
+			 */
+			*ret = scribe_value(&orig_ret);
+			if (*ret)
+				return -1;
+			*ret = orig_ret;
+			return -1;
+		}
+
+		wo->wo_scribe_pid = pid;
+		wo->wo_scribe_pid_locked = true;
+
+		if (unlikely(options & WNOWAIT))
+			scribe_lock_pid_read(pid);
+		else
+			scribe_lock_pid_write(pid);
+	}
+
+	return 0;
+}
+
+static void scribe_post_wait(struct wait_opts *wo, long ret)
+{
+	struct scribe_ps *scribe = current->scribe;
+	scribe_insert_point_t *pid_ip;
+	pid_t pid = wo->wo_scribe_pid;
+
+	if (is_recording(scribe)) {
+		pid_ip = &wo->wo_scribe_pid_ip;
+
+		if (scribe_value_at(&pid, pid_ip))
+			scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
+
+		if (!pid && scribe_value_at(&ret, pid_ip))
+			scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
+
+		scribe_commit_insert_point(pid_ip);
+	} else if (wo->wo_scribe_pid_locked)
+		scribe_unlock_pid(pid);
+}
+
+SYSCALL_DEFINE5(waitid, int, which, pid_t, _upid, struct siginfo __user *,
 		infop, int, options, struct rusage __user *, ru)
 {
 	struct wait_opts wo;
 	struct pid *pid = NULL;
 	enum pid_type type;
+	pid_t upid = _upid;
 	long ret;
-
-	if (is_ps_scribed(current)) {
-		/* Not implemented yet */
-		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOSYS));
-		return -ENOSYS;
-	}
 
 	if (options & ~(WNOHANG|WNOWAIT|WEXITED|WSTOPPED|WCONTINUED))
 		return -EINVAL;
@@ -1881,6 +1959,14 @@ SYSCALL_DEFINE5(waitid, int, which, pid_t, upid, struct siginfo __user *,
 		break;
 	default:
 		return -EINVAL;
+	}
+
+	if (scribe_pre_wait(&wo, &ret, options))
+		return ret;
+
+	if (wo.wo_scribe_pid) {
+		type = PIDTYPE_PID;
+		upid = wo.wo_scribe_pid;
 	}
 
 	if (type < PIDTYPE_MAX)
@@ -1918,63 +2004,31 @@ SYSCALL_DEFINE5(waitid, int, which, pid_t, upid, struct siginfo __user *,
 
 	put_pid(pid);
 
+	scribe_post_wait(&wo, ret);
+
 	/* avoid REGPARM breakage on x86: */
-	asmlinkage_protect(5, ret, which, upid, infop, options, ru);
+	asmlinkage_protect(5, ret, which, _upid, infop, options, ru);
 	return ret;
 }
 
 SYSCALL_DEFINE4(wait4, pid_t, _upid, int __user *, stat_addr,
 		int, options, struct rusage __user *, ru)
 {
-	struct scribe_ps *scribe = current->scribe;
-	scribe_insert_point_t scribe_ip;
-	bool scribe_locked = false;
-
 	struct wait_opts wo;
 	struct pid *pid = NULL;
 	enum pid_type type;
-	long ret, orig_ret;
 	pid_t upid = _upid;
+	long ret;
 
 	if (options & ~(WNOHANG|WUNTRACED|WCONTINUED|
 			__WNOTHREAD|__WCLONE|__WALL))
 		return -EINVAL;
 
-	if (scribe_resource_prepare()) {
-		/*
-		 * We're not really allowed to return -ENOMEM, so we'll do an
-		 * emergency stop.
-		 * We don't return an error because reaping children is
-		 * important (zap_pid_ns_processes())
-		 */
-		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
-	}
+	if (scribe_pre_wait(&wo, &ret, options))
+		return ret;
 
-	if (is_recording(scribe)) {
-		/* We'll save the pid right here */
-		scribe_create_insert_point(&scribe_ip, &scribe->queue->stream);
-	} else if (is_replaying(scribe) && scribe->ctx->flags != SCRIBE_IDLE) {
-		ret = scribe_value(&upid);
-		if (ret)
-			goto out;
-		if (!upid) {
-			/*
-			 * We don't use scribe->orig_ret because
-			 * zap_pid_ns_processes() calls sys_wait().
-			 */
-			ret = scribe_value(&orig_ret);
-			if (!ret)
-				ret = orig_ret;
-			goto out;
-		}
-
-		scribe_locked = true;
-
-		if (unlikely(options & WNOWAIT))
-			scribe_lock_pid_read(upid);
-		else
-			scribe_lock_pid_write(upid);
-	}
+	if (wo.wo_scribe_pid)
+		upid = wo.wo_scribe_pid;
 
 	if (upid == -1)
 		type = PIDTYPE_MAX;
@@ -1991,7 +2045,6 @@ SYSCALL_DEFINE4(wait4, pid_t, _upid, int __user *, stat_addr,
 
 	wo.wo_type	= type;
 	wo.wo_pid	= pid;
-	wo.wo_scribe_target_pid = 0;
 	wo.wo_flags	= options | WEXITED;
 	wo.wo_info	= NULL;
 	wo.wo_stat	= stat_addr;
@@ -1999,17 +2052,8 @@ SYSCALL_DEFINE4(wait4, pid_t, _upid, int __user *, stat_addr,
 	ret = do_wait(&wo);
 	put_pid(pid);
 
-	if (is_recording(scribe)) {
-		if (scribe_value_at(&wo.wo_scribe_target_pid, &scribe_ip) ||
-		    (!wo.wo_scribe_target_pid &&
-		     scribe_value_at(&ret, &scribe_ip)))
-			scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
+	scribe_post_wait(&wo, ret);
 
-		scribe_commit_insert_point(&scribe_ip);
-	} else if (is_replaying(scribe) && scribe_locked)
-		scribe_unlock_pid(upid);
-
-out:
 	/* avoid REGPARM breakage on x86: */
 	asmlinkage_protect(4, ret, _upid, stat_addr, options, ru);
 	return ret;
