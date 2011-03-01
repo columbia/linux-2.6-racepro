@@ -741,8 +741,10 @@ static void scribe_signal_enter_sync_point_replay(struct scribe_ps *scribe,
 		if (sig_event->deferred)
 			*num_deferred += 1;
 
+		scribe->signal.self_signaling = true;
 		do_send_sig_info(sig_event->nr, (siginfo_t *)sig_event->info,
-				 current, false);
+				 scribe->p, false);
+		scribe->signal.self_signaling = false;
 
 		scribe_free_event(sig_event);
 	}
@@ -808,6 +810,7 @@ void scribe_init_signal(struct scribe_signal *scribe_sig)
 	 * easier to implement. The drawback is that we'll process pending
 	 * signals only on the next sync point.
 	 */
+	scribe_sig->self_signaling = false;
 	scribe_sig->should_defer = true;
 	init_sigpending(&scribe_sig->deferred);
 
@@ -1233,6 +1236,20 @@ static bool scribe_should_defer_signal(struct scribe_ps *scribe, int sig)
 		!sig_kernel_synchronous(sig) &&
 		likely(scribe->ctx->flags != SCRIBE_IDLE);
 }
+
+static bool scribe_should_replay_signal(struct scribe_ps *scribe, int sig)
+{
+	if (scribe->signal.self_signaling)
+		return true;
+
+	if (sig_kernel_synchronous(sig))
+		return true;
+
+	if (unlikely(scribe->ctx->flags == SCRIBE_IDLE))
+		return true;
+
+	return false;
+}
 #endif /* CONFIG_SCRIBE */
 
 static int __send_signal(int sig, struct siginfo *info, struct task_struct *t,
@@ -1244,10 +1261,17 @@ static int __send_signal(int sig, struct siginfo *info, struct task_struct *t,
 	bool do_completion = true;
 
 #ifdef CONFIG_SCRIBE
-	/* We don't need the rcu version because we have the siglock locked */
+	/* We don't need the rcu version because we hold siglock */
 	struct scribe_ps *scribe = t->scribe;
-	if (!is_recording(scribe) || !should_scribe_signals(scribe))
+
+	if (!is_scribed(scribe) || !should_scribe_signals(scribe))
 		scribe = NULL;
+
+	if (is_replaying(scribe)) {
+		if (!scribe_should_replay_signal(scribe, sig))
+			return 0;
+		scribe = NULL;
+	}
 #endif
 
 	trace_signal_generate(sig, info, t);
@@ -1264,6 +1288,8 @@ static int __send_signal(int sig, struct siginfo *info, struct task_struct *t,
 	 * get the signal.
 	 * This will have to get fixed.
 	 */
+
+	/* scribe != NULL only during recording */
 	if (scribe) {
 		group = 0;
 		if (scribe_should_defer_signal(scribe, sig)) {
@@ -1579,11 +1605,6 @@ int kill_pid_info(int sig, struct siginfo *info, struct pid *pid)
 retry:
 	p = pid_task(pid, PIDTYPE_PID);
 	if (p) {
-		if (is_ps_replaying_safe(p)) {
-			error = 0;
-			goto out;
-		}
-
 		error = group_send_sig_info(sig, info, p);
 		if (unlikely(error == -ESRCH))
 			/*
@@ -1594,7 +1615,6 @@ retry:
 			 */
 			goto retry;
 	}
-out:
 	rcu_read_unlock();
 
 	return error;
@@ -1932,7 +1952,7 @@ int do_notify_parent(struct task_struct *tsk, int sig)
 			sig = -1;
 	}
 
-	if (valid_signal(sig) && sig > 0 && !is_ps_replaying_safe(tsk->parent))
+	if (valid_signal(sig) && sig > 0)
 		__group_send_sig_info(sig, &info, tsk->parent);
 	__wake_up_parent(tsk, tsk->parent);
 	spin_unlock_irqrestore(&psig->siglock, flags);
@@ -1985,8 +2005,7 @@ static void do_notify_parent_cldstop(struct task_struct *tsk, int why)
 	sighand = parent->sighand;
 	spin_lock_irqsave(&sighand->siglock, flags);
 	if (sighand->action[SIGCHLD-1].sa.sa_handler != SIG_IGN &&
-	    !(sighand->action[SIGCHLD-1].sa.sa_flags & SA_NOCLDSTOP) &&
-	    !is_ps_replaying_safe(parent))
+	    !(sighand->action[SIGCHLD-1].sa.sa_flags & SA_NOCLDSTOP))
 		__group_send_sig_info(SIGCHLD, &info, parent);
 	/*
 	 * Even if SIGCHLD is not generated, we must wake up wait4 calls.

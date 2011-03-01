@@ -203,9 +203,7 @@ int ptrace_attach(struct task_struct *task)
 		task->ptrace |= PT_PTRACE_CAP;
 
 	__ptrace_link(task, current);
-
-	if (!is_ps_replaying_safe(task))
-		send_sig_info(SIGSTOP, SEND_SIG_FORCED, task);
+	send_sig_info(SIGSTOP, SEND_SIG_FORCED, task);
 
 	retval = 0;
 unlock_tasklist:

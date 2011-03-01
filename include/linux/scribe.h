@@ -478,6 +478,7 @@ struct scribe_signal {
 	 * sighand->siglock.
 	 */
 	bool should_defer;
+	bool self_signaling;
 	struct sigpending deferred;
 	scribe_insert_point_t signal_ip;
 
