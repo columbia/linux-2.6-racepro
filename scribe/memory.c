@@ -1125,6 +1125,11 @@ void scribe_mem_exit_st(struct scribe_ps *scribe)
 	if (!scribe_mm)
 		return;
 
+	if (unlikely(scribe_mm->weak_owner != MEM_SYNC_IN)) {
+		/* BUG() or something got called */
+		scribe_mem_sync_point(scribe, MEM_SYNC_IN);
+	}
+
 	/*
 	 * we don't want any schedule() to call mem_sync_point() while we are
 	 * in MEM_SYNC_SLEEP
