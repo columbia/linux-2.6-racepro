@@ -3,7 +3,6 @@
 
 /* Keep includes the same across arches.  */
 #include <linux/mm.h>
-#include <linux/scribe.h>
 
 /* Caches aren't brain-dead on the intel. */
 static inline void flush_cache_all(void) { }
@@ -34,10 +33,7 @@ static inline void copy_to_user_page(struct vm_area_struct *vma,
 				     void *dst, const void *src,
 				     unsigned long len)
 {
-	scribe_pre_uaccess(src, dst, len, 0);
-	handle_mm_fault(vma->vm_mm, vma, vaddr, FAULT_FLAG_WRITE);
 	memcpy(dst, src, len);
-	scribe_post_uaccess(src, dst, len, 0);
 }
 
 static inline void copy_from_user_page(struct vm_area_struct *vma,
@@ -45,10 +41,7 @@ static inline void copy_from_user_page(struct vm_area_struct *vma,
 				       void *dst, const void *src,
 				       unsigned long len)
 {
-	scribe_pre_uaccess(dst, src, len, SCRIBE_DATA_INPUT);
-	handle_mm_fault(vma->vm_mm, vma, vaddr, 0);
 	memcpy(dst, src, len);
-	scribe_post_uaccess(dst, src, len, SCRIBE_DATA_INPUT);
 }
 
 #ifdef CONFIG_X86_PAT
