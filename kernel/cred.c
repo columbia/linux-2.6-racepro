@@ -17,6 +17,7 @@
 #include <linux/init_task.h>
 #include <linux/security.h>
 #include <linux/cn_proc.h>
+#include <linux/scribe.h>
 
 #if 0
 #define kdebug(FMT, ...) \
@@ -283,6 +284,9 @@ error:
  * Returns a pointer to the new creds-to-be if successful, NULL otherwise.
  *
  * Call commit_creds() or abort_creds() to clean up.
+ *
+ * Scribe: returns with scribe_lock_current_cred_write() called on success.
+ *
  */
 struct cred *prepare_creds(void)
 {
@@ -292,11 +296,16 @@ struct cred *prepare_creds(void)
 
 	validate_process_creds();
 
+	if (scribe_resource_prepare())
+		return NULL;
+
 	new = kmem_cache_alloc(cred_jar, GFP_KERNEL);
 	if (!new)
 		return NULL;
 
 	kdebug("prepare_creds() alloc %p", new);
+
+	scribe_lock_current_cred_write();
 
 	old = task->cred;
 	memcpy(new, old, sizeof(struct cred));
@@ -316,8 +325,11 @@ struct cred *prepare_creds(void)
 	new->security = NULL;
 #endif
 
-	if (security_prepare_creds(new, old, GFP_KERNEL) < 0)
+	if (security_prepare_creds(new, old, GFP_KERNEL) < 0) {
+		scribe_unlock_current_cred_discard();
 		goto error;
+	}
+
 	validate_creds(new);
 	return new;
 
@@ -347,6 +359,7 @@ struct cred *prepare_exec_creds(void)
 		kfree(tgcred);
 		return new;
 	}
+	scribe_unlock_current_cred();
 
 #ifdef CONFIG_KEYS
 	/* newly exec'd tasks don't get a thread keyring */
@@ -390,6 +403,11 @@ int copy_creds(struct task_struct *p, unsigned long long clone_flags)
 
 	mutex_init(&p->cred_guard_mutex);
 
+#ifdef CONFIG_SCRIBE
+	scribe_init_resource(&p->scribe_cred_resource,
+			     SCRIBE_RES_TYPE_CRED | SCRIBE_RES_SPINLOCK);
+#endif
+
 	if (
 #ifdef CONFIG_KEYS
 		!p->cred->thread_keyring &&
@@ -409,6 +427,9 @@ int copy_creds(struct task_struct *p, unsigned long long clone_flags)
 	new = prepare_creds();
 	if (!new)
 		return -ENOMEM;
+
+	/* commit/abort isn't called so we unlock here */
+	scribe_unlock_current_cred();
 
 	if (clone_flags & CLONE_NEWUSER) {
 		ret = create_user_ns(new);
@@ -535,6 +556,8 @@ int commit_creds(struct cred *new)
 	    new->fsgid != old->fsgid)
 		proc_id_connector(task, PROC_EVENT_GID);
 
+	scribe_unlock_current_cred();
+
 	/* release the old obj and subj refs both */
 	put_cred(old);
 	put_cred(old);
@@ -551,6 +574,8 @@ EXPORT_SYMBOL(commit_creds);
  */
 void abort_creds(struct cred *new)
 {
+	scribe_unlock_current_cred();
+
 	kdebug("abort_creds(%p{%d,%d})", new,
 	       atomic_read(&new->usage),
 	       read_cred_subscribers(new));

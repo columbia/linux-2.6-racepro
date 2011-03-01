@@ -1111,6 +1111,9 @@ static struct task_struct *copy_process(unsigned long long clone_flags,
 				current->signal->flags & SIGNAL_UNKILLABLE)
 		return ERR_PTR(-EINVAL);
 
+	if (scribe_resource_prepare())
+		return ERR_PTR(-ENOMEM);
+
 	retval = security_task_create(clone_flags);
 	if (retval)
 		goto fork_out;
@@ -1265,10 +1268,6 @@ static struct task_struct *copy_process(unsigned long long clone_flags,
 		goto bad_fork_cleanup_scribe;
 
 	if (pid != &init_struct_pid) {
-		retval = scribe_resource_prepare();
-		if (retval)
-			goto bad_fork_cleanup_scribe;
-
 		pid = alloc_pid(p->nsproxy->pid_ns, target_pids);
 		if (IS_ERR(pid)) {
 			retval = PTR_ERR(pid);

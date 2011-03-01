@@ -171,6 +171,8 @@ repeat:
 	atomic_dec(&__task_cred(p)->user->processes);
 	rcu_read_unlock();
 
+	scribe_reset_resource(&p->scribe_cred_resource);
+
 	proc_flush_task(p);
 
 	write_lock_irq(&tasklist_lock);

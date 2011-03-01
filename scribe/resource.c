@@ -17,6 +17,7 @@
 #include <linux/pid_namespace.h>
 #include <linux/ipc_namespace.h>
 #include <linux/writeback.h>
+#include <linux/cred.h>
 #include <asm/cmpxchg.h>
 
 /*
@@ -1456,6 +1457,37 @@ void scribe_lock_files_read(struct files_struct *files)
 void scribe_lock_files_write(struct files_struct *files)
 {
 	lock_files(files, SCRIBE_WRITE);
+}
+
+static void lock_cred(int flags)
+{
+	struct scribe_ps *scribe = current->scribe;
+
+	if (!should_handle_resources(scribe))
+		return;
+
+	__lock_object(scribe, &current->scribe_cred_resource,
+		      &current->scribe_cred_resource, flags);
+}
+
+void scribe_lock_current_cred_read(void)
+{
+	lock_cred(SCRIBE_READ);
+}
+
+void scribe_lock_current_cred_write(void)
+{
+	lock_cred(SCRIBE_WRITE);
+}
+
+void scribe_unlock_current_cred(void)
+{
+	scribe_unlock(&current->scribe_cred_resource);
+}
+
+void scribe_unlock_current_cred_discard(void)
+{
+	scribe_unlock_discard(&current->scribe_cred_resource);
 }
 
 static void lock_pid(pid_t pid, int flags)

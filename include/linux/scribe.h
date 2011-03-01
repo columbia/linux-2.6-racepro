@@ -462,6 +462,11 @@ extern void scribe_pre_fput(struct file *file);
 extern void scribe_lock_files_read(struct files_struct *files);
 extern void scribe_lock_files_write(struct files_struct *files);
 
+extern void scribe_lock_current_cred_read(void);
+extern void scribe_lock_current_cred_write(void);
+extern void scribe_unlock_current_cred(void);
+extern void scribe_unlock_current_cred_discard(void);
+
 extern void scribe_lock_pid_read(pid_t pid);
 extern void scribe_lock_pid_write(pid_t pid);
 extern void scribe_unlock_pid(pid_t pid);

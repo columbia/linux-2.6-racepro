@@ -103,6 +103,7 @@ struct sched_param {
 #include <linux/kobject.h>
 #include <linux/latencytop.h>
 #include <linux/cred.h>
+#include <linux/scribe_resource.h>
 
 #include <asm/processor.h>
 
@@ -1323,6 +1324,9 @@ struct task_struct {
 	struct mutex cred_guard_mutex;	/* guard against foreign influences on
 					 * credential calculations
 					 * (notably. ptrace) */
+#ifdef CONFIG_SCRIBE
+	struct scribe_resource scribe_cred_resource;
+#endif
 	struct cred *replacement_session_keyring; /* for KEYCTL_SESSION_TO_PARENT */
 
 	char comm[TASK_COMM_LEN]; /* executable name excluding path

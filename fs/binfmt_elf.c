@@ -154,12 +154,19 @@ create_elf_tables(struct linux_binprm *bprm, struct elfhdr *exec,
 	int items;
 	elf_addr_t *elf_info;
 	int ei_index = 0;
-	const struct cred *cred = current_cred();
+	const struct cred *cred;
 	struct vm_area_struct *vma;
 	int ret;
 #ifdef CONFIG_SCRIBE
 	struct scribe_ps *scribe = current->scribe;
 #endif
+
+	if (scribe_resource_prepare())
+		return -ENOMEM;
+
+	scribe_lock_current_cred_read();
+	cred = current_cred();
+	scribe_unlock_current_cred();
 
 	/*
 	 * In some cases (e.g. Hyper-Threading), we want to avoid L1
