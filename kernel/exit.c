@@ -1831,14 +1831,7 @@ notask:
 	retval = wo->notask_error;
 	if (!retval && !(wo->wo_flags & WNOHANG)) {
 		retval = -ERESTARTSYS;
-		/*
-		 * Scribe: the init process is not killable. Since we may hold
-		 * a scribe lock, the target pid won't be able to exit.
-		 * We'll have a deadlock.
-		 */
-		if (!signal_pending(current) &&
-		    !(is_replaying(scribe) &&
-		      is_scribe_context_dead(scribe->ctx))) {
+		if (!signal_pending(current)) {
 			schedule();
 			goto repeat;
 		}
