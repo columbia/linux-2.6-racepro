@@ -66,8 +66,14 @@ static int sig_task_ignored(struct task_struct *t, int sig,
 	handler = sig_handler(t, sig);
 
 	if (unlikely(t->signal->flags & SIGNAL_UNKILLABLE) &&
-			handler == SIG_DFL && !from_ancestor_ns)
-		return 1;
+			handler == SIG_DFL && !from_ancestor_ns) {
+		/*
+		 * We don't need the safe version since the sighand lock is
+		 * held.
+		 */
+		if (!is_ps_replaying(t))
+			return 1;
+	}
 
 	return sig_handler_ignored(handler, sig);
 }
