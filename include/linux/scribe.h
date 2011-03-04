@@ -794,7 +794,8 @@ extern void scribe_enable_sync_sleep(void);
 extern int do_scribe_page(struct scribe_ps *scribe, struct mm_struct *mm,
 			  struct vm_area_struct *vma, unsigned long address,
 			  pte_t *pte, pmd_t *pmd, unsigned int flags);
-extern void scribe_split_vma(struct vm_area_struct *vma);
+extern void scribe_split_vma(struct vm_area_struct *vma,
+			     struct vm_area_struct *new);
 extern void scribe_vma_link(struct vm_area_struct *vma);
 extern void scribe_unmap_vmas(struct mm_struct *mm, struct vm_area_struct *vma,
 		unsigned long start_addr, unsigned long end_addr);

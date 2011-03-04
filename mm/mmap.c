@@ -1977,7 +1977,7 @@ static int __split_vma(struct mm_struct * mm, struct vm_area_struct * vma,
 
 	/* Success. */
 	if (!err) {
-		scribe_split_vma(vma);
+		scribe_split_vma(vma, new);
 		return 0;
 	}
 
