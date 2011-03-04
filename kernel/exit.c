@@ -1578,7 +1578,9 @@ static int wait_task_continued(struct wait_opts *wo, struct task_struct *p)
 static int pre_wait_consider_task(struct wait_opts *wo, int ptrace,
 				  struct task_struct *p)
 {
-	int ret = eligible_child(wo, p);
+	int ret, *pcode;
+
+	ret = eligible_child(wo, p);
 	if (!ret)
 		return ret;
 
@@ -1610,18 +1612,18 @@ static int pre_wait_consider_task(struct wait_opts *wo, int ptrace,
 
 	wo->notask_error = 0;
 
-	if (p->exit_state == EXIT_ZOMBIE && !delay_group_leader(p))
+	if (p->exit_state == EXIT_ZOMBIE && !delay_group_leader(p) &&
+	    likely(wo->wo_flags & WEXITED))
 		return 1;
 
-	if (task_stopped_code(p, ptrace)) {
-		if (ptrace || (wo->wo_flags & WUNTRACED))
+	if (ptrace || (wo->wo_flags & WUNTRACED)) {
+		pcode = task_stopped_code(p, ptrace);
+		if (pcode && *pcode)
 			return 1;
 	}
 
-	if (unlikely(wo->wo_flags & WCONTINUED))
-		return 1;
-
-	if (p->signal->flags & SIGNAL_STOP_CONTINUED)
+	if (unlikely(wo->wo_flags & WCONTINUED) &&
+	    p->signal->flags & SIGNAL_STOP_CONTINUED)
 		return 1;
 
 	return 0;
