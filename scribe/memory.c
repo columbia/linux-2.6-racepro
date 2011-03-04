@@ -445,67 +445,10 @@ static inline int num_obj_ref(struct scribe_obj_ref *ref) {
 	return atomic_read(&ref->counter);
 }
 
-static inline int get_scribe_cnt(struct mm_struct *mm)
-{
-	int ret;
-	spin_lock(&mm->scribe_lock);
-	ret = mm->scribe_cnt;
-	spin_unlock(&mm->scribe_lock);
-	return ret;
-}
-
-static int is_sharing_mm(struct mm_struct *mm)
-{
-	return get_scribe_cnt(mm) > 1;
-}
-
-static int is_sharing_mm_biased(struct mm_struct *mm)
-{
-	/*
-	 * This one is used when the scribe_mm struct isn't on the mm_struct
-	 * list.
-	 */
-	return get_scribe_cnt(mm) > 0;
-}
-
-static void add_shadow_mm(struct scribe_mm *scribe_mm, struct mm_struct *mm)
-{
-	spin_lock(&mm->scribe_lock);
-	list_add(&scribe_mm->node, &mm->scribe_list);
-	mm->scribe_cnt++;
-	spin_unlock(&mm->scribe_lock);
-	wake_up(&mm->scribe_wait);
-}
-
-static void rm_shadow_mm(struct scribe_mm *scribe_mm, struct mm_struct *mm)
-{
-	struct scribe_page_key key;
-	int cnt;
-
-	spin_lock(&mm->scribe_lock);
-	list_del(&scribe_mm->node);
-	cnt = --mm->scribe_cnt;
-	spin_unlock(&mm->scribe_lock);
-	wake_up(&mm->scribe_wait);
-
-	if (!cnt)  {
-		key.object = mm;
-		key.offset = OFFSET_ALL;
-		scribe_remove_page(scribe_mm->scribe->ctx, &key);
-	}
-}
-
-/*
- * get_all_objects() and put_all_objects() take action only in single threaded
- * mode. And because of this, the mmap semaphore doesn't need to be taken
- */
 static int get_all_objects(struct scribe_context *ctx, struct mm_struct *mm)
 {
 	struct scribe_obj_ref *ref;
 	struct vm_area_struct *vma;
-
-	if (is_sharing_mm_biased(mm))
-		return 0;
 
 	for (vma = mm->mmap; vma; vma = vma->vm_next) {
 		if (!(vma->vm_flags & VM_SHARED))
@@ -529,17 +472,82 @@ static void put_all_objects(struct scribe_context *ctx, struct mm_struct *mm)
 {
 	struct vm_area_struct *vma;
 
-	if (is_sharing_mm_biased(mm))
-		return;
-
 	for (vma = mm->mmap; vma; vma = vma->vm_next) {
 		if (!(vma->vm_flags & VM_SHARED))
 			continue;
 
-		if (test_and_clear_bit(ffs(VM_SCRIBED)-1, &vma->vm_flags))
+		if (vma->vm_flags & VM_SCRIBED) {
+			vma->vm_flags &= ~VM_SCRIBED;
 			put_obj(ctx, vma->vm_file->f_dentry->d_inode);
+		}
 		WARN_ON(vma->vm_flags & VM_SCRIBED);
 	}
+}
+
+static inline int get_scribe_cnt(struct mm_struct *mm)
+{
+	int ret;
+	spin_lock(&mm->scribe_lock);
+	ret = mm->scribe_cnt;
+	spin_unlock(&mm->scribe_lock);
+	return ret;
+}
+
+static int is_sharing_mm(struct mm_struct *mm)
+{
+	return get_scribe_cnt(mm) > 1;
+}
+
+static int __rm_shadow_mm(struct scribe_mm *scribe_mm, struct mm_struct *mm)
+{
+	int cnt;
+
+	spin_lock(&mm->scribe_lock);
+	list_del(&scribe_mm->node);
+	cnt = --mm->scribe_cnt;
+	spin_unlock(&mm->scribe_lock);
+	wake_up(&mm->scribe_wait);
+
+	return cnt;
+}
+
+static void rm_shadow_mm(struct scribe_mm *scribe_mm, struct mm_struct *mm)
+{
+	struct scribe_page_key key;
+	int cnt;
+
+	cnt = __rm_shadow_mm(scribe_mm, mm);
+	if (!cnt) {
+		down_read(&mm->mmap_sem);
+		put_all_objects(scribe_mm->scribe->ctx, mm);
+		up_read(&mm->mmap_sem);
+
+		key.object = mm;
+		key.offset = OFFSET_ALL;
+		scribe_remove_page(scribe_mm->scribe->ctx, &key);
+	}
+}
+
+static int add_shadow_mm(struct scribe_mm *scribe_mm, struct mm_struct *mm)
+{
+	int cnt, ret = 0;
+
+	down_write(&mm->mmap_sem);
+
+	spin_lock(&mm->scribe_lock);
+	list_add(&scribe_mm->node, &mm->scribe_list);
+	cnt = mm->scribe_cnt++;
+	spin_unlock(&mm->scribe_lock);
+	wake_up(&mm->scribe_wait);
+
+	if (!cnt) {
+		ret = get_all_objects(scribe_mm->scribe->ctx, mm);
+		if (ret < 0)
+			__rm_shadow_mm(scribe_mm, mm);
+	}
+
+	up_write(&mm->mmap_sem);
+	return ret;
 }
 
 /********************************************************
@@ -1090,13 +1098,11 @@ int scribe_mem_init_st(struct scribe_ps *scribe)
 	if (!scribe_mm)
 		return -ENOMEM;
 
-	ret = get_all_objects(scribe->ctx, mm);
-	if (ret) {
+	ret = add_shadow_mm(scribe_mm, mm);
+	if (ret < 0) {
 		free_scribe_mm(scribe_mm, mm);
 		return ret;
 	}
-
-	add_shadow_mm(scribe_mm, mm);
 	scribe_mm->is_alone = !is_sharing_mm(mm);
 
 	/*
@@ -1154,7 +1160,6 @@ void scribe_mem_exit_st(struct scribe_ps *scribe)
 		load_cr3(mm->pgd);
 
 	rm_shadow_mm(scribe_mm, mm);
-	put_all_objects(scribe->ctx, mm);
 	free_scribe_mm(scribe_mm, mm);
 }
 
