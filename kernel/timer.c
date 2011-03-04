@@ -40,6 +40,7 @@
 #include <linux/perf_event.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
+#include <linux/scribe.h>
 
 #include <asm/uaccess.h>
 #include <asm/unistd.h>
@@ -1358,26 +1359,66 @@ SYSCALL_DEFINE0(getppid)
 
 SYSCALL_DEFINE0(getuid)
 {
+	long ret;
+
+	if (scribe_resource_prepare()) {
+		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		return -ENOMEM;
+	}
+
 	/* Only we change this so SMP safe */
-	return current_uid();
+	scribe_lock_current_cred_read();
+	ret = current_uid();
+	scribe_unlock_current_cred();
+	return ret;
 }
 
 SYSCALL_DEFINE0(geteuid)
 {
+	long ret;
+
+	if (scribe_resource_prepare()) {
+		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		return -ENOMEM;
+	}
+
 	/* Only we change this so SMP safe */
-	return current_euid();
+	scribe_lock_current_cred_read();
+	ret = current_euid();
+	scribe_unlock_current_cred();
+	return ret;
 }
 
 SYSCALL_DEFINE0(getgid)
 {
+	long ret;
+
+	if (scribe_resource_prepare()) {
+		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		return -ENOMEM;
+	}
+
 	/* Only we change this so SMP safe */
-	return current_gid();
+	scribe_lock_current_cred_read();
+	ret = current_gid();
+	scribe_unlock_current_cred();
+	return ret;
 }
 
 SYSCALL_DEFINE0(getegid)
 {
+	long ret;
+
+	if (scribe_resource_prepare()) {
+		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		return -ENOMEM;
+	}
+
 	/* Only we change this so SMP safe */
-	return  current_egid();
+	scribe_lock_current_cred_read();
+	ret = current_egid();
+	scribe_unlock_current_cred();
+	return ret;
 }
 
 #endif
