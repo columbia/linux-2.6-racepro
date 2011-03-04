@@ -636,5 +636,8 @@ bool scribe_maybe_detach(struct scribe_ps *scribe)
 		force_sig(SIGKILL, p);
 	scribe_put_context(ctx);
 
+	/* Delayed already queues signals should be handled */
+	recalc_sigpending();
+
 	return true;
 }
