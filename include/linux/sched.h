@@ -1270,6 +1270,7 @@ struct task_struct {
 
 #ifdef CONFIG_SCRIBE
 	struct scribe_ps *scribe;
+	struct scribe_resource scribe_ptrace_res;
 #endif
 
 	/* 

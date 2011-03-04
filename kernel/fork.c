@@ -289,6 +289,7 @@ static struct task_struct *dup_task_struct(struct task_struct *orig)
 	tsk->splice_pipe = NULL;
 #ifdef CONFIG_SCRIBE
 	tsk->scribe = NULL;
+	scribe_init_resource(&tsk->scribe_ptrace_res, SCRIBE_RES_TYPE_PTRACE);
 #endif
 
 	account_kernel_stack(ti, 1);

@@ -65,6 +65,7 @@ struct scribe_resource {
 #define SCRIBE_RES_TYPE_FUTEX		4
 #define SCRIBE_RES_TYPE_IPC		5
 #define SCRIBE_RES_TYPE_CRED		6
+#define SCRIBE_RES_TYPE_PTRACE		7
 #define SCRIBE_RES_TYPE_MASK		0x0f
 #define SCRIBE_RES_SPINLOCK		0x80
 

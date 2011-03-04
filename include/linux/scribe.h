@@ -475,6 +475,9 @@ extern void scribe_unlock_pid_discard(pid_t pid);
 struct ipc_namespace;
 extern void scribe_lock_ipc(struct ipc_namespace *ns);
 
+extern void scribe_lock_ptrace_read(struct task_struct *tsk);
+extern void scribe_lock_ptrace_write(struct task_struct *tsk);
+
 extern void scribe_unlock(void *object);
 extern void scribe_unlock_discard(void *object);
 extern void scribe_unlock_err(void *object, int err);

@@ -934,6 +934,7 @@ static void scribe_do_exit(struct task_struct *p, long code)
 	__scribe_detach(scribe);
 
 out:
+	scribe_reset_resource(&p->scribe_ptrace_res);
 	exit_scribe(p);
 }
 

@@ -2055,7 +2055,7 @@ static int sigkill_pending(struct task_struct *tsk)
  * If we actually decide not to stop at all because the tracer
  * is gone, we keep current->exit_code unless clear_code.
  */
-static void ptrace_stop(pid_t pid, int exit_code,
+static void ptrace_stop(struct task_struct *locked_task, int exit_code,
 			int clear_code, siginfo_t *info)
 {
 	if (arch_ptrace_stop_needed(exit_code, info)) {
@@ -2104,10 +2104,10 @@ static void ptrace_stop(pid_t pid, int exit_code,
 		preempt_enable_no_resched();
 
 		scribe_forbid_uaccess();
-		if (pid != -1) {
-			scribe_unlock_pid(pid);
+		if (locked_task) {
+			scribe_unlock(locked_task);
 			schedule();
-			scribe_lock_pid_write(pid);
+			scribe_lock_ptrace_write(locked_task);
 		} else
 			schedule();
 		scribe_allow_uaccess();
@@ -2145,7 +2145,7 @@ static void ptrace_stop(pid_t pid, int exit_code,
 	recalc_sigpending_tsk(current);
 }
 
-static void __ptrace_notify(pid_t pid, int exit_code)
+static void __ptrace_notify(struct task_struct *locked_task, int exit_code)
 {
 	siginfo_t info;
 
@@ -2159,24 +2159,21 @@ static void __ptrace_notify(pid_t pid, int exit_code)
 
 	/* Let the debugger run.  */
 	spin_lock_irq(&current->sighand->siglock);
-	ptrace_stop(pid, exit_code, 1, &info);
+	ptrace_stop(locked_task, exit_code, 1, &info);
 	spin_unlock_irq(&current->sighand->siglock);
 }
 
 void ptrace_notify(int exit_code)
 {
-	pid_t pid;
-
 	if (scribe_resource_prepare()) {
 		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
-		__ptrace_notify(-1, exit_code);
+		__ptrace_notify(NULL, exit_code);
 		return;
 	}
 
-	pid = task_pid_vnr(current);
-	scribe_lock_pid_write(pid);
-	__ptrace_notify(pid, exit_code);
-	scribe_unlock_pid(pid);
+	scribe_lock_ptrace_write(current);
+	__ptrace_notify(current, exit_code);
+	scribe_unlock(current);
 }
 
 
@@ -2186,7 +2183,7 @@ void ptrace_notify(int exit_code)
  * Returns nonzero if we've actually stopped and released the siglock.
  * Returns zero if we didn't stop and still hold the siglock.
  */
-static int do_signal_stop(pid_t pid, int signr)
+static int do_signal_stop(struct task_struct *locked_task, int signr)
 {
 	struct signal_struct *sig = current->signal;
 	int notify;
@@ -2246,8 +2243,8 @@ static int do_signal_stop(pid_t pid, int signr)
 		read_unlock(&tasklist_lock);
 	}
 
-	if (pid != -1)
-		scribe_unlock_pid(pid);
+	if (locked_task)
+		scribe_unlock(locked_task);
 	scribe_forbid_uaccess();
 	if (is_ps_replaying(current)) {
 		/*
@@ -2261,8 +2258,8 @@ static int do_signal_stop(pid_t pid, int signr)
 		} while (try_to_freeze());
 	}
 	scribe_allow_uaccess();
-	if (pid != -1)
-		scribe_lock_pid_write(pid);
+	if (locked_task)
+		scribe_lock_ptrace_write(locked_task);
 
 	tracehook_finish_jctl();
 	current->exit_code = 0;
@@ -2270,8 +2267,8 @@ static int do_signal_stop(pid_t pid, int signr)
 	return 1;
 }
 
-static int ptrace_signal(pid_t pid, int signr, siginfo_t *info,
-			 struct pt_regs *regs, void *cookie)
+static int ptrace_signal(struct task_struct *locked_task, int signr,
+			 siginfo_t *info, struct pt_regs *regs, void *cookie)
 {
 	if (!task_ptrace(current))
 		return signr;
@@ -2279,7 +2276,7 @@ static int ptrace_signal(pid_t pid, int signr, siginfo_t *info,
 	ptrace_signal_deliver(regs, cookie);
 
 	/* Let the debugger run.  */
-	ptrace_stop(pid, signr, 0, info);
+	ptrace_stop(locked_task, signr, 0, info);
 
 	/* We're back.  Did the debugger cancel the sig?  */
 	signr = current->exit_code;
@@ -2312,7 +2309,7 @@ static int ptrace_signal(pid_t pid, int signr, siginfo_t *info,
 int get_signal_to_deliver(siginfo_t *info, struct k_sigaction *return_ka,
 			  struct pt_regs *regs, void *cookie)
 {
-	pid_t pid = -1;
+	struct task_struct *locked_task = NULL;
 	struct sighand_struct *sighand = current->sighand;
 	struct signal_struct *signal = current->signal;
 	int signr;
@@ -2329,21 +2326,21 @@ int get_signal_to_deliver(siginfo_t *info, struct k_sigaction *return_ka,
 
 		local_irq_enable();
 
-		pid = task_pid_vnr(current);
+		locked_task = current;
 		if (scribe_resource_prepare()) {
 			scribe_emergency_stop(current->scribe->ctx,
 					      ERR_PTR(-ENOMEM));
-			pid = -1;
+			locked_task = NULL;
 		} else
-			scribe_lock_pid_write(pid);
+			scribe_lock_ptrace_write(locked_task);
 	}
 
 relock:
 	if (scribe_resource_prepare()) {
 		scribe_emergency_stop(current->scribe->ctx,
 				      ERR_PTR(-ENOMEM));
-		scribe_unlock_pid(pid);
-		pid = -1;
+		scribe_unlock(locked_task);
+		locked_task = NULL;
 	}
 
 	/*
@@ -2390,7 +2387,7 @@ relock:
 			ka = return_ka;
 		else {
 			if (unlikely(signal->group_stop_count > 0) &&
-			    do_signal_stop(pid, 0))
+			    do_signal_stop(locked_task, 0))
 				goto relock;
 
 			signr = dequeue_signal(current, &current->blocked,
@@ -2400,7 +2397,7 @@ relock:
 				break; /* will return 0 */
 
 			if (signr != SIGKILL) {
-				signr = ptrace_signal(pid, signr, info,
+				signr = ptrace_signal(locked_task, signr, info,
 						      regs, cookie);
 				if (!signr)
 					continue;
@@ -2466,7 +2463,8 @@ relock:
 				spin_lock_irq(&sighand->siglock);
 			}
 
-			if (likely(do_signal_stop(pid, info->si_signo))) {
+			if (likely(do_signal_stop(locked_task,
+						  info->si_signo))) {
 				/* It released the siglock.  */
 				goto relock;
 			}
@@ -2480,8 +2478,8 @@ relock:
 
 		spin_unlock_irq(&sighand->siglock);
 
-		if (pid != -1)
-			scribe_unlock_pid(pid);
+		if (locked_task)
+			scribe_unlock(locked_task);
 
 		scribe_forbid_uaccess();
 		scribe_signal_enter_sync_point(NULL);
@@ -2512,8 +2510,8 @@ relock:
 		/* NOTREACHED */
 	}
 	spin_unlock_irq(&sighand->siglock);
-	if (pid != -1)
-		scribe_unlock_pid(pid);
+	if (locked_task)
+		scribe_unlock(locked_task);
 
 	/* That's a hint for all the do_signal() user accesses */
 	scribe_data_det();
@@ -2564,18 +2562,15 @@ out:
 
 void exit_signals(struct task_struct *tsk)
 {
-	pid_t pid;
-
 	if (scribe_resource_prepare()) {
 		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
 		__exit_signals(tsk);
 		return;
 	}
 
-	pid = task_pid_vnr(tsk);
-	scribe_lock_pid_write(pid);
+	scribe_lock_ptrace_write(tsk);
 	__exit_signals(tsk);
-	scribe_unlock_pid(pid);
+	scribe_unlock(tsk);
 }
 
 EXPORT_SYMBOL(recalc_sigpending);
