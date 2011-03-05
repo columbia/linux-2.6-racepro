@@ -1979,7 +1979,8 @@ SYSCALL_DEFINE5(waitid, int, which, pid_t, _upid, struct siginfo __user *,
 	}
 
 	if (scribe_pre_wait(&wo, &ret, options)) {
-		__clear_infop(infop);
+		if (ret == 0 || ret == -EFAULT)
+			__clear_infop(infop);
 		return ret;
 	}
 
