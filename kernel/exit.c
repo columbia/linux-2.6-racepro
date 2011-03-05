@@ -1928,6 +1928,24 @@ static void scribe_post_wait(struct wait_opts *wo, long ret)
 		scribe_unlock_pid(pid);
 }
 
+static int __clear_infop(struct siginfo __user *infop)
+{
+	int ret;
+
+	ret = put_user(0, &infop->si_signo);
+	if (!ret)
+		ret = put_user(0, &infop->si_errno);
+	if (!ret)
+		ret = put_user(0, &infop->si_code);
+	if (!ret)
+		ret = put_user(0, &infop->si_pid);
+	if (!ret)
+		ret = put_user(0, &infop->si_uid);
+	if (!ret)
+		ret = put_user(0, &infop->si_status);
+	return ret;
+}
+
 SYSCALL_DEFINE5(waitid, int, which, pid_t, _upid, struct siginfo __user *,
 		infop, int, options, struct rusage __user *, ru)
 {
@@ -1960,8 +1978,10 @@ SYSCALL_DEFINE5(waitid, int, which, pid_t, _upid, struct siginfo __user *,
 		return -EINVAL;
 	}
 
-	if (scribe_pre_wait(&wo, &ret, options))
+	if (scribe_pre_wait(&wo, &ret, options)) {
+		__clear_infop(infop);
 		return ret;
+	}
 
 	if (wo.wo_scribe_pid) {
 		type = PIDTYPE_PID;
@@ -1988,17 +2008,7 @@ SYSCALL_DEFINE5(waitid, int, which, pid_t, _upid, struct siginfo __user *,
 		 * difference.
 		 */
 		if (!ret)
-			ret = put_user(0, &infop->si_signo);
-		if (!ret)
-			ret = put_user(0, &infop->si_errno);
-		if (!ret)
-			ret = put_user(0, &infop->si_code);
-		if (!ret)
-			ret = put_user(0, &infop->si_pid);
-		if (!ret)
-			ret = put_user(0, &infop->si_uid);
-		if (!ret)
-			ret = put_user(0, &infop->si_status);
+			ret = __clear_infop(infop);
 	}
 
 	put_pid(pid);
