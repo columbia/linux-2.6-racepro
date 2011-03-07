@@ -1159,12 +1159,18 @@ static int random_fasync(int fd, struct file *filp, int on)
 	return fasync_helper(fd, filp, on, &fasync);
 }
 
+static bool need_explicit_inode_lock(struct file *file)
+{
+	return true;
+}
+
 const struct file_operations random_fops = {
 	.read  = random_read,
 	.write = random_write,
 	.poll  = random_poll,
 	.unlocked_ioctl = random_ioctl,
 	.fasync = random_fasync,
+	.scribe_need_explicit_inode_lock = need_explicit_inode_lock,
 };
 
 const struct file_operations urandom_fops = {
@@ -1172,6 +1178,7 @@ const struct file_operations urandom_fops = {
 	.write = random_write,
 	.unlocked_ioctl = random_ioctl,
 	.fasync = random_fasync,
+	.scribe_need_explicit_inode_lock = need_explicit_inode_lock,
 };
 
 /***************************************************************

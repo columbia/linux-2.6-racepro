@@ -1221,14 +1221,20 @@ static inline int inode_need_reg_sync(struct inode *inode)
 	return !(S_ISFIFO(mode) || S_ISSOCK(mode));
 }
 
-static inline int inode_need_explicit_locking(struct inode *inode)
+static inline int inode_need_explicit_locking(struct file *file,
+					      struct inode *inode)
 {
-	umode_t mode = inode->i_mode;
+	umode_t mode;
+
+	if (file->f_op->scribe_need_explicit_inode_lock)
+		return file->f_op->scribe_need_explicit_inode_lock(file);
+
 	/*
 	 * For fifos and sockets, each endpoint has to be locked independently
 	 * (otherwise deadlocks could happen when the buffer is full...).
 	 * It's also better in terms of performance.
 	 */
+	mode = inode->i_mode;
 	return S_ISFIFO(mode) || S_ISSOCK(mode);
 }
 
@@ -1253,7 +1259,7 @@ static int lock_file(struct file *file, int flags)
 		return 0;
 
 	inode = file_inode(file);
-	if (inode_need_explicit_locking(inode))
+	if (inode_need_explicit_locking(file, inode))
 		flags &= ~(SCRIBE_INODE_READ | SCRIBE_INODE_WRITE);
 
 	if (__lock_object(scribe, file, &file->scribe_resource, flags))

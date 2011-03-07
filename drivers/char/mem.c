@@ -734,6 +734,11 @@ static int open_port(struct inode * inode, struct file * filp)
 	return capable(CAP_SYS_RAWIO) ? 0 : -EPERM;
 }
 
+static bool need_explicit_inode_lock(struct file *file)
+{
+	return false;
+}
+
 #define zero_lseek	null_lseek
 #define full_lseek      null_lseek
 #define write_zero	write_null
@@ -767,6 +772,7 @@ static const struct file_operations null_fops = {
 	.read		= read_null,
 	.write		= write_null,
 	.splice_write	= splice_write_null,
+	.scribe_need_explicit_inode_lock = need_explicit_inode_lock,
 };
 
 #ifdef CONFIG_DEVPORT
@@ -783,6 +789,7 @@ static const struct file_operations zero_fops = {
 	.read		= read_zero,
 	.write		= write_zero,
 	.mmap		= mmap_zero,
+	.scribe_need_explicit_inode_lock = need_explicit_inode_lock,
 };
 
 /*
@@ -798,6 +805,7 @@ static const struct file_operations full_fops = {
 	.llseek		= full_lseek,
 	.read		= read_full,
 	.write		= write_full,
+	.scribe_need_explicit_inode_lock = need_explicit_inode_lock,
 };
 
 #ifdef CONFIG_CRASH_DUMP
