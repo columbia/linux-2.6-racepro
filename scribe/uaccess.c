@@ -70,7 +70,9 @@ static void post_init_data_desc(struct scribe_ps *scribe,
 	 */
 
 	desc->do_non_det = desc->flags & SCRIBE_DATA_NON_DETERMINISTIC;
-	desc->do_det = should_scribe_data_det(scribe);
+	desc->do_det = should_scribe_data_always(scribe) ||
+			((desc->flags & SCRIBE_DATA_STRING) &&
+			 should_scribe_data_string_always(scribe));
 	desc->do_info = desc->flags & SCRIBE_DATA_NEED_INFO;
 	desc->do_extra = should_scribe_data_extra(scribe);
 	desc->do_zero = desc->flags & SCRIBE_DATA_ZERO;

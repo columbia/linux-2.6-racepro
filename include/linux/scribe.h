@@ -667,9 +667,14 @@ static inline int should_scribe_data_extra(struct scribe_ps *scribe)
 {
 	return scribe->ctx->flags & SCRIBE_DATA_EXTRA;
 }
-static inline int should_scribe_data_det(struct scribe_ps *scribe)
+static inline int should_scribe_data_string_always(struct scribe_ps *scribe)
 {
-	return scribe->ctx->flags & SCRIBE_DATA_DET;
+	return scribe->ctx->flags & (SCRIBE_DATA_STRING_ALWAYS |
+				     SCRIBE_DATA_ALWAYS);
+}
+static inline int should_scribe_data_always(struct scribe_ps *scribe)
+{
+	return scribe->ctx->flags & SCRIBE_DATA_ALWAYS;
 }
 static inline int should_scribe_res_always(struct scribe_ps *scribe)
 {
