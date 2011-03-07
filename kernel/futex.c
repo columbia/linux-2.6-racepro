@@ -1977,7 +1977,8 @@ retry:
 	if (!signal_pending(current)) {
 		put_futex_key(fshared, &q.key);
 		/* FIXME Scribe: we dont handle that path yet */
-		WARN_ON(is_scribed(scribe));
+		WARN_ON(is_scribed(scribe) &&
+			!is_scribe_context_dead(scribe->ctx));
 		goto retry;
 	}
 
