@@ -107,8 +107,9 @@ void show_regs_common(void)
 		product = "";
 
 	printk(KERN_CONT "\n");
-	printk(KERN_DEFAULT "Pid: %d, comm: %.20s %s %s %.*s %s/%s\n",
-		current->pid, current->comm, print_tainted(),
+	printk(KERN_DEFAULT "Pid: %d (%d), comm: %.20s %s %s %.*s %s/%s\n",
+		current->pid, task_pid_vnr(current),
+		current->comm, print_tainted(),
 		init_utsname()->release,
 		(int)strcspn(init_utsname()->version, " "),
 		init_utsname()->version, board, product);
