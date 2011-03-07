@@ -12,6 +12,7 @@
 #include <linux/completion.h>
 #include <linux/cpumask.h>
 #include <linux/page-debug-flags.h>
+#include <linux/scribe_resource.h>
 #include <asm/page.h>
 #include <asm/mmu.h>
 
@@ -316,6 +317,8 @@ struct mm_struct {
 	struct list_head scribe_list;
 	int scribe_cnt;
 	wait_queue_head_t scribe_wait;
+
+	struct scribe_resource scribe_mmap_res;
 #endif
 };
 

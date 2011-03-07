@@ -250,6 +250,10 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 	struct mm_struct *mm = current->mm;
 	unsigned long min_brk;
 
+	if (scribe_resource_prepare())
+		return -ENOMEM;
+
+	scribe_lock_mmap_write(mm);
 	down_write(&mm->mmap_sem);
 
 #ifdef CONFIG_COMPAT_BRK
@@ -295,6 +299,7 @@ set_brk:
 out:
 	retval = mm->brk;
 	up_write(&mm->mmap_sem);
+	scribe_unlock(mm);
 	return retval;
 }
 
@@ -1088,6 +1093,9 @@ SYSCALL_DEFINE6(mmap_pgoff, unsigned long, addr, unsigned long, len,
 	struct file *file = NULL;
 	unsigned long retval = -EBADF;
 
+	if (scribe_resource_prepare())
+		return -ENOMEM;
+
 	if (!(flags & MAP_ANONYMOUS)) {
 		if (unlikely(flags & MAP_HUGETLB))
 			return -EINVAL;
@@ -1111,9 +1119,11 @@ SYSCALL_DEFINE6(mmap_pgoff, unsigned long, addr, unsigned long, len,
 
 	flags &= ~(MAP_EXECUTABLE | MAP_DENYWRITE);
 
+	scribe_lock_mmap_write(current->mm);
 	down_write(&current->mm->mmap_sem);
 	retval = do_mmap_pgoff(file, addr, len, prot, flags, pgoff);
 	up_write(&current->mm->mmap_sem);
+	scribe_unlock(current->mm);
 
 	if (file)
 		fput(file);
@@ -2103,11 +2113,16 @@ SYSCALL_DEFINE2(munmap, unsigned long, addr, size_t, len)
 	int ret;
 	struct mm_struct *mm = current->mm;
 
+	if (scribe_resource_prepare())
+		return -ENOMEM;
+
 	profile_munmap(addr);
 
+	scribe_lock_mmap_write(mm);
 	down_write(&mm->mmap_sem);
 	ret = do_munmap(mm, addr, len);
 	up_write(&mm->mmap_sem);
+	scribe_unlock(mm);
 	return ret;
 }
 

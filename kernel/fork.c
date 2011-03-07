@@ -484,6 +484,8 @@ static void mm_init_scribe(struct mm_struct *mm)
 	INIT_LIST_HEAD(&mm->scribe_list);
 	mm->scribe_cnt = 0;
 	init_waitqueue_head(&mm->scribe_wait);
+
+	scribe_init_resource(&mm->scribe_mmap_res, SCRIBE_RES_TYPE_MMAP);
 #endif
 }
 
@@ -565,6 +567,7 @@ void mmput(struct mm_struct *mm)
 		put_swap_token(mm);
 		if (mm->binfmt)
 			module_put(mm->binfmt->module);
+		scribe_reset_resource(&mm->scribe_mmap_res);
 		mmdrop(mm);
 	}
 }
@@ -698,7 +701,10 @@ struct mm_struct *dup_mm(struct task_struct *tsk)
 
 	dup_mm_exe_file(oldmm, mm);
 
+	scribe_lock_mmap_read(oldmm);
 	err = dup_mmap(mm, oldmm);
+	scribe_unlock(oldmm);
+
 	if (err)
 		goto free_pt;
 
@@ -1119,6 +1125,10 @@ static struct task_struct *copy_process(unsigned long long clone_flags,
 	if (retval)
 		goto fork_out;
 
+	retval = scribe_resource_prepare();
+	if (retval)
+		goto fork_out;
+
 	retval = -ENOMEM;
 	p = dup_task_struct(current);
 	if (!p)
@@ -1269,10 +1279,6 @@ static struct task_struct *copy_process(unsigned long long clone_flags,
 		goto bad_fork_cleanup_scribe;
 
 	if (pid != &init_struct_pid) {
-		retval = scribe_resource_prepare();
-		if (retval)
-			goto bad_fork_cleanup_scribe;
-
 		pid = alloc_pid(p->nsproxy->pid_ns, target_pids);
 		if (IS_ERR(pid)) {
 			retval = PTR_ERR(pid);

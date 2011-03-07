@@ -1123,12 +1123,18 @@ SYSCALL_DEFINE6(move_pages, pid_t, pid, unsigned long, nr_pages,
  	if (err)
 		goto out;
 
+	err = -ENOMEM;
+	if (scribe_resource_prepare())
+		goto out;
+
+	scribe_lock_mmap_read(mm);
 	if (nodes) {
 		err = do_pages_move(mm, task, nr_pages, pages, nodes, status,
 				    flags);
 	} else {
 		err = do_pages_stat(mm, nr_pages, pages, status);
 	}
+	scribe_unlock(mm);
 
 out:
 	mmput(mm);

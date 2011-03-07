@@ -1572,3 +1572,23 @@ void scribe_lock_ptrace_write(struct task_struct *tsk)
 {
 	lock_ptrace(tsk, SCRIBE_WRITE);
 }
+
+static void lock_mmap(struct mm_struct *mm, unsigned long flags)
+{
+	struct scribe_ps *scribe = current->scribe;
+
+	if (!should_handle_resources(scribe))
+		return;
+
+	__lock_object(scribe, mm, &mm->scribe_mmap_res, flags);
+}
+
+void scribe_lock_mmap_read(struct mm_struct *mm)
+{
+	lock_mmap(mm, SCRIBE_READ);
+}
+
+void scribe_lock_mmap_write(struct mm_struct *mm)
+{
+	lock_mmap(mm, SCRIBE_WRITE);
+}

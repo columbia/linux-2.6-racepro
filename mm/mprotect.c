@@ -248,6 +248,9 @@ SYSCALL_DEFINE3(mprotect, unsigned long, start, size_t, len,
 	if (!arch_validate_prot(prot))
 		return -EINVAL;
 
+	if (scribe_resource_prepare())
+		return -ENOMEM;
+
 	reqprot = prot;
 	/*
 	 * Does the application expect PROT_READ to imply PROT_EXEC:
@@ -257,6 +260,7 @@ SYSCALL_DEFINE3(mprotect, unsigned long, start, size_t, len,
 
 	vm_flags = calc_vm_prot_bits(prot);
 
+	scribe_lock_mmap_write(current->mm);
 	down_write(&current->mm->mmap_sem);
 
 	vma = find_vma_prev(current->mm, start, &prev);
@@ -323,5 +327,6 @@ SYSCALL_DEFINE3(mprotect, unsigned long, start, size_t, len,
 	}
 out:
 	up_write(&current->mm->mmap_sem);
+	scribe_unlock(current->mm);
 	return error;
 }

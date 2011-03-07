@@ -479,8 +479,12 @@ SYSCALL_DEFINE2(mlock, unsigned long, start, size_t, len)
 	if (!can_do_mlock())
 		return -EPERM;
 
+	if (scribe_resource_prepare())
+		return -ENOMEM;
+
 	lru_add_drain_all();	/* flush pagevec */
 
+	scribe_lock_mmap_write(current->mm);
 	down_write(&current->mm->mmap_sem);
 	len = PAGE_ALIGN(len + (start & ~PAGE_MASK));
 	start &= PAGE_MASK;
@@ -495,6 +499,7 @@ SYSCALL_DEFINE2(mlock, unsigned long, start, size_t, len)
 	if ((locked <= lock_limit) || capable(CAP_IPC_LOCK))
 		error = do_mlock(start, len, 1);
 	up_write(&current->mm->mmap_sem);
+	scribe_unlock(current->mm);
 	return error;
 }
 
@@ -502,11 +507,16 @@ SYSCALL_DEFINE2(munlock, unsigned long, start, size_t, len)
 {
 	int ret;
 
+	if (scribe_resource_prepare())
+		return -ENOMEM;
+
+	scribe_lock_mmap_write(current->mm);
 	down_write(&current->mm->mmap_sem);
 	len = PAGE_ALIGN(len + (start & ~PAGE_MASK));
 	start &= PAGE_MASK;
 	ret = do_mlock(start, len, 0);
 	up_write(&current->mm->mmap_sem);
+	scribe_unlock(current->mm);
 	return ret;
 }
 
@@ -547,8 +557,12 @@ SYSCALL_DEFINE1(mlockall, int, flags)
 	if (!can_do_mlock())
 		goto out;
 
+	if (scribe_resource_prepare())
+		return -ENOMEM;
+
 	lru_add_drain_all();	/* flush pagevec */
 
+	scribe_lock_mmap_write(current->mm);
 	down_write(&current->mm->mmap_sem);
 
 	lock_limit = rlimit(RLIMIT_MEMLOCK);
@@ -559,6 +573,7 @@ SYSCALL_DEFINE1(mlockall, int, flags)
 	    capable(CAP_IPC_LOCK))
 		ret = do_mlockall(flags);
 	up_write(&current->mm->mmap_sem);
+	scribe_unlock(current->mm);
 out:
 	return ret;
 }
@@ -567,9 +582,14 @@ SYSCALL_DEFINE0(munlockall)
 {
 	int ret;
 
+	if (scribe_resource_prepare())
+		return -ENOMEM;
+
+	scribe_lock_mmap_write(current->mm);
 	down_write(&current->mm->mmap_sem);
 	ret = do_mlockall(0);
 	up_write(&current->mm->mmap_sem);
+	scribe_unlock(current->mm);
 	return ret;
 }
 

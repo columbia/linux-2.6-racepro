@@ -150,7 +150,11 @@ SYSCALL_DEFINE5(remap_file_pages, unsigned long, start, unsigned long, size,
 		return err;
 #endif
 
+	if (scribe_resource_prepare())
+		return -ENOMEM;
+
 	/* We need down_write() to change vma->vm_flags. */
+	scribe_lock_mmap_write(mm);
 	down_read(&mm->mmap_sem);
  retry:
 	vma = find_vma(mm, start);
@@ -257,6 +261,7 @@ out:
 		up_read(&mm->mmap_sem);
 	else
 		up_write(&mm->mmap_sem);
+	scribe_unlock(mm);
 
 	return err;
 }

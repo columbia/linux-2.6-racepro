@@ -515,8 +515,13 @@ SYSCALL_DEFINE5(mremap, unsigned long, addr, unsigned long, old_len,
 {
 	unsigned long ret;
 
+	if (scribe_resource_prepare())
+		return -ENOMEM;
+
+	scribe_lock_mmap_write(current->mm);
 	down_write(&current->mm->mmap_sem);
 	ret = do_mremap(addr, old_len, new_len, flags, new_addr);
 	up_write(&current->mm->mmap_sem);
+	scribe_unlock(current->mm);
 	return ret;
 }

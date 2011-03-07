@@ -13,6 +13,7 @@
 #include <linux/file.h>
 #include <linux/syscalls.h>
 #include <linux/sched.h>
+#include <linux/scribe.h>
 
 /*
  * MS_SYNC syncs the entire file - including mappings.
@@ -42,6 +43,10 @@ SYSCALL_DEFINE3(msync, unsigned long, start, size_t, len, int, flags)
 		goto out;
 	if ((flags & MS_ASYNC) && (flags & MS_SYNC))
 		goto out;
+
+	if (scribe_resource_prepare())
+		return -ENOMEM;
+
 	error = -ENOMEM;
 	len = (len + ~PAGE_MASK) & PAGE_MASK;
 	end = start + len;
@@ -54,6 +59,7 @@ SYSCALL_DEFINE3(msync, unsigned long, start, size_t, len, int, flags)
 	 * If the interval [start,end) covers some unmapped address ranges,
 	 * just ignore them, but return -ENOMEM at the end.
 	 */
+	scribe_lock_mmap_write(mm);
 	down_read(&mm->mmap_sem);
 	vma = find_vma(mm, start);
 	for (;;) {
@@ -98,6 +104,7 @@ SYSCALL_DEFINE3(msync, unsigned long, start, size_t, len, int, flags)
 	}
 out_unlock:
 	up_read(&mm->mmap_sem);
+	scribe_unlock(mm);
 out:
 	return error ? : unmapped_error;
 }

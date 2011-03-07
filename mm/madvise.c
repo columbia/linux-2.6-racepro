@@ -13,6 +13,7 @@
 #include <linux/hugetlb.h>
 #include <linux/sched.h>
 #include <linux/ksm.h>
+#include <linux/scribe.h>
 
 /*
  * Any behaviour which results in changes to the vma->vm_flags needs to
@@ -214,7 +215,15 @@ static long madvise_remove(struct vm_area_struct *vma,
 
 	/* vmtruncate_range needs to take i_mutex and i_alloc_sem */
 	up_read(&current->mm->mmap_sem);
-	error = vmtruncate_range(mapping->host, offset, endoff);
+
+	if (scribe_resource_prepare())
+		error = vmtruncate_range(mapping->host, offset, endoff);
+	else {
+		scribe_unlock(current->mm);
+		error = vmtruncate_range(mapping->host, offset, endoff);
+		scribe_lock_mmap_read(current->mm);
+	}
+
 	down_read(&current->mm->mmap_sem);
 	return error;
 }
@@ -348,11 +357,17 @@ SYSCALL_DEFINE3(madvise, unsigned long, start, size_t, len_in, int, behavior)
 	if (!madvise_behavior_valid(behavior))
 		return error;
 
+	if (scribe_resource_prepare())
+		return -ENOMEM;
+
 	write = madvise_need_mmap_write(behavior);
-	if (write)
+	if (write) {
+		scribe_lock_mmap_write(current->mm);
 		down_write(&current->mm->mmap_sem);
-	else
+	} else {
+		scribe_lock_mmap_read(current->mm);
 		down_read(&current->mm->mmap_sem);
+	}
 
 	if (start & ~PAGE_MASK)
 		goto out;
@@ -418,6 +433,7 @@ out:
 		up_write(&current->mm->mmap_sem);
 	else
 		up_read(&current->mm->mmap_sem);
+	scribe_unlock(current->mm);
 
 	return error;
 }
