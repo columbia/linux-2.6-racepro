@@ -298,7 +298,6 @@ SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)
 	override_cred = prepare_creds();
 	if (!override_cred)
 		return -ENOMEM;
-	scribe_unlock_current_cred();
 
 	override_cred->fsuid = override_cred->uid;
 	override_cred->fsgid = override_cred->gid;

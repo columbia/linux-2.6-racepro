@@ -746,22 +746,12 @@ error:
 
 SYSCALL_DEFINE3(getresuid, uid_t __user *, ruid, uid_t __user *, euid, uid_t __user *, suid)
 {
-	const struct cred *cred;
+	const struct cred *cred = current_cred();
 	int retval;
-
-	if (scribe_resource_prepare()) {
-		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
-		return -ENOMEM;
-	}
-
-	scribe_lock_current_cred_read();
-	cred = current_cred();
 
 	if (!(retval   = put_user(cred->uid,  ruid)) &&
 	    !(retval   = put_user(cred->euid, euid)))
 		retval = put_user(cred->suid, suid);
-
-	scribe_unlock_current_cred();
 
 	return retval;
 }
@@ -810,22 +800,12 @@ error:
 
 SYSCALL_DEFINE3(getresgid, gid_t __user *, rgid, gid_t __user *, egid, gid_t __user *, sgid)
 {
-	const struct cred *cred;
+	const struct cred *cred = current_cred();
 	int retval;
-
-	if (scribe_resource_prepare()) {
-		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
-		return -ENOMEM;
-	}
-
-	scribe_lock_current_cred_read();
-	cred = current_cred();
 
 	if (!(retval   = put_user(cred->gid,  rgid)) &&
 	    !(retval   = put_user(cred->egid, egid)))
 		retval = put_user(cred->sgid, sgid);
-
-	scribe_unlock_current_cred();
 
 	return retval;
 }

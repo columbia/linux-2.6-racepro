@@ -1156,7 +1156,6 @@ void free_bprm(struct linux_binprm *bprm)
 	free_arg_pages(bprm);
 	if (bprm->cred) {
 		mutex_unlock(&current->cred_guard_mutex);
-		scribe_lock_current_cred_read();
 		abort_creds(bprm->cred);
 	}
 	kfree(bprm);
@@ -1169,7 +1168,6 @@ void install_exec_creds(struct linux_binprm *bprm)
 {
 	security_bprm_committing_creds(bprm);
 
-	scribe_lock_current_cred_write();
 	commit_creds(bprm->cred);
 	bprm->cred = NULL;
 	/*
@@ -1955,8 +1953,6 @@ void do_coredump(long signr, int exit_code, struct pt_regs *regs)
 	cred = prepare_creds();
 	if (!cred)
 		goto fail;
-	scribe_unlock_current_cred();
-
 	/*
 	 *	We cannot trust fsuid as being the "true" uid of the
 	 *	process nor do we know its entire history. We only know it

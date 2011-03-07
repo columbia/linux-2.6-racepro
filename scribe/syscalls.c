@@ -304,11 +304,8 @@ void scribe_exit_syscall(struct pt_regs *regs)
 	 */
 	recalc_sigpending_and_wake(current);
 
-#ifdef CONFIG_DEBUG_KERNEL
 	if (unlikely(!scribe->can_uaccess))
 		scribe_emergency_stop(scribe->ctx, ERR_PTR(-EINVAL));
-	scribe_assert_no_locked_region(&scribe->resources);
-#endif
 }
 
 SYSCALL_DEFINE0(get_scribe_flags)
