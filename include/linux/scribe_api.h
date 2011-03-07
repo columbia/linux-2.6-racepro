@@ -24,6 +24,7 @@
 #include <linux/net.h>
 #include <linux/futex.h>
 #include <linux/scribe_defines.h>
+#include <linux/scribe_resource.h>
 
 #ifdef __KERNEL__
 #include <linux/list.h>
@@ -100,20 +101,6 @@
 #ifdef __KERNEL__
 #define SCRIBE_DATA_IGNORE		0x40
 #endif
-
-/*
- * These flags are used as a resource type
- * They are also defined in scribe_resource.h
- */
-#define SCRIBE_RES_TYPE_INODE		0
-#define SCRIBE_RES_TYPE_FILE		1
-#define SCRIBE_RES_TYPE_FILES_STRUCT	2
-#define SCRIBE_RES_TYPE_PID		3
-#define SCRIBE_RES_TYPE_FUTEX		4
-#define SCRIBE_RES_TYPE_IPC		5
-#define SCRIBE_RES_TYPE_PTRACE		6
-#define SCRIBE_RES_TYPE_MASK		0x0f
-#define SCRIBE_RES_SPINLOCK		0x80
 
 /*
  * Syscalls offsets for multiplexed calls

@@ -387,6 +387,7 @@ unifdef-y += xattr.h
 unifdef-y += xfrm.h
 unifdef-y += scribe_defines.h
 unifdef-y += scribe_events.h
+unifdef-y += scribe_resource.h
 unifdef-y += scribe_api.h
 
 objhdr-y += version.h
