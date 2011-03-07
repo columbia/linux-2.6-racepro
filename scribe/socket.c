@@ -14,6 +14,9 @@
 #include <linux/net.h>
 #include <net/sock.h>
 #include <linux/syscalls.h>
+#include <net/af_unix.h>
+
+static bool scribe_is_deterministic(struct socket *sock);
 
 /*
  * We cannot use scribe_need_syscall_ret() because one syscall may call
@@ -195,6 +198,9 @@ static int scribe_sendmsg(struct kiocb *iocb, struct socket *sock,
 	struct scribe_ps *scribe = current->scribe;
 	int ret, err;
 
+	if (scribe_is_deterministic(sock) || !is_scribed(scribe))
+		return sock->real_ops->sendmsg(iocb, sock, m, total_len);
+
 	scribe_data_need_info();
 
 	err = scribe_result_cond(
@@ -219,6 +225,13 @@ static int scribe_recvmsg(struct kiocb *iocb, struct socket *sock,
 {
 	struct scribe_ps *scribe = current->scribe;
 	int ret, err;
+
+	if (scribe_is_deterministic(sock) || !is_scribed(scribe)) {
+		scribe_data_det();
+		ret = sock->real_ops->recvmsg(iocb, sock, m, total_len, flags),
+		scribe_data_pop_flags();
+		return ret;
+	}
 
 	scribe_data_non_det_need_info();
 
@@ -274,6 +287,34 @@ static ssize_t scribe_splice_read(struct socket *sock,  loff_t *ppos,
 	return sock->real_ops->splice_read(sock, ppos, pipe, len, flags);
 }
 
+#define unix_peer(sk) (unix_sk(sk)->peer)
+static bool is_unix_sock_deterministic(struct scribe_ps *scribe,
+				       struct sock *sk)
+{
+	if (sk->sk_scribe_ctx != scribe->ctx)
+		return false;
+
+	if (!unix_peer(sk))
+		return false;
+
+	if (unix_peer(sk)->sk_scribe_ctx != scribe->ctx)
+		return false;
+
+	return true;
+}
+
+static bool scribe_is_deterministic(struct socket *sock)
+{
+	struct scribe_ps *scribe = current->scribe;
+	struct sock *sk = sock->sk;
+
+	if (!is_scribed(scribe))
+		return false;
+
+	if (sock->real_ops->family == PF_UNIX)
+		return is_unix_sock_deterministic(scribe, sk);
+	return false;
+}
 
 const struct proto_ops scribe_ops = {
 	.family            = PF_UNSPEC,
@@ -302,8 +343,12 @@ const struct proto_ops scribe_ops = {
 	.mmap              = scribe_mmap,
 	.sendpage          = scribe_sendpage,
 	.splice_read       = scribe_splice_read,
+	.is_deterministic  = scribe_is_deterministic,
 };
 
+/*
+ * XXX sys_accept() doesn't call this function
+ */
 int scribe_interpose_socket(struct socket *sock)
 {
 	struct scribe_ps *scribe = current->scribe;
@@ -311,8 +356,11 @@ int scribe_interpose_socket(struct socket *sock)
 	if (!is_scribed(scribe))
 		return 0;
 
+	/* TODO We should revert the ops to real_ops when the context dies */
 	sock->real_ops = sock->ops;
 	sock->ops = &scribe_ops;
+
+	/* The value of sock->sk->sk_scribe_ctx is already set in sk_alloc */
 
 	return 0;
 }

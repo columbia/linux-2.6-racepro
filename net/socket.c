@@ -1487,6 +1487,8 @@ SYSCALL_DEFINE4(accept4, int, fd, struct sockaddr __user *, upeer_sockaddr,
 	struct file *newfile;
 	int err, len, newfd, fput_needed;
 	struct sockaddr_storage address;
+	bool should_fake_accept;
+	scribe_insert_point_t ip;
 
 	if (scribe_need_syscall_ret(scribe))
 		return -ENOMEM;
@@ -1501,7 +1503,19 @@ SYSCALL_DEFINE4(accept4, int, fd, struct sockaddr __user *, upeer_sockaddr,
 	if (!sock)
 		goto out;
 
+	if (is_recording(scribe)) {
+		/* We'll put the fake_accept value here */
+		scribe_create_insert_point(&ip, &scribe->queue->stream);
+	}
+
 	if (is_replaying(scribe)) {
+		err = scribe_value(&should_fake_accept);
+		if (err < 0)
+			goto out_put;
+
+		if (!should_fake_accept)
+			goto real_accept;
+
 		err = sock_create(PF_UNIX, SOCK_STREAM, 0, &newsock);
 		if (err < 0)
 			goto out_put;
@@ -1519,6 +1533,7 @@ SYSCALL_DEFINE4(accept4, int, fd, struct sockaddr __user *, upeer_sockaddr,
 
 		goto skip_accept;
 	}
+real_accept:
 
 	err = -ENFILE;
 	if (!(newsock = sock_alloc()))
@@ -1545,9 +1560,20 @@ SYSCALL_DEFINE4(accept4, int, fd, struct sockaddr __user *, upeer_sockaddr,
 	if (err)
 		goto out_fd;
 
-	err = sock->ops->accept(sock, newsock, sock->file->f_flags);
+	flags = sock->file->f_flags;
+	if (is_replaying(scribe))
+		flags &= ~O_NONBLOCK;
+	err = sock->ops->accept(sock, newsock, flags);
 	if (err < 0)
 		goto out_fd;
+
+	if (is_recording(scribe)) {
+		should_fake_accept = !newsock->ops->is_deterministic(newsock);
+		err = scribe_value_at(&should_fake_accept, &ip);
+		scribe_commit_insert_point(&ip);
+		if (err < 0)
+			goto out_fd;
+	}
 
 skip_accept:
 	if (upeer_sockaddr) {

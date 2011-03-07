@@ -1080,6 +1080,7 @@ EXPORT_SYMBOL(sock_update_classid);
 struct sock *sk_alloc(struct net *net, int family, gfp_t priority,
 		      struct proto *prot)
 {
+	struct scribe_ps *scribe = current->scribe;
 	struct sock *sk;
 
 	sk = sk_prot_alloc(prot, priority | __GFP_ZERO, family);
@@ -1095,6 +1096,13 @@ struct sock *sk_alloc(struct net *net, int family, gfp_t priority,
 		atomic_set(&sk->sk_wmem_alloc, 1);
 
 		sock_update_classid(sk);
+
+		/*
+		 * FIXME when the context dies, we should clean up that
+		 * pointer.
+		 */
+		if (is_scribed(scribe))
+			sk->sk_scribe_ctx = scribe->ctx;
 	}
 
 	return sk;
