@@ -66,6 +66,11 @@ void scribe_reset_resource_container(struct scribe_container *container);
 
 #endif /* __KERNEL__ */
 
+/*
+ * XXX When adding a new resource type, don't forget to call reset_resource()
+ * when the resource object is about to vanish...
+ */
+
 enum scribe_resource_type {
 	SCRIBE_RES_TYPE_INODE,
 	SCRIBE_RES_TYPE_FILE,
