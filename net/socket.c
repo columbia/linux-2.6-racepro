@@ -343,7 +343,7 @@ static char *sockfs_dname(struct dentry *dentry, char *buffer, int buflen)
 	int ret;
 
 	ret = scribe_value(&i_ino);
-	if (ret < 0)
+	if (ret < 0 && !unlikely(is_scribe_context_dead(current->scribe->ctx)))
 		return ERR_PTR(ret);
 
 	return dynamic_dname(dentry, buffer, buflen, "socket:[%lu]", i_ino);
