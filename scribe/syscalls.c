@@ -334,7 +334,7 @@ SYSCALL_DEFINE1(set_scribe_flags, int, flags)
 	scribe->flags &= ~SCRIBE_PS_ENABLE_ALL;
 	scribe->flags |= flags & SCRIBE_PS_ENABLE_ALL;
 
-	/* FIXME switch the pgd to the real page table if needed */
+	scribe_mem_reload(scribe);
 
 	return old_flags;
 }

@@ -790,6 +790,7 @@ extern void scribe_mem_exit_st(struct scribe_ps *scribe);
 extern void scribe_mem_sync_point(struct scribe_ps *scribe, int mode);
 extern void scribe_disable_sync_sleep(void);
 extern void scribe_enable_sync_sleep(void);
+extern void scribe_mem_reload(struct scribe_ps *scribe);
 
 extern int do_scribe_page(struct scribe_ps *scribe, struct mm_struct *mm,
 			  struct vm_area_struct *vma, unsigned long address,

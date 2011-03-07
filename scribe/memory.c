@@ -1163,6 +1163,18 @@ void scribe_mem_exit_st(struct scribe_ps *scribe)
 	free_scribe_mm(scribe_mm, mm);
 }
 
+void scribe_mem_reload(struct scribe_ps *scribe)
+{
+	/*
+	 * FIXME we should actually flush the cache and stuff, but on i386 we
+	 * don't need it.
+	 */
+	if (should_handle_mm(scribe))
+		load_cr3(scribe->mm->own_pgd);
+	else
+		load_cr3(current->mm->pgd);
+}
+
 /********************************************************
     the logic :)
 *********************************************************/
@@ -2086,7 +2098,8 @@ int do_scribe_page(struct scribe_ps *scribe, struct mm_struct *mm,
 	int ret;
 
 	pte_unmap(pte);
-	if (unlikely(!scribe->mm || scribe->p->mm != mm))
+
+	if (unlikely(!should_handle_mm(scribe) || scribe->p->mm != mm))
 		return VM_FAULT_SCRIBE;
 
 	WARN(scribe->mm->weak_owner, "Access in a weak owner zone\n");
