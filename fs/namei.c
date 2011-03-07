@@ -1748,6 +1748,8 @@ static struct file *__do_last(struct nameidata *nd, struct path *path,
 	mutex_unlock(&dir->d_inode->i_mutex);
 	audit_inode(pathname, path->dentry);
 
+	scribe_downgrade(dir->d_inode);
+
 	error = -EEXIST;
 	if (open_flag & O_EXCL)
 		goto exit_dput;

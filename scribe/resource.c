@@ -697,6 +697,17 @@ static int __do_lock_record(struct scribe_ps *scribe,
 	return ret;
 }
 
+static void __do_lock_read_serial(struct scribe_resource *res)
+{
+	/*
+	 * This works because when @first_read_serial is equal to -1,
+	 * @res->serial cannot change because it gets incremented only
+	 * during the unlock(). So once @res->serial changes,
+	 * @first_read_serial would already be assigned.
+	 */
+	cmpxchg(&res->first_read_serial, -1, atomic_read(&res->serial));
+}
+
 static int do_lock_record(struct scribe_ps *scribe,
 			  struct scribe_lock_region *lock_region,
 			  struct scribe_resource *res)
@@ -722,17 +733,8 @@ static int do_lock_record(struct scribe_ps *scribe,
 		return -EINTR;
 	}
 
-	if (do_write)
-		res->first_read_serial = -1;
-	else {
-		/*
-		 * This works because when @first_read_serial is equal to -1,
-		 * @res->serial cannot change because it gets incremented only
-		 * during the unlock(). So once @res->serial changes,
-		 * @first_read_serial would already be assigned.
-		 */
-		cmpxchg(&res->first_read_serial, -1, atomic_read(&res->serial));
-	}
+	if (!do_write)
+		__do_lock_read_serial(res);
 
 	return 0;
 }
@@ -842,6 +844,36 @@ static int do_lock(struct scribe_ps *scribe,
 		return do_lock_replay(scribe, lock_region, res);
 }
 
+static void do_lock_downgrade_record(struct scribe_ps *scribe,
+				     struct scribe_lock_region *lock_region,
+				     struct scribe_resource *res)
+{
+	if (!use_spinlock(res))
+		downgrade_write(&res->lock.semaphore);
+
+	lock_region->flags &= ~SCRIBE_WRITE;
+	lock_region->flags |= SCRIBE_READ;
+	__do_lock_read_serial(res);
+}
+
+static void do_lock_downgrade(struct scribe_ps *scribe,
+			      struct scribe_lock_region *lock_region)
+{
+	struct scribe_resource *res = lock_region->res;
+
+	if (!is_locking_necessary(scribe, res))
+		return;
+
+	if (unlikely(is_detaching(scribe)))
+		return;
+
+	BUG_ON(!(lock_region->flags & SCRIBE_WRITE));
+
+	if (is_recording(scribe))
+		do_lock_downgrade_record(scribe, lock_region, res);
+	/* no-op for replay */
+}
+
 static void __do_unlock_record(struct scribe_resource *res, int do_write)
 {
 	if (use_spinlock(res))
@@ -871,6 +903,7 @@ static void do_unlock_record(struct scribe_ps *scribe,
 		 * @serial has already been incremented.
 		 */
 		serial = atomic_read(&res->serial) - 1;
+		res->first_read_serial = -1;
 	} else {
 		/*
 		 * The value is stable until we release the read lock.
@@ -1187,7 +1220,6 @@ void scribe_unlock_err(void *object, int err)
 		do_unlock_discard(scribe, lock_region);
 		list_add(&lock_region->node, &user->pre_alloc_regions);
 	}
-
 }
 
 void scribe_unlock(void *object)
@@ -1198,6 +1230,22 @@ void scribe_unlock(void *object)
 void scribe_unlock_discard(void *object)
 {
 	scribe_unlock_err(object, -EAGAIN);
+}
+
+void scribe_downgrade(void *object)
+{
+	struct scribe_ps *scribe = current->scribe;
+	struct scribe_res_user *user;
+	struct scribe_lock_region *lock_region;
+
+	if (!should_handle_resources(scribe))
+		return;
+
+	user = &scribe->resources;
+	lock_region = find_locked_region(user, object);
+	BUG_ON(!lock_region);
+
+	do_lock_downgrade(scribe, lock_region);
 }
 
 void scribe_assert_locked(void *object)

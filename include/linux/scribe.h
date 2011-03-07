@@ -476,6 +476,7 @@ extern void scribe_lock_ptrace_write(struct task_struct *tsk);
 extern void scribe_unlock(void *object);
 extern void scribe_unlock_discard(void *object);
 extern void scribe_unlock_err(void *object, int err);
+extern void scribe_downgrade(void *object);
 extern void scribe_assert_locked(void *object);
 
 /* Signals */
