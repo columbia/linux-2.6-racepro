@@ -636,8 +636,12 @@ bool scribe_maybe_detach(struct scribe_ps *scribe)
 		force_sig(SIGKILL, p);
 	scribe_put_context(ctx);
 
-	/* Delayed already queues signals should be handled */
-	recalc_sigpending();
+	/*
+	 * Delayed already queues signals should be handled, but we don't want
+	 * to clear the SIGPENDING flag in case we have a -ERESTARTNOHAND
+	 * syscall return value or something.
+	 */
+	recalc_sigpending_and_wake(current);
 
 	return true;
 }
