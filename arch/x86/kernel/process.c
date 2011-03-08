@@ -108,7 +108,7 @@ void show_regs_common(void)
 
 	printk(KERN_CONT "\n");
 	printk(KERN_DEFAULT "Pid: %d (%d), comm: %.20s %s %s %.*s %s/%s\n",
-		current->pid, task_pid_vnr(current),
+		current->pid, current->nsproxy ? task_pid_vnr(current) : 0,
 		current->comm, print_tainted(),
 		init_utsname()->release,
 		(int)strcspn(init_utsname()->version, " "),
