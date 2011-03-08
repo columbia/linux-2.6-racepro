@@ -49,6 +49,8 @@
  *   resource API already use read/write version, but it does the same thing).
  */
 
+#define RES_DESC_MAX PATH_MAX
+
 static inline int should_handle_resources(struct scribe_ps *scribe)
 {
 	if (!is_scribed(scribe))
@@ -445,10 +447,14 @@ static struct scribe_lock_region *alloc_lock_region(int doing_recording,
 		return lock_region;
 	}
 
-	if (res_extra)
-		lock_region->lock_event.extra = scribe_alloc_event(
-				SCRIBE_EVENT_RESOURCE_LOCK_EXTRA);
-	else
+	if (res_extra) {
+		/*
+		 * We don't know how long will be the description, we'll
+		 * assume the maximum.
+		 */
+		lock_region->lock_event.extra = scribe_alloc_event_sized(
+				SCRIBE_EVENT_RESOURCE_LOCK_EXTRA, RES_DESC_MAX);
+	} else
 		lock_region->lock_event.regular = scribe_alloc_event(
 				SCRIBE_EVENT_RESOURCE_LOCK);
 
@@ -664,6 +670,43 @@ static inline int get_lockdep_subclass(int type)
 	return 0;
 }
 #endif
+
+static size_t get_lock_region_desc(struct scribe_ps *scribe,
+				   char *buffer, size_t size,
+				   struct scribe_lock_region *lock_region)
+{
+	int type = lock_region->res->type & SCRIBE_RES_TYPE_MASK;
+	struct file *file;
+	char *tmp, *pathname;
+	ssize_t ret;
+
+	switch (type) {
+	case SCRIBE_RES_TYPE_FILE:
+		file = lock_region->object;
+
+		tmp = (char *)__get_free_page(GFP_TEMPORARY);
+		if (!tmp) {
+			return snprintf(buffer, size,
+					"memory allocation failed");
+		}
+
+		scribe->do_dpath_scribing = false;
+		pathname = d_path(&file->f_path, tmp, PAGE_SIZE);
+		scribe->do_dpath_scribing = true;
+		if (IS_ERR(pathname)) {
+			ret = snprintf(buffer, size, "d_path failed with %ld",
+				       PTR_ERR(pathname));
+		} else
+			ret = snprintf(buffer, size, "%s", pathname);
+
+		free_page((unsigned long)tmp);
+		break;
+	default:
+		ret = snprintf(buffer, size, "none");
+	}
+
+	return ret;
+}
 
 static int __do_lock_record(struct scribe_ps *scribe,
 			    struct scribe_resource *res,
@@ -895,6 +938,7 @@ static void do_unlock_record(struct scribe_ps *scribe,
 {
 	int do_write = lock_region->flags & SCRIBE_WRITE;
 	unsigned long serial;
+	size_t size;
 
 	if (do_write) {
 		/*
@@ -925,6 +969,12 @@ static void do_unlock_record(struct scribe_ps *scribe,
 		lock_event->write_access = !!do_write;
 		lock_event->id = res->id;
 		lock_event->serial = serial;
+
+		size = get_lock_region_desc(scribe,
+					    lock_event->desc, RES_DESC_MAX,
+					    lock_region);
+		lock_event->h.size = size;
+
 		scribe_queue_event_at(&lock_region->ip, lock_event);
 		scribe_commit_insert_point(&lock_region->ip);
 
@@ -938,32 +988,6 @@ static void do_unlock_record(struct scribe_ps *scribe,
 		lock_event->serial = serial;
 		scribe_queue_event_at(&lock_region->ip, lock_event);
 		scribe_commit_insert_point(&lock_region->ip);
-	}
-}
-
-static void print_unlock_on_failure(struct scribe_ps *scribe,
-				    struct scribe_lock_region *lock_region)
-{
-	int type = lock_region->res->type & SCRIBE_RES_TYPE_MASK;
-	struct file *file;
-	char *tmp, *pathname;
-
-	switch (type) {
-	case SCRIBE_RES_TYPE_FILE:
-		file = lock_region->object;
-
-		tmp = (char *)__get_free_page(GFP_TEMPORARY);
-		if (!tmp)
-			return;
-
-		pathname = d_path(&file->f_path, tmp, PAGE_SIZE);
-		if (IS_ERR(pathname))
-			pathname = "??";
-
-		printk(KERN_ERR "[%d] unlocking resource of file %s\n",
-		       task_pid_vnr(scribe->p), pathname);
-
-		free_page((unsigned long)tmp);
 	}
 }
 
@@ -990,10 +1014,8 @@ static void do_unlock_replay(struct scribe_ps *scribe,
 
 	__do_unlock_replay(res);
 
-	if (unlikely(is_scribe_context_dead(scribe->ctx))) {
-		print_unlock_on_failure(scribe, lock_region);
+	if (unlikely(is_scribe_context_dead(scribe->ctx)))
 		return;
-	}
 
 	if (!should_scribe_res_extra(scribe))
 		return;

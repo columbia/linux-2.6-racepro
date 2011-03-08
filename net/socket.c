@@ -339,12 +339,15 @@ static struct file_system_type sock_fs_type = {
  */
 static char *sockfs_dname(struct dentry *dentry, char *buffer, int buflen)
 {
+	struct scribe_ps *scribe = current->scribe;
 	unsigned long i_ino = dentry->d_inode->i_ino;
 	int ret;
 
-	ret = scribe_value(&i_ino);
-	if (ret < 0 && !unlikely(is_scribe_context_dead(current->scribe->ctx)))
-		return ERR_PTR(ret);
+	if (is_scribed(scribe) && scribe->do_dpath_scribing) {
+		ret = scribe_value(&i_ino);
+		if (ret < 0)
+			return ERR_PTR(ret);
+	}
 
 	return dynamic_dname(dentry, buffer, buflen, "socket:[%lu]", i_ino);
 }
