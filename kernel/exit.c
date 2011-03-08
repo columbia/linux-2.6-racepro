@@ -1035,8 +1035,6 @@ NORET_TYPE void do_exit(long code)
 	tsk->exit_code = code;
 	taskstats_exit(tsk, group_dead);
 
-	/* That's for exiting the mm/sem/files properly */
-	sys_set_scribe_flags(SCRIBE_PS_ENABLE_ALL);
 	exit_mm(tsk);
 
 	if (group_dead)
