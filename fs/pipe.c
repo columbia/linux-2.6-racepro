@@ -379,7 +379,10 @@ pipe_read(struct kiocb *iocb, const struct iovec *_iov,
 			size_t chars = buf->len;
 			int error, atomic;
 
-			if (chars < total_len && is_ps_replaying(current)) {
+			if (chars < total_len &&
+			    is_ps_replaying(current) &&
+			    !unlikely(is_scribe_context_dead(
+						current->scribe->ctx))) {
 				/*
 				 * We need to wait for the exact same number
 				 * of bytes since copy_from_user() need to
