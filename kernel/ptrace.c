@@ -704,15 +704,13 @@ SYSCALL_DEFINE4(ptrace, long, request, long, pid, long, addr, long, data)
 		goto out;
 	}
 
-	scribe_lock_pid_read(pid);
+	scribe_lock_pid_write(pid);
 	child = ptrace_get_task_struct(pid);
-	scribe_unlock_pid(pid);
 	if (IS_ERR(child)) {
 		ret = PTR_ERR(child);
-		goto out;
+		goto out_unlock;
 	}
 
-	scribe_lock_ptrace_write(child);
 	if (request == PTRACE_ATTACH) {
 		ret = ptrace_attach(child);
 		/*
@@ -731,8 +729,9 @@ SYSCALL_DEFINE4(ptrace, long, request, long, pid, long, addr, long, data)
 	ret = arch_ptrace(child, request, addr, data);
 
  out_put_task_struct:
-	scribe_unlock(child);
 	put_task_struct(child);
+ out_unlock:
+	scribe_unlock_pid(pid);
  out:
 	return ret;
 }

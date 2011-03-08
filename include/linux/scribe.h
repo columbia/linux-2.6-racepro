@@ -470,9 +470,6 @@ extern void scribe_unlock_pid_discard(pid_t pid);
 struct ipc_namespace;
 extern void scribe_lock_ipc(struct ipc_namespace *ns);
 
-extern void scribe_lock_ptrace_read(struct task_struct *tsk);
-extern void scribe_lock_ptrace_write(struct task_struct *tsk);
-
 extern void scribe_lock_mmap_read(struct mm_struct *mm);
 extern void scribe_lock_mmap_write(struct mm_struct *mm);
 

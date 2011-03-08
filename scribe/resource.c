@@ -1575,26 +1575,6 @@ void scribe_lock_ipc(struct ipc_namespace *ns)
 	__lock_object(scribe, ns, &ns->scribe_resource, SCRIBE_WRITE);
 }
 
-static void lock_ptrace(struct task_struct *tsk, unsigned long flags)
-{
-	struct scribe_ps *scribe = current->scribe;
-
-	if (!should_handle_resources(scribe))
-		return;
-
-	__lock_object(scribe, tsk, &tsk->scribe_ptrace_res, flags);
-}
-
-void scribe_lock_ptrace_read(struct task_struct *tsk)
-{
-	lock_ptrace(tsk, SCRIBE_READ);
-}
-
-void scribe_lock_ptrace_write(struct task_struct *tsk)
-{
-	lock_ptrace(tsk, SCRIBE_WRITE);
-}
-
 static void lock_mmap(struct mm_struct *mm, unsigned long flags)
 {
 	struct scribe_ps *scribe = current->scribe;
