@@ -1489,6 +1489,7 @@ SYSCALL_DEFINE4(accept4, int, fd, struct sockaddr __user *, upeer_sockaddr,
 	struct sockaddr_storage address;
 	bool should_fake_accept;
 	scribe_insert_point_t ip;
+	bool ip_pending = false;
 
 	if (scribe_need_syscall_ret(scribe))
 		return -ENOMEM;
@@ -1506,9 +1507,13 @@ SYSCALL_DEFINE4(accept4, int, fd, struct sockaddr __user *, upeer_sockaddr,
 	if (is_recording(scribe)) {
 		/* We'll put the fake_accept value here */
 		scribe_create_insert_point(&ip, &scribe->queue->stream);
+		ip_pending = true;
 	}
 
 	if (is_replaying(scribe)) {
+		if (is_interruption(scribe->orig_ret))
+			goto real_accept;
+
 		err = scribe_value(&should_fake_accept);
 		if (err < 0)
 			goto out_put;
@@ -1571,6 +1576,7 @@ real_accept:
 		should_fake_accept = !newsock->ops->is_deterministic(newsock);
 		err = scribe_value_at(&should_fake_accept, &ip);
 		scribe_commit_insert_point(&ip);
+		ip_pending = false;
 		if (err < 0)
 			goto out_fd;
 	}
@@ -1596,6 +1602,9 @@ skip_accept:
 out_put:
 	fput_light(sock->file, fput_needed);
 out:
+
+	if (ip_pending)
+		scribe_commit_insert_point(&ip);
 	return err;
 out_fd:
 	fput(newfile);
