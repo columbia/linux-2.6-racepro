@@ -198,8 +198,12 @@ static int scribe_sendmsg(struct kiocb *iocb, struct socket *sock,
 	struct scribe_ps *scribe = current->scribe;
 	int ret, err;
 
-	if (scribe_is_deterministic(sock) || !is_scribed(scribe))
-		return sock->real_ops->sendmsg(iocb, sock, m, total_len);
+	if (scribe_is_deterministic(sock) || !is_scribed(scribe)) {
+		if (is_replaying(scribe))
+			m->msg_flags &= ~MSG_DONTWAIT;
+		ret = sock->real_ops->sendmsg(iocb, sock, m, total_len);
+		return ret;
+	}
 
 	scribe_data_need_info();
 
@@ -227,6 +231,10 @@ static int scribe_recvmsg(struct kiocb *iocb, struct socket *sock,
 	int ret, err;
 
 	if (scribe_is_deterministic(sock) || !is_scribed(scribe)) {
+		if (is_replaying(scribe)) {
+			flags &= ~MSG_DONTWAIT;
+			flags |= MSG_WAITALL;
+		}
 		scribe_data_det();
 		ret = sock->real_ops->recvmsg(iocb, sock, m, total_len, flags),
 		scribe_data_pop_flags();
