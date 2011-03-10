@@ -434,6 +434,7 @@ extern int scribe_resource_prepare(void);
 #define SCRIBE_WRITE		0x04
 #define SCRIBE_INODE_READ	0x08
 #define SCRIBE_INODE_WRITE	0x10
+#define SCRIBE_INODE_EXPLICIT	0x20
 extern void scribe_lock_object(void *object, struct scribe_resource *res,
 			       int flags);
 extern void scribe_lock_object_handle(void *object,
@@ -451,6 +452,8 @@ extern void scribe_lock_inode_write(struct inode *inode);
 extern int scribe_track_next_file_no_inode(void);
 extern int scribe_track_next_file_read(void);
 extern int scribe_track_next_file_write(void);
+extern int scribe_track_next_file_explicit_inode_read(void);
+extern int scribe_track_next_file_explicit_inode_write(void);
 extern int scribe_track_next_file_read_interruptible(void);
 extern int scribe_track_next_file_write_interruptible(void);
 extern bool scribe_was_file_locking_interrupted(void);

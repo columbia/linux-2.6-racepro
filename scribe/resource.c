@@ -1329,7 +1329,8 @@ static int lock_file(struct file *file, int flags)
 		return 0;
 
 	inode = file_inode(file);
-	if (inode_need_explicit_locking(file, inode))
+	if (inode_need_explicit_locking(file, inode) &&
+	    !(flags & SCRIBE_INODE_EXPLICIT))
 		flags &= ~(SCRIBE_INODE_READ | SCRIBE_INODE_WRITE);
 
 	if (__lock_object(scribe, file, &file->scribe_resource, flags))
@@ -1436,6 +1437,18 @@ int scribe_track_next_file_read(void)
 int scribe_track_next_file_write(void)
 {
 	return __track_next_file(SCRIBE_WRITE | SCRIBE_INODE_WRITE);
+}
+
+int scribe_track_next_file_explicit_inode_read(void)
+{
+	return __track_next_file(SCRIBE_WRITE | SCRIBE_INODE_EXPLICIT |
+				 SCRIBE_INODE_READ);
+}
+
+int scribe_track_next_file_explicit_inode_write(void)
+{
+	return __track_next_file(SCRIBE_WRITE | SCRIBE_INODE_EXPLICIT |
+				 SCRIBE_INODE_WRITE);
 }
 
 int scribe_track_next_file_read_interruptible(void)
