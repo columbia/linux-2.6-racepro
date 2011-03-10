@@ -587,6 +587,8 @@ int __scribe_buffer_record(struct scribe_ps *scribe, scribe_insert_point_t *ip,
 	int data_extra = should_scribe_data_extra(scribe);
 	union scribe_event_data_union event;
 
+	 data_extra |= scribe->data_flags & SCRIBE_DATA_NEED_INFO;
+
 	if (data_extra)
 		event.extra = scribe_alloc_event_sized(
 						SCRIBE_EVENT_DATA_EXTRA, size);
@@ -612,6 +614,8 @@ int __scribe_buffer_replay(struct scribe_ps *scribe, void *data, size_t size)
 {
 	int data_extra = should_scribe_data_extra(scribe);
 	union scribe_event_data_union event;
+
+	 data_extra |= scribe->data_flags & SCRIBE_DATA_NEED_INFO;
 
 	if (data_extra)
 		event.extra = scribe_dequeue_event_sized(scribe,

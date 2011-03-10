@@ -1548,9 +1548,15 @@ struct task_struct *get_proc_task(struct inode *inode)
 	if (scribe_resource_prepare())
 		return NULL;
 
-	scribe_lock_pid_read(pid_nr);
+	/*
+	 * We don't want to sync on the reaper, it's useless because it's always
+	 * there.
+	 */
+	if (pid_nr > 1)
+		scribe_lock_pid_read(pid_nr);
 	tsk = get_pid_task(pid, PIDTYPE_PID);
-	scribe_unlock_pid(pid_nr);
+	if (pid_nr > 1)
+		scribe_unlock_pid(pid_nr);
 
 	return tsk;
 }
@@ -2854,9 +2860,117 @@ struct tgid_iter {
 	unsigned int tgid;
 	struct task_struct *task;
 };
+
+static struct tgid_iter scribe_next_tgid_record(struct scribe_ps *scribe,
+						struct pid_namespace *ns,
+						struct tgid_iter iter)
+{
+	scribe_insert_point_t ip;
+	struct pid *pid;
+
+	scribe_create_insert_point(&ip, &scribe->queue->stream);
+
+retry:
+	rcu_read_lock();
+	pid = find_ge_pid(iter.tgid, ns);
+	if (!pid) {
+		rcu_read_unlock();
+		iter.task = NULL;
+		goto out;
+	}
+	iter.tgid = pid_nr_ns(pid, ns);
+	rcu_read_unlock();
+
+	scribe_lock_pid_read(iter.tgid);
+	rcu_read_lock();
+	iter.task = find_task_by_pid_ns(iter.tgid, ns);
+	if (!iter.task || !has_group_leader_pid(iter.task)) {
+		rcu_read_unlock();
+		scribe_unlock_pid_discard(iter.tgid);
+		iter.tgid += 1;
+		goto retry;
+	}
+	get_task_struct(iter.task);
+	rcu_read_unlock();
+	scribe_unlock_pid(iter.tgid);
+
+	scribe_value_at(&iter.tgid, &ip);
+
+out:
+	scribe_commit_insert_point(&ip);
+
+	return iter;
+}
+
+static struct tgid_iter scribe_next_tgid_replay(struct scribe_ps *scribe,
+						struct pid_namespace *ns,
+						struct tgid_iter iter)
+{
+	union scribe_event_data_union event;
+
+	event.generic = scribe_peek_event(scribe->queue, SCRIBE_WAIT);
+	if (IS_ERR(event.generic))
+		return iter;
+
+	if (event.generic->type != SCRIBE_EVENT_DATA_EXTRA)
+		return iter;
+
+	if (event.extra->data_type != SCRIBE_DATA_INTERNAL)
+		return iter;
+
+	if (scribe_value(&iter.tgid))
+		return iter;
+
+	scribe_lock_pid_read(iter.tgid);
+	rcu_read_lock();
+	iter.task = find_task_by_pid_ns(iter.tgid, ns);
+	if (!iter.task || !has_group_leader_pid(iter.task)) {
+		/* We are diverging */
+		rcu_read_unlock();
+		scribe_unlock_pid_discard(iter.tgid);
+		iter.tgid += 1;
+		return iter;
+	}
+	get_task_struct(iter.task);
+	rcu_read_unlock();
+	scribe_unlock_pid(iter.tgid);
+
+	return iter;
+}
+
+static struct tgid_iter scribe_next_tgid(struct scribe_ps *scribe,
+					 struct pid_namespace *ns,
+					 struct tgid_iter iter)
+{
+	struct tgid_iter ret;
+	if (iter.task) {
+		put_task_struct(iter.task);
+		iter.task = NULL;
+	}
+
+	if (scribe_resource_prepare()) {
+		scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
+		return iter;
+	}
+
+	/* We need info because we need to distinguish the data type */
+	scribe_data_need_info();
+	if (is_recording(scribe))
+		ret = scribe_next_tgid_record(scribe, ns, iter);
+	else
+		ret = scribe_next_tgid_replay(scribe, ns, iter);
+	scribe_data_pop_flags();
+
+	return ret;
+}
+
 static struct tgid_iter next_tgid(struct pid_namespace *ns, struct tgid_iter iter)
 {
+	struct scribe_ps *scribe = current->scribe;
 	struct pid *pid;
+
+	if (is_scribed(scribe))
+		return scribe_next_tgid(scribe, ns, iter);
 
 	if (iter.task)
 		put_task_struct(iter.task);
@@ -2886,6 +3000,11 @@ retry:
 		get_task_struct(iter.task);
 	}
 	rcu_read_unlock();
+
+	if (is_ps_recording(current) && pid) {
+		scribe_value(&iter.tgid);
+	}
+
 	return iter;
 }
 
