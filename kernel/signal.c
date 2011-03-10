@@ -1529,7 +1529,7 @@ int zap_other_threads(struct task_struct *p)
 		/*
 		 * We don't need the safe version since the sighand is locked
 		 */
-		if (is_ps_recording(t)) {
+		if (is_ps_scribed(t)) {
 			/* We need to log the signal, going the slow path */
 			specific_send_sig_info(SIGKILL, SEND_SIG_FORCED, t);
 			continue;
