@@ -114,6 +114,7 @@
 #include <linux/mount.h>
 #include <net/checksum.h>
 #include <linux/security.h>
+#include <linux/scribe.h>
 
 static struct hlist_head unix_socket_table[UNIX_HASH_SIZE + 1];
 static DEFINE_SPINLOCK(unix_table_lock);
@@ -825,6 +826,7 @@ static int unix_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 		if (err)
 			goto out_mknod_parent;
 
+		scribe_lock_inode_write(nd.path.dentry->d_inode);
 		dentry = lookup_create(&nd, 0);
 		err = PTR_ERR(dentry);
 		if (IS_ERR(dentry))
@@ -847,6 +849,7 @@ out_mknod_drop_write:
 		if (err)
 			goto out_mknod_dput;
 		mutex_unlock(&nd.path.dentry->d_inode->i_mutex);
+		scribe_unlock(nd.path.dentry->d_inode);
 		dput(nd.path.dentry);
 		nd.path.dentry = dentry;
 
@@ -886,6 +889,7 @@ out_mknod_dput:
 	dput(dentry);
 out_mknod_unlock:
 	mutex_unlock(&nd.path.dentry->d_inode->i_mutex);
+	scribe_unlock(nd.path.dentry->d_inode);
 	path_put(&nd.path);
 out_mknod_parent:
 	if (err == -EEXIST)
