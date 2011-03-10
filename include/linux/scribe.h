@@ -803,8 +803,7 @@ extern int do_scribe_page(struct scribe_ps *scribe, struct mm_struct *mm,
 extern void scribe_split_vma(struct vm_area_struct *vma,
 			     struct vm_area_struct *new);
 extern void scribe_vma_link(struct vm_area_struct *vma);
-extern void scribe_unmap_vmas(struct mm_struct *mm, struct vm_area_struct *vma,
-		unsigned long start_addr, unsigned long end_addr);
+extern void scribe_remove_vma(struct vm_area_struct *vma);
 extern void scribe_clear_shadow_pte_locked(struct mm_struct *mm,
 					   struct vm_area_struct *vma,
 					   pte_t *real_pte, unsigned long addr);

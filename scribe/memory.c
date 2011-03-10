@@ -2222,49 +2222,37 @@ void scribe_vma_link(struct vm_area_struct *vma)
  * we also need to drop reference on inodes contexts (if shared vma)
  * remove context (if not shared vma).
  */
-void scribe_unmap_vmas(struct mm_struct *mm, struct vm_area_struct *vma,
-		       unsigned long start_addr, unsigned long end_addr)
+void scribe_remove_vma(struct vm_area_struct *vma)
 {
+	struct mm_struct *mm = vma->vm_mm;
 	struct scribe_ps *scribe = get_scribe_from_mm(mm);
+	unsigned long address;
+	struct scribe_page_key key;
+
 	if (!should_handle_mm(scribe))
 		return;
 
-	for (; vma && vma->vm_start < end_addr; vma = vma->vm_next) {
-		unsigned long start;
-		unsigned long end;
-		unsigned long address;
-		struct scribe_page_key key;
+	/* FIXME we should call, is_vma_could_be_scribed or something
+	 * if scribe->mm->alone == 1, is_vma_scribed() returns true ...
+	 */
+	if (!is_vma_scribed(scribe, vma))
+		return;
 
-		start = max(vma->vm_start, start_addr);
-		if (start >= vma->vm_end)
-			continue;
-		end = min(vma->vm_end, end_addr);
-		if (end <= vma->vm_start)
-			continue;
-
-		BUG_ON(start != (start & PAGE_MASK));
-
-		/* FIXME we should call, is_vma_could_be_scribed or something
-		 * if scribe->mm->alone == 1, is_vma_scribed() returns true ...
+	/* FIXME do we need to unlock i_mmap_lock ? */
+	if (vma->vm_flags & VM_SHARED) {
+		/* FIXME maybe we should not remove the mapping if the
+		 * address range doesn't hit the whole vma ?
 		 */
-		if (!is_vma_scribed(scribe, vma))
-			continue;
-
-		/* FIXME do we need to unlock i_mmap_lock ? */
-		if (vma->vm_flags & VM_SHARED) {
-			/* FIXME maybe we should not remove the mapping if the
-			 * address range doesn't hit the whole vma ?
-			 */
-			if (vma->vm_flags & VM_SCRIBED) {
-				put_obj(scribe->ctx, vma->vm_file->f_dentry->d_inode);
-				vma->vm_flags &= ~VM_SCRIBED;
-			}
-		} else {
-			key.object = mm;
-			for (address = start; address < end; address += PAGE_SIZE) {
-				key.offset = address;
-				scribe_remove_page(scribe->ctx, &key);
-			}
+		if (vma->vm_flags & VM_SCRIBED) {
+			put_obj(scribe->ctx, vma->vm_file->f_dentry->d_inode);
+			vma->vm_flags &= ~VM_SCRIBED;
+		}
+	} else {
+		key.object = mm;
+		for (address = vma->vm_start; address < vma->vm_end;
+		     address += PAGE_SIZE) {
+			key.offset = address;
+			scribe_remove_page(scribe->ctx, &key);
 		}
 	}
 }
