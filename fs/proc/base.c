@@ -2969,7 +2969,7 @@ static struct tgid_iter next_tgid(struct pid_namespace *ns, struct tgid_iter ite
 	struct scribe_ps *scribe = current->scribe;
 	struct pid *pid;
 
-	if (is_scribed(scribe))
+	if (is_scribed(scribe) && should_scribe_data(scribe))
 		return scribe_next_tgid(scribe, ns, iter);
 
 	if (iter.task)
