@@ -580,7 +580,7 @@ void scribe_leave_fenced_region(int region)
 	if (!is_scribed(scribe))
 		return;
 
-	WARN_ON(scribe->queue->regions_set & ~(1 << region));
+	WARN_ON(!(scribe->queue->regions_set & (1 << region)));
 	scribe->queue->regions_set &= ~(1 << region);
 
 	if (should_scribe_fence_always(scribe))
