@@ -1070,8 +1070,9 @@ retry_private:
 			goto out_put_keys;
 
 		scribe_double_unlock_hb_discard(hb1, hb2);
-		WARN(1, "Scribe: Not handling memory accesses replay "
-		     "in the retry loop\n");
+
+		if (is_scribed(scribe))
+			scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOSYS));
 
 		if (!fshared)
 			goto retry_private;
@@ -1335,8 +1336,10 @@ retry_private:
 				goto out_put_keys;
 
 			scribe_double_unlock_hb_discard(hb1, hb2);
-			WARN(1, "Scribe: Not handling memory accesses replay "
-			     "in the retry loop\n");
+
+			if (is_ps_scribed(current))
+				scribe_emergency_stop(current->scribe->ctx,
+						      ERR_PTR(-ENOSYS));
 
 			if (!fshared)
 				goto retry_private;
@@ -1924,8 +1927,10 @@ retry_private:
 		}
 
 		scribe_unlock_discard(*hb);
-		WARN(1, "Scribe: Not handling memory accesses replay "
-		     "in the retry loop\n");
+
+		if (is_ps_scribed(current))
+			scribe_emergency_stop(current->scribe->ctx,
+					      ERR_PTR(-ENOSYS));
 
 		if (!fshared)
 			goto retry_private;
@@ -1997,9 +2002,10 @@ retry:
 	 */
 	if (!signal_pending(current)) {
 		put_futex_key(fshared, &q.key);
-		/* FIXME Scribe: we dont handle that path yet */
-		WARN_ON(is_scribed(scribe) &&
-			!is_scribe_context_dead(scribe->ctx));
+
+		if (is_scribed(scribe))
+			scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOSYS));
+
 		goto retry;
 	}
 
