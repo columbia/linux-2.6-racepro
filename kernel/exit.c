@@ -773,12 +773,10 @@ static void reparent_leader(struct task_struct *father, struct task_struct *p,
 	kill_orphaned_pgrp(p, father);
 }
 
-static void forget_original_parent(struct task_struct *father)
+static void __forget_original_parent_fast(struct task_struct *father,
+					  struct list_head *dead_children)
 {
 	struct task_struct *p, *n, *reaper;
-	LIST_HEAD(dead_children);
-
-	exit_ptrace(father);
 
 	write_lock_irq(&tasklist_lock);
 	reaper = find_new_reaper(father);
@@ -795,9 +793,115 @@ static void forget_original_parent(struct task_struct *father)
 				group_send_sig_info(t->pdeath_signal,
 						    SEND_SIG_NOINFO, t);
 		} while_each_thread(p, t);
-		reparent_leader(father, p, &dead_children);
+		reparent_leader(father, p, dead_children);
 	}
 	write_unlock_irq(&tasklist_lock);
+}
+
+static struct task_struct *__get_next_task_to_reparent(
+						struct task_struct *father,
+						struct task_struct *reaper)
+{
+	struct task_struct *t, *p;
+
+	if (list_empty(&father->children))
+		return NULL;
+
+	p = list_first_entry(&father->children, struct task_struct, sibling);
+	t = p;
+	do {
+		/* Threads first */
+		if (t == p)
+			continue;
+
+		if (t->real_parent != reaper)
+			return t;
+	} while_each_thread(p, t);
+
+	return p;
+}
+
+static void __forget_original_parent_scribe(struct task_struct *father,
+					    struct list_head *dead_children)
+{
+	struct task_struct *p, *reaper;
+
+	write_lock_irq(&tasklist_lock);
+	reaper = find_new_reaper(father);
+	get_task_struct(reaper);
+	write_unlock_irq(&tasklist_lock);
+
+	if (same_thread_group(father, reaper)) {
+		/*
+		 * Not synchronizing when reparenting on threads, but that's
+		 * okey because sys_getppid() returns the tgid, which doesn't
+		 * change in that case.
+		 */
+		put_task_struct(reaper);
+		__forget_original_parent_fast(father, dead_children);
+		return;
+	}
+
+	while (1) {
+		read_lock_irq(&tasklist_lock);
+		p = __get_next_task_to_reparent(father, reaper);
+		if (p)
+			get_task_struct(p);
+		read_unlock_irq(&tasklist_lock);
+
+		if (!p) {
+			put_task_struct(reaper);
+			return;
+		}
+
+		if (scribe_resource_prepare()) {
+			put_task_struct(p);
+			put_task_struct(reaper);
+			scribe_emergency_stop(current->scribe->ctx,
+					      ERR_PTR(-ENOMEM));
+			__forget_original_parent_fast(father, dead_children);
+			return;
+		}
+
+		scribe_lock_ppid_ptr_write(p);
+		write_lock_irq(&tasklist_lock);
+
+		if (p != __get_next_task_to_reparent(father, reaper)) {
+			write_unlock_irq(&tasklist_lock);
+			scribe_unlock_discard(p);
+			put_task_struct(p);
+			continue;
+		}
+
+		p->real_parent = reaper;
+		if (p->parent == father) {
+			BUG_ON(task_ptrace(p));
+			p->parent = p->real_parent;
+		}
+		if (p->pdeath_signal)
+			group_send_sig_info(p->pdeath_signal,
+					    SEND_SIG_NOINFO, p);
+
+		if (p->group_leader == p)
+			reparent_leader(father, p, dead_children);
+
+		write_unlock_irq(&tasklist_lock);
+		scribe_unlock(p);
+		put_task_struct(p);
+	}
+}
+
+static void forget_original_parent(struct task_struct *father)
+{
+	struct task_struct *p, *n;
+	LIST_HEAD(dead_children);
+
+	exit_ptrace(father);
+
+	if (is_ps_scribed(father))
+		__forget_original_parent_scribe(father, &dead_children);
+	else
+		__forget_original_parent_fast(father, &dead_children);
 
 	BUG_ON(!list_empty(&father->children));
 

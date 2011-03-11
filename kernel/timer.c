@@ -40,6 +40,7 @@
 #include <linux/perf_event.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
+#include <linux/scribe.h>
 
 #include <asm/uaccess.h>
 #include <asm/unistd.h>
@@ -1349,9 +1350,17 @@ SYSCALL_DEFINE0(getppid)
 {
 	int pid;
 
+	if (scribe_resource_prepare()) {
+		scribe_emergency_stop(current->scribe->ctx,
+				      ERR_PTR(-ENOMEM));
+		return -ENOMEM;
+	}
+
+	scribe_lock_ppid_ptr_read(current);
 	rcu_read_lock();
 	pid = task_tgid_vnr(current->real_parent);
 	rcu_read_unlock();
+	scribe_unlock(current);
 
 	return pid;
 }

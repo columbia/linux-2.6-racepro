@@ -1607,3 +1607,23 @@ void scribe_lock_mmap_write(struct mm_struct *mm)
 {
 	lock_mmap(mm, SCRIBE_WRITE);
 }
+
+static void lock_ppid_ptr(struct task_struct *p, unsigned long flags)
+{
+	struct scribe_ps *scribe = current->scribe;
+
+	if (!should_handle_resources(scribe))
+		return;
+
+	__lock_object(scribe, p, &p->scribe_ppid_ptr_res, flags);
+}
+
+void scribe_lock_ppid_ptr_read(struct task_struct *p)
+{
+	lock_ppid_ptr(p, SCRIBE_READ);
+}
+
+void scribe_lock_ppid_ptr_write(struct task_struct *p)
+{
+	lock_ppid_ptr(p, SCRIBE_WRITE);
+}

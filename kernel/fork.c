@@ -188,6 +188,8 @@ void __put_task_struct(struct task_struct *tsk)
 	delayacct_tsk_free(tsk);
 	put_signal_struct(tsk->signal);
 
+	scribe_reset_resource(&tsk->scribe_ppid_ptr_res);
+
 	if (!profile_handoff_task(tsk))
 		free_task(tsk);
 }
@@ -289,6 +291,8 @@ static struct task_struct *dup_task_struct(struct task_struct *orig)
 	tsk->splice_pipe = NULL;
 #ifdef CONFIG_SCRIBE
 	tsk->scribe = NULL;
+	scribe_init_resource(&tsk->scribe_ppid_ptr_res,
+			     SCRIBE_RES_TYPE_PPID | SCRIBE_RES_SPINLOCK);
 #endif
 
 	account_kernel_stack(ti, 1);
