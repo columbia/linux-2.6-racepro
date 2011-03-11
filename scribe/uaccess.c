@@ -585,9 +585,10 @@ int __scribe_buffer_record(struct scribe_ps *scribe, scribe_insert_point_t *ip,
 			   const void *data, size_t size)
 {
 	int data_extra = should_scribe_data_extra(scribe);
+	int need_info = scribe->data_flags & SCRIBE_DATA_NEED_INFO;
 	union scribe_event_data_union event;
 
-	 data_extra |= scribe->data_flags & SCRIBE_DATA_NEED_INFO;
+	data_extra |= need_info;
 
 	if (data_extra)
 		event.extra = scribe_alloc_event_sized(
@@ -600,7 +601,7 @@ int __scribe_buffer_record(struct scribe_ps *scribe, scribe_insert_point_t *ip,
 		return -ENOMEM;
 
 	if (data_extra) {
-		event.extra->data_type = SCRIBE_DATA_INTERNAL;
+		event.extra->data_type = SCRIBE_DATA_INTERNAL | need_info;
 		event.extra->user_ptr = 0;
 		memcpy(event.extra->data, data, size);
 	} else {
@@ -628,7 +629,7 @@ int __scribe_buffer_replay(struct scribe_ps *scribe, void *data, size_t size)
 		return PTR_ERR(event.generic);
 
 	if (data_extra) {
-		if (event.extra->data_type != SCRIBE_DATA_INTERNAL) {
+		if (!(event.extra->data_type & SCRIBE_DATA_INTERNAL)) {
 			scribe_free_event(event.generic);
 			scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_DATA_TYPE,
 				       .type = SCRIBE_DATA_INTERNAL);

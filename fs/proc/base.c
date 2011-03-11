@@ -2915,7 +2915,7 @@ static struct tgid_iter scribe_next_tgid_replay(struct scribe_ps *scribe,
 	if (event.generic->type != SCRIBE_EVENT_DATA_EXTRA)
 		return iter;
 
-	if (event.extra->data_type != SCRIBE_DATA_INTERNAL)
+	if (!(event.extra->data_type & SCRIBE_DATA_INTERNAL))
 		return iter;
 
 	if (scribe_value(&iter.tgid))
