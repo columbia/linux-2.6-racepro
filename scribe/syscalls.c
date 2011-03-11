@@ -255,9 +255,11 @@ static void scribe_commit_syscall_replay(struct scribe_ps *scribe,
 			scribe_free_event(event_end);
 	}
 
-	if (scribe->orig_ret != ret_value) {
-		scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_SYSCALL_RET,
-			       .ret = ret_value);
+	if (should_ret_check(scribe)) {
+		if (scribe->orig_ret != ret_value) {
+			scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_SYSCALL_RET,
+				       .ret = ret_value);
+		}
 	}
 }
 

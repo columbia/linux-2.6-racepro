@@ -649,6 +649,10 @@ static inline int should_scribe_mm(struct scribe_ps *scribe)
 {
 	return scribe->flags & SCRIBE_PS_ENABLE_MM;
 }
+static inline int should_ret_check(struct scribe_ps *scribe)
+{
+	return scribe->flags & SCRIBE_PS_ENABLE_RET_CHECK;
+}
 
 static inline int should_scribe_syscall_ret(struct scribe_ps *scribe)
 {
