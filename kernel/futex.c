@@ -158,12 +158,7 @@ static struct futex_hash_bucket *hash_futex(union futex_key *key)
 		 */
 
 		skey.both.word = key->both.word;
-		if (key->both.offset & FUT_OFF_INODE)
-			skey.both.ptr = (void *)key->shared.inode->i_ino;
-		else {
-			owner = key->private.mm->owner;
-			skey.both.ptr = (void *)task_tgid_vnr(owner);
-		}
+		skey.both.ptr = NULL;
 		skey.both.offset = key->both.offset;
 		key = &skey;
 	}
