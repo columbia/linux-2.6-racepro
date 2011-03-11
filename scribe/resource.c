@@ -659,13 +659,16 @@ static bool is_locking_necessary(struct scribe_ps *scribe,
 }
 
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
-static int get_lockdep_subclass(int type)
+static int get_lockdep_subclass(int type, int nested)
 {
 	/* MAX_LOCKDEP_SUBCLASSES is small, trying not to overflow it */
-	return type & SCRIBE_RES_TYPE_MASK;
+	type &= SCRIBE_RES_TYPE_MASK;
+	if (nested)
+		type += SCRIBE_RES_NUM_TYPES;
+	return type;
 }
 #else
-static inline int get_lockdep_subclass(int type)
+static inline int get_lockdep_subclass(int type, int nested)
 {
 	return 0;
 }
@@ -710,12 +713,12 @@ static size_t get_lock_region_desc(struct scribe_ps *scribe,
 
 static int __do_lock_record(struct scribe_ps *scribe,
 			    struct scribe_resource *res,
-			    int do_write, int do_intr)
+			    int do_write, int do_intr, int nested)
 {
 	int class;
 	int ret;
 
-	class = get_lockdep_subclass(res->type);
+	class = get_lockdep_subclass(res->type, nested);
 
 	if (use_spinlock(res)) {
 		spin_lock_nested(&res->lock.spinlock, class);
@@ -758,10 +761,11 @@ static int do_lock_record(struct scribe_ps *scribe,
 	struct scribe_event_resource_lock_intr *event;
 	int do_intr = lock_region->flags & SCRIBE_INTERRUPTIBLE;
 	int do_write = lock_region->flags & SCRIBE_WRITE;
+	int nested = lock_region->flags & SCRIBE_NESTED;
 
 	scribe_create_insert_point(&lock_region->ip, &scribe->queue->stream);
 
-	if (__do_lock_record(scribe, res, do_write, do_intr)) {
+	if (__do_lock_record(scribe, res, do_write, do_intr, nested)) {
 		/* Interrupted ... */
 		event = lock_region->lock_event.intr;
 		lock_region->lock_event.intr = NULL;
