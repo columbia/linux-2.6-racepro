@@ -1893,8 +1893,12 @@ repeat:
 
 	if (is_replaying(scribe) &&
 	    !is_scribe_context_dead(scribe->ctx)) {
-		/* The task might have to get reparented, so we wait */
+		/*
+		 * The task might have to get reparented, or we are waiting
+		 * for its threads to die, we must wait
+		 */
 		wo->notask_error = 0;
+		wo->wo_flags &= ~WNOHANG;
 	}
 
 	/*
