@@ -142,7 +142,6 @@ static struct futex_hash_bucket futex_queues[1<<FUTEX_HASHBITS];
 static struct futex_hash_bucket *hash_futex(union futex_key *key)
 {
 	struct scribe_ps *scribe = current->scribe;
-	struct task_struct *owner;
 	union futex_key skey;
 	u32 hash;
 
@@ -910,29 +909,56 @@ double_unlock_hb(struct futex_hash_bucket *hb1, struct futex_hash_bucket *hb2)
 		spin_unlock(&hb2->lock);
 }
 
-static inline void scribe_lock_hb(struct futex_hash_bucket *hb)
+static inline void __scribe_lock_hb(struct futex_hash_bucket *hb,
+				    unsigned long flags)
 {
 	scribe_lock_object_handle(hb, &hb->scribe_resource,
 			  SCRIBE_RES_TYPE_FUTEX | SCRIBE_RES_SPINLOCK,
-			  SCRIBE_WRITE);
+			  SCRIBE_WRITE | flags);
+}
+
+static inline void scribe_lock_hb(struct futex_hash_bucket *hb)
+{
+	__scribe_lock_hb(hb, 0);
+}
+
+static inline void scribe_lock_hb_nested(struct futex_hash_bucket *hb)
+{
+	__scribe_lock_hb(hb, SCRIBE_NESTED);
 }
 
 static inline void scribe_double_lock_hb(struct futex_hash_bucket *hb1,
 					 struct futex_hash_bucket *hb2)
 {
-	/* FIXME */
+	/*
+	 * We can do the pointer comparison because the futex_hash_bucket
+	 * objcts are in an array, and the comparison will stay consistant
+	 * across record/replay
+	 */
+	if (hb1 <= hb2) {
+		scribe_lock_hb(hb1);
+		if (hb1 < hb2)
+			scribe_lock_hb_nested(hb2);
+	} else { /* hb1 > hb2 */
+		scribe_lock_hb(hb2);
+		scribe_lock_hb_nested(hb1);
+	}
 }
 
 static inline void scribe_double_unlock_hb(struct futex_hash_bucket *hb1,
 					   struct futex_hash_bucket *hb2)
 {
-	/* FIXME */
+	scribe_unlock(hb1);
+	if (hb1 != hb2)
+		scribe_unlock(hb2);
 }
 
 static inline void scribe_double_unlock_hb_discard(
 		struct futex_hash_bucket *hb1, struct futex_hash_bucket *hb2)
 {
-	/* FIXME */
+	scribe_unlock_discard(hb1);
+	if (hb1 != hb2)
+		scribe_unlock_discard(hb2);
 }
 
 /*
