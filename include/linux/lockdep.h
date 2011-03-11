@@ -29,7 +29,7 @@ extern int lock_stat;
  */
 #define XXX_LOCK_USAGE_STATES		(1+3*4)
 
-#define MAX_LOCKDEP_SUBCLASSES		8UL
+#define MAX_LOCKDEP_SUBCLASSES		32UL
 
 /*
  * Lock-classes are keyed via unique addresses, by embedding the
@@ -144,6 +144,11 @@ struct lockdep_map {
 	int				cpu;
 	unsigned long			ip;
 #endif
+	/*
+	 * We've increased the MAX_LOCKDEP_SUBCLASSES, and we want to shut
+	 * the BUILD_BUG_ON() in kernel/lockdep.c
+	 */
+	char dummy[18];
 };
 
 /*
