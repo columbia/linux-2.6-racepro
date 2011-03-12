@@ -1655,7 +1655,8 @@ long do_fork_with_pids(unsigned long long clone_flags,
 		 * - Bookmark sync deadlocks because of
 		 *   wait_for_completion(&vfork);
 		 */
-		clone_flags &= ~CLONE_VFORK;
+		if (clone_flags & CLONE_VFORK)
+			clone_flags &= ~(CLONE_VFORK | CLONE_VM);
 	}
 
 	/*
