@@ -1356,6 +1356,7 @@ static struct task_struct *copy_process(unsigned long long clone_flags,
 	cgroup_callbacks_done = 1;
 
 	if (is_ps_replaying(current)) {
+		retval = -ERESTARTNOINTR;
 		if (current->scribe->orig_ret == -ERESTARTNOINTR)
 			goto bad_fork_free_pid;
 	}
