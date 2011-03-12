@@ -129,7 +129,16 @@ static int scribe_listen(struct socket *sock, int len)
 
 static int scribe_shutdown(struct socket *sock, int flags)
 {
-	return sock->real_ops->shutdown(sock, flags);
+	struct scribe_ps *scribe = current->scribe;
+	int ret, err;
+
+	if (scribe_is_deterministic(sock) || !is_scribed(scribe))
+		return sock->real_ops->shutdown(sock, flags);
+
+	err = scribe_result(
+		ret, sock->real_ops->shutdown(sock, flags));
+
+	return err ?: ret;
 }
 
 static int scribe_setsockopt(struct socket *sock, int level,
