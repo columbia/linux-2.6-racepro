@@ -262,18 +262,6 @@ int sys_fork(struct pt_regs *regs)
  */
 int sys_vfork(struct pt_regs *regs)
 {
-	struct scribe_ps *scribe = current->scribe;
-	if (is_scribed(scribe)) {
-		/*
-		 * 1) vfork() is worse for scribe: it would instanciate two
-		 *    clean page tables. The wanted optimization would not
-		 *    happen.
-		 * 2) Bookmark sync deadlocks because of
-		 *    wait_for_completion(&vfork);
-		 */
-		return sys_fork(regs);
-	}
-
 	return do_fork(CLONE_VFORK | CLONE_VM | SIGCHLD, regs->sp, regs, 0,
 		       NULL, NULL);
 }

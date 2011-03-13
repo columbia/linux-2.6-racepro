@@ -173,7 +173,7 @@ extern struct scribe_event *scribe_peek_event(
 									\
 	__event = scribe_dequeue_event((sp)->queue, SCRIBE_WAIT);	\
 	if (IS_ERR(__event))						\
-		scribe_emergency_stop((sp)->ctx, __event);		\
+		scribe_kill((sp)->ctx, PTR_ERR(__event));		\
 	else if (__event->type != _type) {				\
 		scribe_free_event(__event);				\
 		scribe_diverge(sp, SCRIBE_EVENT_DIVERGE_EVENT_TYPE,	\
@@ -349,8 +349,13 @@ static inline void scribe_put_context(struct scribe_context *ctx)
 }
 
 extern struct scribe_context *scribe_alloc_context(void);
-extern void scribe_emergency_stop(struct scribe_context *ctx,
-				  struct scribe_event *reason);
+extern void __scribe_kill(struct scribe_context *ctx,
+			  struct scribe_event *reason);
+static inline void scribe_kill(struct scribe_context *ctx, long error)
+{
+	__scribe_kill(ctx, ERR_PTR(error));
+}
+
 extern void scribe_exit_context(struct scribe_context *ctx);
 
 extern int scribe_start(struct scribe_context *ctx, unsigned long flags,
@@ -388,7 +393,7 @@ extern void scribe_wake_all_fake_sig(struct scribe_context *ctx);
 			__VA_ARGS__					\
 		};							\
 	}								\
-	scribe_emergency_stop((sp)->ctx, (struct scribe_event *)__event); \
+	__scribe_kill((sp)->ctx, (struct scribe_event *)__event);	\
 })
 
 /* Bookmarks */
@@ -399,9 +404,7 @@ extern void scribe_bookmark_free(struct scribe_bookmark *bmark);
 extern void scribe_bookmark_reset(struct scribe_bookmark *bmark);
 extern int scribe_bookmark_request(struct scribe_bookmark *bmark);
 extern void scribe_bookmark_point(void);
-extern int scribe_golive_on_bookmark_id(struct scribe_bookmark *bmark, int id);
-extern int scribe_golive_on_next_bookmark(struct scribe_bookmark *bmark);
-
+extern int scribe_bookmark_resume(struct scribe_bookmark *bmark);
 
 /* Resources */
 
@@ -434,6 +437,8 @@ extern int scribe_resource_prepare(void);
 #define SCRIBE_WRITE		0x04
 #define SCRIBE_INODE_READ	0x08
 #define SCRIBE_INODE_WRITE	0x10
+#define SCRIBE_INODE_EXPLICIT	0x20
+#define SCRIBE_NESTED		0x40
 extern void scribe_lock_object(void *object, struct scribe_resource *res,
 			       int flags);
 extern void scribe_lock_object_handle(void *object,
@@ -447,10 +452,13 @@ extern int scribe_lock_file_write_interruptible(struct file *file);
 
 extern void scribe_lock_inode_read(struct inode *inode);
 extern void scribe_lock_inode_write(struct inode *inode);
+extern void scribe_lock_inode_write_nested(struct inode *inode);
 
 extern int scribe_track_next_file_no_inode(void);
 extern int scribe_track_next_file_read(void);
 extern int scribe_track_next_file_write(void);
+extern int scribe_track_next_file_explicit_inode_read(void);
+extern int scribe_track_next_file_explicit_inode_write(void);
 extern int scribe_track_next_file_read_interruptible(void);
 extern int scribe_track_next_file_write_interruptible(void);
 extern bool scribe_was_file_locking_interrupted(void);
@@ -472,6 +480,9 @@ extern void scribe_lock_ipc(struct ipc_namespace *ns);
 
 extern void scribe_lock_mmap_read(struct mm_struct *mm);
 extern void scribe_lock_mmap_write(struct mm_struct *mm);
+
+extern void scribe_lock_ppid_ptr_read(struct task_struct *p);
+extern void scribe_lock_ppid_ptr_write(struct task_struct *p);
 
 extern void scribe_unlock(void *object);
 extern void scribe_unlock_discard(void *object);
@@ -643,6 +654,10 @@ static inline int should_scribe_mm(struct scribe_ps *scribe)
 {
 	return scribe->flags & SCRIBE_PS_ENABLE_MM;
 }
+static inline int should_ret_check(struct scribe_ps *scribe)
+{
+	return scribe->flags & SCRIBE_PS_ENABLE_RET_CHECK;
+}
 
 static inline int should_scribe_syscall_ret(struct scribe_ps *scribe)
 {
@@ -651,6 +666,10 @@ static inline int should_scribe_syscall_ret(struct scribe_ps *scribe)
 static inline int should_scribe_syscall_extra(struct scribe_ps *scribe)
 {
 	return scribe->ctx->flags & SCRIBE_SYSCALL_EXTRA;
+}
+static inline int should_scribe_sig_extra(struct scribe_ps *scribe)
+{
+	return scribe->ctx->flags & SCRIBE_SIG_EXTRA;
 }
 static inline int should_scribe_sig_cookie(struct scribe_ps *scribe)
 {
@@ -800,8 +819,7 @@ extern int do_scribe_page(struct scribe_ps *scribe, struct mm_struct *mm,
 extern void scribe_split_vma(struct vm_area_struct *vma,
 			     struct vm_area_struct *new);
 extern void scribe_vma_link(struct vm_area_struct *vma);
-extern void scribe_unmap_vmas(struct mm_struct *mm, struct vm_area_struct *vma,
-		unsigned long start_addr, unsigned long end_addr);
+extern void scribe_remove_vma(struct vm_area_struct *vma);
 extern void scribe_clear_shadow_pte_locked(struct mm_struct *mm,
 					   struct vm_area_struct *vma,
 					   pte_t *real_pte, unsigned long addr);

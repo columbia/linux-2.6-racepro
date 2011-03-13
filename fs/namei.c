@@ -1432,6 +1432,42 @@ void unlock_rename(struct dentry *p1, struct dentry *p2)
 	}
 }
 
+static void scribe_double_lock(struct dentry *p1, struct dentry *p2)
+{
+	struct dentry *p;
+
+	if (!is_ps_scribed(current))
+		return;
+
+	if (p1 == p2) {
+		scribe_lock_inode_write(p1->d_inode);
+		return;
+	}
+
+	mutex_lock(&p1->d_inode->i_sb->s_vfs_rename_mutex);
+
+	p = d_ancestor(p2, p1);
+	if (p) {
+		scribe_lock_inode_write(p2->d_inode);
+		scribe_lock_inode_write_nested(p1->d_inode);
+	} else {
+		scribe_lock_inode_write(p1->d_inode);
+		scribe_lock_inode_write_nested(p2->d_inode);
+	}
+
+	mutex_unlock(&p1->d_inode->i_sb->s_vfs_rename_mutex);
+}
+
+static void scribe_double_unlock(struct dentry *p1, struct dentry *p2)
+{
+	if (!is_ps_scribed(current))
+		return;
+
+	scribe_unlock(p1->d_inode);
+	if (p1 != p2)
+		scribe_unlock(p2->d_inode);
+}
+
 int vfs_create(struct inode *dir, struct dentry *dentry, int mode,
 		struct nameidata *nd)
 {
@@ -2750,6 +2786,9 @@ SYSCALL_DEFINE4(renameat, int, olddfd, const char __user *, oldname,
 	char *to;
 	int error;
 
+	if (scribe_resource_prepare())
+		return -ENOMEM;
+
 	error = user_path_parent(olddfd, oldname, &oldnd, &from);
 	if (error)
 		goto exit;
@@ -2775,6 +2814,7 @@ SYSCALL_DEFINE4(renameat, int, olddfd, const char __user *, oldname,
 	newnd.flags &= ~LOOKUP_PARENT;
 	newnd.flags |= LOOKUP_RENAME_TARGET;
 
+	scribe_double_lock(new_dir, old_dir);
 	trap = lock_rename(new_dir, old_dir);
 
 	/* TODO double lock the inodes */
@@ -2824,6 +2864,7 @@ exit4:
 	dput(old_dentry);
 exit3:
 	unlock_rename(new_dir, old_dir);
+	scribe_double_unlock(new_dir, old_dir);
 exit2:
 	path_put(&newnd.path);
 	putname(to);

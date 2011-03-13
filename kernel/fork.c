@@ -188,6 +188,8 @@ void __put_task_struct(struct task_struct *tsk)
 	delayacct_tsk_free(tsk);
 	put_signal_struct(tsk->signal);
 
+	scribe_reset_resource(&tsk->scribe_ppid_ptr_res);
+
 	if (!profile_handoff_task(tsk))
 		free_task(tsk);
 }
@@ -289,6 +291,8 @@ static struct task_struct *dup_task_struct(struct task_struct *orig)
 	tsk->splice_pipe = NULL;
 #ifdef CONFIG_SCRIBE
 	tsk->scribe = NULL;
+	scribe_init_resource(&tsk->scribe_ppid_ptr_res,
+			     SCRIBE_RES_TYPE_PPID | SCRIBE_RES_SPINLOCK);
 #endif
 
 	account_kernel_stack(ti, 1);
@@ -1092,7 +1096,7 @@ static struct task_struct *copy_process(unsigned long long clone_flags,
 
 	if ((clone_flags & CLONE_NEWPID) && is_ps_scribed(current)) {
 		/* Not implemented yet */
-		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOSYS));
+		scribe_kill(current->scribe->ctx, -ENOSYS);
 		return ERR_PTR(-ENOSYS);
 	}
 
@@ -1352,6 +1356,7 @@ static struct task_struct *copy_process(unsigned long long clone_flags,
 	cgroup_callbacks_done = 1;
 
 	if (is_ps_replaying(current)) {
+		retval = -ERESTARTNOINTR;
 		if (current->scribe->orig_ret == -ERESTARTNOINTR)
 			goto bad_fork_free_pid;
 	}
@@ -1651,7 +1656,8 @@ long do_fork_with_pids(unsigned long long clone_flags,
 		 * - Bookmark sync deadlocks because of
 		 *   wait_for_completion(&vfork);
 		 */
-		clone_flags &= ~CLONE_VFORK;
+		if (clone_flags & CLONE_VFORK)
+			clone_flags &= ~(CLONE_VFORK | CLONE_VM);
 	}
 
 	/*

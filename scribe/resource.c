@@ -18,6 +18,7 @@
 #include <linux/ipc_namespace.h>
 #include <linux/writeback.h>
 #include <asm/cmpxchg.h>
+#include <net/af_unix.h>
 
 /*
  * A few notes:
@@ -659,47 +660,99 @@ static bool is_locking_necessary(struct scribe_ps *scribe,
 }
 
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
-static int get_lockdep_subclass(int type)
+static int get_lockdep_subclass(int type, int nested)
 {
 	/* MAX_LOCKDEP_SUBCLASSES is small, trying not to overflow it */
-	return type & SCRIBE_RES_TYPE_MASK;
+	type &= SCRIBE_RES_TYPE_MASK;
+	if (nested)
+		type += SCRIBE_RES_NUM_TYPES;
+	return type;
 }
 #else
-static inline int get_lockdep_subclass(int type)
+static inline int get_lockdep_subclass(int type, int nested)
 {
 	return 0;
 }
 #endif
 
+static size_t get_path_desc(struct scribe_ps *scribe,
+			    struct file *file, char *buffer, size_t size)
+{
+	char *tmp, *pathname;
+	size_t ret;
+
+	tmp = (char *)__get_free_page(GFP_TEMPORARY);
+	if (!tmp) {
+		return snprintf(buffer, size,
+				"memory allocation failed");
+	}
+
+	scribe->do_dpath_scribing = false;
+	pathname = d_path(&file->f_path, tmp, PAGE_SIZE);
+	scribe->do_dpath_scribing = true;
+	if (IS_ERR(pathname)) {
+		ret = snprintf(buffer, size, "d_path failed with %ld",
+			       PTR_ERR(pathname));
+	} else
+		ret = snprintf(buffer, size, "%s", pathname);
+
+	free_page((unsigned long)tmp);
+
+	return ret;
+}
+
+#define unix_peer(sk) (unix_sk(sk)->peer)
 static size_t get_lock_region_desc(struct scribe_ps *scribe,
-				   char *buffer, size_t size,
+				   char *buffer, ssize_t size,
 				   struct scribe_lock_region *lock_region)
 {
 	int type = lock_region->res->type & SCRIBE_RES_TYPE_MASK;
 	struct file *file;
-	char *tmp, *pathname;
+	struct task_struct *p;
 	ssize_t ret;
 
 	switch (type) {
 	case SCRIBE_RES_TYPE_FILE:
 		file = lock_region->object;
+		ret = get_path_desc(scribe, file, buffer, size);
+		buffer += ret;
+		size -= ret;
 
-		tmp = (char *)__get_free_page(GFP_TEMPORARY);
-		if (!tmp) {
-			return snprintf(buffer, size,
-					"memory allocation failed");
+		if (S_ISSOCK(file->f_dentry->d_inode->i_mode)) {
+			struct socket *sock = file->private_data;
+
+			if (size <= 5)
+				break;
+
+			if (!sock->real_ops)
+				break;
+
+			if (sock->real_ops->family != PF_UNIX)
+				break;
+
+			if (!unix_peer(sock->sk))
+				break;
+
+			if (unix_peer(sock->sk)->sk_scribe_ctx != scribe->ctx)
+				break;
+
+			/* FIXME we should take some locks around here */
+
+			if (!unix_peer(sock->sk)->sk_socket)
+				break;
+
+			strcat(buffer, " ");
+			buffer += 1;
+			size -= 1;
+			ret += 1;
+
+			file = unix_peer(sock->sk)->sk_socket->file;
+			ret += get_path_desc(scribe, file, buffer, size);
 		}
-
-		scribe->do_dpath_scribing = false;
-		pathname = d_path(&file->f_path, tmp, PAGE_SIZE);
-		scribe->do_dpath_scribing = true;
-		if (IS_ERR(pathname)) {
-			ret = snprintf(buffer, size, "d_path failed with %ld",
-				       PTR_ERR(pathname));
-		} else
-			ret = snprintf(buffer, size, "%s", pathname);
-
-		free_page((unsigned long)tmp);
+		break;
+	case SCRIBE_RES_TYPE_PPID:
+		p = lock_region->object;
+		ret = snprintf(buffer, size, "%d", task_pid_vnr(p));
 		break;
 	default:
 		ret = snprintf(buffer, size, "none");
@@ -710,12 +763,12 @@ static size_t get_lock_region_desc(struct scribe_ps *scribe,
 
 static int __do_lock_record(struct scribe_ps *scribe,
 			    struct scribe_resource *res,
-			    int do_write, int do_intr)
+			    int do_write, int do_intr, int nested)
 {
 	int class;
 	int ret;
 
-	class = get_lockdep_subclass(res->type);
+	class = get_lockdep_subclass(res->type, nested);
 
 	if (use_spinlock(res)) {
 		spin_lock_nested(&res->lock.spinlock, class);
@@ -758,10 +811,11 @@ static int do_lock_record(struct scribe_ps *scribe,
 	struct scribe_event_resource_lock_intr *event;
 	int do_intr = lock_region->flags & SCRIBE_INTERRUPTIBLE;
 	int do_write = lock_region->flags & SCRIBE_WRITE;
+	int nested = lock_region->flags & SCRIBE_NESTED;
 
 	scribe_create_insert_point(&lock_region->ip, &scribe->queue->stream);
 
-	if (__do_lock_record(scribe, res, do_write, do_intr)) {
+	if (__do_lock_record(scribe, res, do_write, do_intr, nested)) {
 		/* Interrupted ... */
 		event = lock_region->lock_event.intr;
 		lock_region->lock_event.intr = NULL;
@@ -789,7 +843,7 @@ static int serial_match(struct scribe_ps *scribe,
 		return 1;
 
 	if (unlikely(is_scribe_context_dead(scribe->ctx))) {
-		/* emergency_stop() has been triggered, we need to leave */
+		/* scribe_kill() has been triggered, we need to leave */
 		return 1;
 	}
 
@@ -1329,7 +1383,8 @@ static int lock_file(struct file *file, int flags)
 		return 0;
 
 	inode = file_inode(file);
-	if (inode_need_explicit_locking(file, inode))
+	if (inode_need_explicit_locking(file, inode) &&
+	    !(flags & SCRIBE_INODE_EXPLICIT))
 		flags &= ~(SCRIBE_INODE_READ | SCRIBE_INODE_WRITE);
 
 	if (__lock_object(scribe, file, &file->scribe_resource, flags))
@@ -1408,6 +1463,11 @@ void scribe_lock_inode_write(struct inode *inode)
 	lock_inode(inode, SCRIBE_WRITE);
 }
 
+void scribe_lock_inode_write_nested(struct inode *inode)
+{
+	lock_inode(inode, SCRIBE_WRITE | SCRIBE_NESTED);
+}
+
 static int __track_next_file(int flags)
 {
 	struct scribe_ps *scribe = current->scribe;
@@ -1436,6 +1496,18 @@ int scribe_track_next_file_read(void)
 int scribe_track_next_file_write(void)
 {
 	return __track_next_file(SCRIBE_WRITE | SCRIBE_INODE_WRITE);
+}
+
+int scribe_track_next_file_explicit_inode_read(void)
+{
+	return __track_next_file(SCRIBE_WRITE | SCRIBE_INODE_EXPLICIT |
+				 SCRIBE_INODE_READ);
+}
+
+int scribe_track_next_file_explicit_inode_write(void)
+{
+	return __track_next_file(SCRIBE_WRITE | SCRIBE_INODE_EXPLICIT |
+				 SCRIBE_INODE_WRITE);
 }
 
 int scribe_track_next_file_read_interruptible(void)
@@ -1593,4 +1665,24 @@ void scribe_lock_mmap_read(struct mm_struct *mm)
 void scribe_lock_mmap_write(struct mm_struct *mm)
 {
 	lock_mmap(mm, SCRIBE_WRITE);
+}
+
+static void lock_ppid_ptr(struct task_struct *p, unsigned long flags)
+{
+	struct scribe_ps *scribe = current->scribe;
+
+	if (!should_handle_resources(scribe))
+		return;
+
+	__lock_object(scribe, p, &p->scribe_ppid_ptr_res, flags);
+}
+
+void scribe_lock_ppid_ptr_read(struct task_struct *p)
+{
+	lock_ppid_ptr(p, SCRIBE_READ);
+}
+
+void scribe_lock_ppid_ptr_write(struct task_struct *p)
+{
+	lock_ppid_ptr(p, SCRIBE_WRITE);
 }

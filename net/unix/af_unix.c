@@ -784,6 +784,7 @@ static int unix_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 	unsigned hash;
 	struct unix_address *addr;
 	struct hlist_head *list;
+	struct inode *locked_inode = NULL;
 
 	err = -EINVAL;
 	if (sunaddr->sun_family != AF_UNIX)
@@ -826,7 +827,8 @@ static int unix_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 		if (err)
 			goto out_mknod_parent;
 
-		scribe_lock_inode_write(nd.path.dentry->d_inode);
+		locked_inode = nd.path.dentry->d_inode;
+		scribe_lock_inode_write(locked_inode);
 		dentry = lookup_create(&nd, 0);
 		err = PTR_ERR(dentry);
 		if (IS_ERR(dentry))
@@ -849,7 +851,6 @@ out_mknod_drop_write:
 		if (err)
 			goto out_mknod_dput;
 		mutex_unlock(&nd.path.dentry->d_inode->i_mutex);
-		scribe_unlock(nd.path.dentry->d_inode);
 		dput(nd.path.dentry);
 		nd.path.dentry = dentry;
 
@@ -871,6 +872,7 @@ out_mknod_drop_write:
 		list = &unix_socket_table[dentry->d_inode->i_ino & (UNIX_HASH_SIZE-1)];
 		u->dentry = nd.path.dentry;
 		u->mnt    = nd.path.mnt;
+		scribe_unlock(locked_inode);
 	}
 
 	err = 0;
@@ -1028,6 +1030,7 @@ static int unix_stream_connect(struct socket *sock, struct sockaddr *uaddr,
 	struct sock *newsk = NULL;
 	struct sock *other = NULL;
 	struct sk_buff *skb = NULL;
+	struct inode *other_inode;
 	unsigned hash;
 	int st;
 	int err;
@@ -1068,11 +1071,14 @@ restart:
 		goto out;
 
 	/* Latch state of peer */
+	other_inode = other->sk_socket->file->f_path.dentry->d_inode;
+	scribe_lock_inode_write(other_inode);
 	unix_state_lock(other);
 
 	/* Apparently VFS overslept socket death. Retry. */
 	if (sock_flag(other, SOCK_DEAD)) {
 		unix_state_unlock(other);
+		scribe_unlock_discard(other_inode);
 		sock_put(other);
 		goto restart;
 	}
@@ -1091,8 +1097,12 @@ restart:
 		timeo = unix_wait_for_peer(other, timeo);
 
 		err = sock_intr_errno(timeo);
-		if (signal_pending(current))
+		if (signal_pending(current)) {
+			scribe_unlock(other_inode);
 			goto out;
+		}
+
+		scribe_unlock_discard(other_inode);
 		sock_put(other);
 		goto restart;
 	}
@@ -1128,6 +1138,7 @@ restart:
 	if (sk->sk_state != st) {
 		unix_state_unlock(sk);
 		unix_state_unlock(other);
+		scribe_unlock_discard(other_inode);
 		sock_put(other);
 		goto restart;
 	}
@@ -1178,12 +1189,15 @@ restart:
 	spin_unlock(&other->sk_receive_queue.lock);
 	unix_state_unlock(other);
 	other->sk_data_ready(other, 0);
+	scribe_unlock(other_inode);
 	sock_put(other);
 	return 0;
 
 out_unlock:
-	if (other)
+	if (other) {
 		unix_state_unlock(other);
+		scribe_unlock(other_inode);
+	}
 
 out:
 	kfree_skb(skb);

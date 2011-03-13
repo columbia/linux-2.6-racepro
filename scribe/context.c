@@ -87,7 +87,7 @@ static void wait_for_ctx_empty(struct scribe_context *ctx)
 
 void scribe_exit_context(struct scribe_context *ctx)
 {
-	scribe_emergency_stop(ctx, NULL);
+	scribe_kill(ctx, 0);
 	wait_for_ctx_empty(ctx);
 
 	scribe_free_all_events(&ctx->notifications);
@@ -109,7 +109,7 @@ static int context_start(struct scribe_context *ctx, unsigned long flags,
 		return -EPERM;
 
 	/*
-	 * The task list might not be empty (just got an emergency_stop).
+	 * The task list might not be empty (just got an scribe_kill()).
 	 */
 	wait_for_ctx_empty(ctx);
 
@@ -172,7 +172,7 @@ static void context_idle(struct scribe_context *ctx,
 		scribe_free_backtrace(backtrace);
 	}
 
-	if (IS_ERR(reason) || !reason) {
+	if (IS_ERR_OR_NULL(reason)) {
 		ctx->last_error = ctx->idle_event->error = PTR_ERR(reason);
 		WARN(reason, "scribe: Context going idle with error=%ld\n",
 		     PTR_ERR(reason));
@@ -255,8 +255,7 @@ err:
 	return ret;
 }
 
-void scribe_emergency_stop(struct scribe_context *ctx,
-			   struct scribe_event *reason)
+void __scribe_kill(struct scribe_context *ctx, struct scribe_event *reason)
 {
 	struct scribe_ps *scribe;
 
@@ -294,6 +293,8 @@ void scribe_emergency_stop(struct scribe_context *ctx,
 		 * during the replay. wake_up_process() is necessary in that
 		 * case.
 		 * It may also fail because the init process is unkillable.
+		 * It also wakes up tasks waiting on some event and checking
+		 * on is_scribe_context_dead().
 		 */
 		wake_up_process(scribe->p);
 	}
@@ -304,7 +305,7 @@ out:
 }
 
 /*
- * XXX This is not an emergency_stop. This is just a notification that will
+ * XXX This is not an scribe_kill(). This is just a notification that will
  * initiate a graceful ending.
  * Processes are checking for the SCRIBE_STOP flag when entering a syscall.
  */
@@ -321,6 +322,7 @@ int scribe_stop(struct scribe_context *ctx)
 		ctx->flags |= SCRIBE_STOP;
 		if (ctx->flags & SCRIBE_RECORD)
 			scribe_wake_all_fake_sig(ctx);
+		scribe_bookmark_resume(ctx->bmark);
 	}
 	spin_unlock(&ctx->tasks_lock);
 
@@ -371,7 +373,7 @@ int scribe_check_deadlock(struct scribe_context *ctx)
 		__set_current_state(TASK_RUNNING);
 	}
 
-	scribe_emergency_stop(ctx, ERR_PTR(-EDEADLK));
+	scribe_kill(ctx, -EDEADLK);
 	return 0;
 }
 
@@ -458,12 +460,12 @@ void scribe_attach(struct scribe_ps *scribe)
 		 *    - the process calls execve(), and lands here
 		 *
 		 * 2) copy_process() was about to attach a child, when
-		 * suddenly scribe_emergency_stop() got called and distributed
+		 * suddenly scribe_kill() got called and distributed
 		 * some SIGKILLs, but only to the parent.
 		 *
 		 * We can SIGKILL the current process because if we attached
 		 * right before the context went dead, we would have received
-		 * the SIGKILL from emergency_stop() anyways. It's a race.
+		 * the SIGKILL from scribe_kill() anyways. It's a race.
 		 *
 		 * Note: During replay, in case a new event comes in for our
 		 * pid, a new queue will be instantiated by the device, and

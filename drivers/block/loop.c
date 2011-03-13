@@ -73,6 +73,7 @@
 #include <linux/highmem.h>
 #include <linux/kthread.h>
 #include <linux/splice.h>
+#include <linux/scribe.h>
 
 #include <asm/uaccess.h>
 
@@ -1156,6 +1157,7 @@ loop_get_status_old(struct loop_device *lo, struct loop_info __user *arg) {
 		err = loop_get_status(lo, &info64);
 	if (!err)
 		err = loop_info64_to_old(&info64, &info);
+	scribe_data_non_det();
 	if (!err && copy_to_user(arg, &info, sizeof(info)))
 		err = -EFAULT;
 
@@ -1171,6 +1173,7 @@ loop_get_status64(struct loop_device *lo, struct loop_info64 __user *arg) {
 		err = -EINVAL;
 	if (!err)
 		err = loop_get_status(lo, &info64);
+	scribe_data_non_det();
 	if (!err && copy_to_user(arg, &info64, sizeof(info64)))
 		err = -EFAULT;
 

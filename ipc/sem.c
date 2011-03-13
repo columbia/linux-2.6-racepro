@@ -1088,7 +1088,7 @@ SYSCALL_DEFINE(semctl)(int semid, int semnum, int cmd, union semun arg)
 
 	if (scribe_resource_prepare()) {
 		/* Userspace may not expect ENOMEM */
-		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		scribe_kill(current->scribe->ctx, -ENOMEM);
 		return -ENOMEM;
 	}
 
@@ -1503,7 +1503,7 @@ SYSCALL_DEFINE4(semtimedop, int, semid, struct sembuf __user *, tsops,
 
 	if (scribe_resource_prepare()) {
 		/* Userspace may not expect ENOMEM */
-		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		scribe_kill(current->scribe->ctx, -ENOMEM);
 		return -ENOMEM;
 	}
 

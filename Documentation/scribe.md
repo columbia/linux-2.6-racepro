@@ -28,7 +28,7 @@ The kernel implementation is separated in different parts:
 
   The most relevant functions related to the context are
   [`do_start()`](../scribe/context.c#L199) and
-  [`scribe_emergency_stop()`](../scribe/context.c#L253).
+  [`__scribe_kill()`](../scribe/context.c#L258).
 
   The way to start a scribe session is to start the context with `do_start`,
   create a new task with the `CLONE_NEWPID` flag, and that will be the init

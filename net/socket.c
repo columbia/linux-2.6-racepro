@@ -464,7 +464,8 @@ struct socket *sockfd_lookup(int fd, int *err)
 	return sock;
 }
 
-static struct socket *sockfd_lookup_light(int fd, int *err, int *fput_needed)
+static struct socket *sockfd_lookup_light(int fd, int *err, int *fput_needed,
+					  int scribe_inode_lock)
 {
 	struct file *file;
 	struct socket *sock;
@@ -472,12 +473,15 @@ static struct socket *sockfd_lookup_light(int fd, int *err, int *fput_needed)
 	/*
 	 * FIXME Maybe we cannot return -ENOMEM, and we should abort
 	 * the whole thing.
-	 * TODO We want to distinguish read/write.
 	 */
-	if (scribe_track_next_file_write()) {
-		*err = -ENOMEM;
+	if (scribe_inode_lock == SCRIBE_INODE_READ)
+		*err = scribe_track_next_file_explicit_inode_read();
+	else if (scribe_inode_lock == SCRIBE_INODE_WRITE)
+		*err = scribe_track_next_file_explicit_inode_write();
+	else
+		*err = scribe_track_next_file_no_inode();
+	if (*err)
 		return NULL;
-	}
 
 	*err = -EBADF;
 	file = fget_light(fd, fput_needed);
@@ -1426,7 +1430,7 @@ SYSCALL_DEFINE3(bind, int, fd, struct sockaddr __user *, umyaddr, int, addrlen)
 	struct sockaddr_storage address;
 	int err, fput_needed;
 
-	sock = sockfd_lookup_light(fd, &err, &fput_needed);
+	sock = sockfd_lookup_light(fd, &err, &fput_needed, 0);
 	if (sock) {
 		err = move_addr_to_kernel(umyaddr, addrlen, (struct sockaddr *)&address);
 		if (err >= 0) {
@@ -1455,7 +1459,7 @@ SYSCALL_DEFINE2(listen, int, fd, int, backlog)
 	int err, fput_needed;
 	int somaxconn;
 
-	sock = sockfd_lookup_light(fd, &err, &fput_needed);
+	sock = sockfd_lookup_light(fd, &err, &fput_needed, SCRIBE_INODE_WRITE);
 	if (sock) {
 		somaxconn = sock_net(sock->sk)->core.sysctl_somaxconn;
 		if ((unsigned)backlog > somaxconn)
@@ -1503,7 +1507,7 @@ SYSCALL_DEFINE4(accept4, int, fd, struct sockaddr __user *, upeer_sockaddr,
 	if (SOCK_NONBLOCK != O_NONBLOCK && (flags & SOCK_NONBLOCK))
 		flags = (flags & ~SOCK_NONBLOCK) | O_NONBLOCK;
 
-	sock = sockfd_lookup_light(fd, &err, &fput_needed);
+	sock = sockfd_lookup_light(fd, &err, &fput_needed, 0);
 	if (!sock)
 		goto out;
 
@@ -1640,7 +1644,7 @@ SYSCALL_DEFINE3(connect, int, fd, struct sockaddr __user *, uservaddr,
 	struct sockaddr_storage address;
 	int err, fput_needed;
 
-	sock = sockfd_lookup_light(fd, &err, &fput_needed);
+	sock = sockfd_lookup_light(fd, &err, &fput_needed, 0);
 	if (!sock)
 		goto out;
 	err = move_addr_to_kernel(uservaddr, addrlen, (struct sockaddr *)&address);
@@ -1672,7 +1676,7 @@ SYSCALL_DEFINE3(getsockname, int, fd, struct sockaddr __user *, usockaddr,
 	struct sockaddr_storage address;
 	int len, err, fput_needed;
 
-	sock = sockfd_lookup_light(fd, &err, &fput_needed);
+	sock = sockfd_lookup_light(fd, &err, &fput_needed, 0);
 	if (!sock)
 		goto out;
 
@@ -1703,7 +1707,7 @@ SYSCALL_DEFINE3(getpeername, int, fd, struct sockaddr __user *, usockaddr,
 	struct sockaddr_storage address;
 	int len, err, fput_needed;
 
-	sock = sockfd_lookup_light(fd, &err, &fput_needed);
+	sock = sockfd_lookup_light(fd, &err, &fput_needed, 0);
 	if (sock != NULL) {
 		err = security_socket_getpeername(sock);
 		if (err) {
@@ -1739,7 +1743,7 @@ SYSCALL_DEFINE6(sendto, int, fd, void __user *, buff, size_t, len,
 	struct iovec iov;
 	int fput_needed;
 
-	sock = sockfd_lookup_light(fd, &err, &fput_needed);
+	sock = sockfd_lookup_light(fd, &err, &fput_needed, 0);
 	if (!sock)
 		goto out;
 
@@ -1796,7 +1800,7 @@ SYSCALL_DEFINE6(recvfrom, int, fd, void __user *, ubuf, size_t, size,
 	int err, err2;
 	int fput_needed;
 
-	sock = sockfd_lookup_light(fd, &err, &fput_needed);
+	sock = sockfd_lookup_light(fd, &err, &fput_needed, 0);
 	if (!sock)
 		goto out;
 
@@ -1848,7 +1852,7 @@ SYSCALL_DEFINE5(setsockopt, int, fd, int, level, int, optname,
 	if (optlen < 0)
 		return -EINVAL;
 
-	sock = sockfd_lookup_light(fd, &err, &fput_needed);
+	sock = sockfd_lookup_light(fd, &err, &fput_needed, 0);
 	if (sock != NULL) {
 		err = security_socket_setsockopt(sock, level, optname);
 		if (err)
@@ -1879,7 +1883,7 @@ SYSCALL_DEFINE5(getsockopt, int, fd, int, level, int, optname,
 	int err, fput_needed;
 	struct socket *sock;
 
-	sock = sockfd_lookup_light(fd, &err, &fput_needed);
+	sock = sockfd_lookup_light(fd, &err, &fput_needed, 0);
 	if (sock != NULL) {
 		err = security_socket_getsockopt(sock, level, optname);
 		if (err)
@@ -1908,7 +1912,7 @@ SYSCALL_DEFINE2(shutdown, int, fd, int, how)
 	int err, fput_needed;
 	struct socket *sock;
 
-	sock = sockfd_lookup_light(fd, &err, &fput_needed);
+	sock = sockfd_lookup_light(fd, &err, &fput_needed, SCRIBE_INODE_WRITE);
 	if (sock != NULL) {
 		err = security_socket_shutdown(sock, how);
 		if (!err)
@@ -1952,7 +1956,7 @@ SYSCALL_DEFINE3(sendmsg, int, fd, struct msghdr __user *, msg, unsigned, flags)
 	else if (copy_from_user(&msg_sys, msg, sizeof(struct msghdr)))
 		return -EFAULT;
 
-	sock = sockfd_lookup_light(fd, &err, &fput_needed);
+	sock = sockfd_lookup_light(fd, &err, &fput_needed, 0);
 	if (!sock)
 		goto out;
 
@@ -2136,7 +2140,7 @@ SYSCALL_DEFINE3(recvmsg, int, fd, struct msghdr __user *, msg,
 {
 	int fput_needed, err;
 	struct msghdr msg_sys;
-	struct socket *sock = sockfd_lookup_light(fd, &err, &fput_needed);
+	struct socket *sock = sockfd_lookup_light(fd, &err, &fput_needed, 0);
 
 	if (!sock)
 		goto out;
@@ -2169,7 +2173,7 @@ int __sys_recvmmsg(int fd, struct mmsghdr __user *mmsg, unsigned int vlen,
 
 	datagrams = 0;
 
-	sock = sockfd_lookup_light(fd, &err, &fput_needed);
+	sock = sockfd_lookup_light(fd, &err, &fput_needed, 0);
 	if (!sock)
 		return err;
 

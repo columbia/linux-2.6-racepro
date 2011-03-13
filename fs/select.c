@@ -852,7 +852,7 @@ int do_sys_poll(struct pollfd __user *ufds, unsigned int nfds,
  	unsigned long todo = nfds;
 
 	if (scribe_need_syscall_ret(scribe)) {
-		scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
+		scribe_kill(scribe->ctx, -ENOMEM);
 		return -ENOMEM;
 	}
 

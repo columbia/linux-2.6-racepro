@@ -644,7 +644,7 @@ SYSCALL_DEFINE3(shmctl, int, shmid, int, cmd, struct shmid_ds __user *, buf)
 
 	if (scribe_resource_prepare()) {
 		/* Userspace may not expect ENOMEM */
-		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		scribe_kill(current->scribe->ctx, -ENOMEM);
 		return -ENOMEM;
 	}
 
@@ -1092,7 +1092,7 @@ SYSCALL_DEFINE1(shmdt, char __user *, shmaddr)
 
 	if (scribe_resource_prepare()) {
 		/* Userspace may not expect ENOMEM */
-		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		scribe_kill(current->scribe->ctx, -ENOMEM);
 		return -ENOMEM;
 	}
 

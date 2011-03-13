@@ -986,7 +986,7 @@ int scribe_handle_rdtsc(struct scribe_ps *scribe, struct pt_regs *regs)
 					     .tsc = tsc);
 		if (ret) {
 			/* FIXME do something smarter */
-			scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
+			scribe_kill(scribe->ctx, -ENOMEM);
 			return -ENOMEM;
 		}
 	} else {

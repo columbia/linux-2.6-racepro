@@ -1118,7 +1118,6 @@ unsigned long unmap_vmas(struct mmu_gather **tlbp,
 	int fullmm = (*tlbp)->fullmm;
 	struct mm_struct *mm = vma->vm_mm;
 
-	scribe_unmap_vmas(mm, vma, start_addr, end_addr);
 	mmu_notifier_invalidate_range_start(mm, start_addr, end_addr);
 	for ( ; vma && vma->vm_start < end_addr; vma = vma->vm_next) {
 		unsigned long end;

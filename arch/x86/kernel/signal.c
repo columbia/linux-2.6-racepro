@@ -134,10 +134,10 @@ setup_sigcontext(struct sigcontext __user *sc, void __user *fpstate,
 	put_user_try {
 
 #ifdef CONFIG_X86_32
-		put_user_ex(get_user_gs(regs), (unsigned int __user *)&sc->gs);
-		put_user_ex(regs->fs, (unsigned int __user *)&sc->fs);
-		put_user_ex(regs->es, (unsigned int __user *)&sc->es);
-		put_user_ex(regs->ds, (unsigned int __user *)&sc->ds);
+		put_user_ex(get_user_gs(regs) & 0xFFFF, (unsigned int __user *)&sc->gs);
+		put_user_ex(regs->fs & 0xFFFF, (unsigned int __user *)&sc->fs);
+		put_user_ex(regs->es & 0xFFFF, (unsigned int __user *)&sc->es);
+		put_user_ex(regs->ds & 0xFFFF, (unsigned int __user *)&sc->ds);
 #endif /* CONFIG_X86_32 */
 
 		put_user_ex(regs->di, &sc->di);
@@ -163,10 +163,10 @@ setup_sigcontext(struct sigcontext __user *sc, void __user *fpstate,
 		put_user_ex(current->thread.error_code, &sc->err);
 		put_user_ex(regs->ip, &sc->ip);
 #ifdef CONFIG_X86_32
-		put_user_ex(regs->cs, (unsigned int __user *)&sc->cs);
-		put_user_ex(regs->flags, &sc->flags);
+		put_user_ex(regs->cs & 0xFFFF, (unsigned int __user *)&sc->cs);
+		put_user_ex(regs->flags & 0xFFFF, &sc->flags);
 		put_user_ex(regs->sp, &sc->sp_at_signal);
-		put_user_ex(regs->ss, (unsigned int __user *)&sc->ss);
+		put_user_ex(regs->ss & 0xFFFF, (unsigned int __user *)&sc->ss);
 #else /* !CONFIG_X86_32 */
 		put_user_ex(regs->flags, &sc->flags);
 		put_user_ex(regs->cs, &sc->cs);

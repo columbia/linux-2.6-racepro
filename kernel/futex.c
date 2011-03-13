@@ -142,7 +142,6 @@ static struct futex_hash_bucket futex_queues[1<<FUTEX_HASHBITS];
 static struct futex_hash_bucket *hash_futex(union futex_key *key)
 {
 	struct scribe_ps *scribe = current->scribe;
-	struct task_struct *owner;
 	union futex_key skey;
 	u32 hash;
 
@@ -158,12 +157,7 @@ static struct futex_hash_bucket *hash_futex(union futex_key *key)
 		 */
 
 		skey.both.word = key->both.word;
-		if (key->both.offset & FUT_OFF_INODE)
-			skey.both.ptr = (void *)key->shared.inode->i_ino;
-		else {
-			owner = key->private.mm->owner;
-			skey.both.ptr = (void *)task_tgid_vnr(owner);
-		}
+		skey.both.ptr = NULL;
 		skey.both.offset = key->both.offset;
 		key = &skey;
 	}
@@ -915,29 +909,56 @@ double_unlock_hb(struct futex_hash_bucket *hb1, struct futex_hash_bucket *hb2)
 		spin_unlock(&hb2->lock);
 }
 
-static inline void scribe_lock_hb(struct futex_hash_bucket *hb)
+static inline void __scribe_lock_hb(struct futex_hash_bucket *hb,
+				    unsigned long flags)
 {
 	scribe_lock_object_handle(hb, &hb->scribe_resource,
 			  SCRIBE_RES_TYPE_FUTEX | SCRIBE_RES_SPINLOCK,
-			  SCRIBE_WRITE);
+			  SCRIBE_WRITE | flags);
+}
+
+static inline void scribe_lock_hb(struct futex_hash_bucket *hb)
+{
+	__scribe_lock_hb(hb, 0);
+}
+
+static inline void scribe_lock_hb_nested(struct futex_hash_bucket *hb)
+{
+	__scribe_lock_hb(hb, SCRIBE_NESTED);
 }
 
 static inline void scribe_double_lock_hb(struct futex_hash_bucket *hb1,
 					 struct futex_hash_bucket *hb2)
 {
-	/* FIXME */
+	/*
+	 * We can do the pointer comparison because the futex_hash_bucket
+	 * objcts are in an array, and the comparison will stay consistant
+	 * across record/replay
+	 */
+	if (hb1 <= hb2) {
+		scribe_lock_hb(hb1);
+		if (hb1 < hb2)
+			scribe_lock_hb_nested(hb2);
+	} else { /* hb1 > hb2 */
+		scribe_lock_hb(hb2);
+		scribe_lock_hb_nested(hb1);
+	}
 }
 
 static inline void scribe_double_unlock_hb(struct futex_hash_bucket *hb1,
 					   struct futex_hash_bucket *hb2)
 {
-	/* FIXME */
+	scribe_unlock(hb1);
+	if (hb1 != hb2)
+		scribe_unlock(hb2);
 }
 
 static inline void scribe_double_unlock_hb_discard(
 		struct futex_hash_bucket *hb1, struct futex_hash_bucket *hb2)
 {
-	/* FIXME */
+	scribe_unlock_discard(hb1);
+	if (hb1 != hb2)
+		scribe_unlock_discard(hb2);
 }
 
 /*
@@ -1049,8 +1070,9 @@ retry_private:
 			goto out_put_keys;
 
 		scribe_double_unlock_hb_discard(hb1, hb2);
-		WARN(1, "Scribe: Not handling memory accesses replay "
-		     "in the retry loop\n");
+
+		if (is_scribed(scribe))
+			scribe_kill(scribe->ctx, -ENOSYS);
 
 		if (!fshared)
 			goto retry_private;
@@ -1314,8 +1336,9 @@ retry_private:
 				goto out_put_keys;
 
 			scribe_double_unlock_hb_discard(hb1, hb2);
-			WARN(1, "Scribe: Not handling memory accesses replay "
-			     "in the retry loop\n");
+
+			if (is_ps_scribed(current))
+				scribe_kill(current->scribe->ctx, -ENOSYS);
 
 			if (!fshared)
 				goto retry_private;
@@ -1903,8 +1926,9 @@ retry_private:
 		}
 
 		scribe_unlock_discard(*hb);
-		WARN(1, "Scribe: Not handling memory accesses replay "
-		     "in the retry loop\n");
+
+		if (is_ps_scribed(current))
+			scribe_kill(current->scribe->ctx, -ENOSYS);
 
 		if (!fshared)
 			goto retry_private;
@@ -1976,9 +2000,10 @@ retry:
 	 */
 	if (!signal_pending(current)) {
 		put_futex_key(fshared, &q.key);
-		/* FIXME Scribe: we dont handle that path yet */
-		WARN_ON(is_scribed(scribe) &&
-			!is_scribe_context_dead(scribe->ctx));
+
+		if (is_scribed(scribe))
+			scribe_kill(scribe->ctx, -ENOSYS);
+
 		goto retry;
 	}
 
@@ -2705,8 +2730,7 @@ long do_futex(u32 __user *uaddr, int op, u32 val, ktime_t *timeout,
 			 * We can't really return -ENOMEM, userspace might not
 			 * handle it, better kill the whole thing.
 			 */
-			scribe_emergency_stop(current->scribe->ctx,
-					      ERR_PTR(-ENOMEM));
+			scribe_kill(current->scribe->ctx, -ENOMEM);
 			return -ENOMEM;
 		}
 

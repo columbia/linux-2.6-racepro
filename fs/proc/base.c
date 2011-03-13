@@ -2915,7 +2915,7 @@ static struct tgid_iter scribe_next_tgid_replay(struct scribe_ps *scribe,
 	if (event.generic->type != SCRIBE_EVENT_DATA_EXTRA)
 		return iter;
 
-	if (event.extra->data_type != SCRIBE_DATA_INTERNAL)
+	if (!(event.extra->data_type & SCRIBE_DATA_INTERNAL))
 		return iter;
 
 	if (scribe_value(&iter.tgid))
@@ -2949,7 +2949,7 @@ static struct tgid_iter scribe_next_tgid(struct scribe_ps *scribe,
 	}
 
 	if (scribe_resource_prepare()) {
-		scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
+		scribe_kill(scribe->ctx, -ENOMEM);
 		return iter;
 	}
 
@@ -2969,7 +2969,7 @@ static struct tgid_iter next_tgid(struct pid_namespace *ns, struct tgid_iter ite
 	struct scribe_ps *scribe = current->scribe;
 	struct pid *pid;
 
-	if (is_scribed(scribe))
+	if (is_scribed(scribe) && should_scribe_data(scribe))
 		return scribe_next_tgid(scribe, ns, iter);
 
 	if (iter.task)

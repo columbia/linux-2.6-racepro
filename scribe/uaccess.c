@@ -135,7 +135,7 @@ static int get_data_event(struct scribe_ps *scribe, struct data_desc *desc)
 			event.regular = scribe_alloc_event_sized(
 					SCRIBE_EVENT_DATA, desc->size);
 		if (!event.generic) {
-			scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
+			scribe_kill(scribe->ctx, -ENOMEM);
 			return -ENOMEM;
 		}
 		goto out;
@@ -245,7 +245,7 @@ static void ensure_data_correctness(struct scribe_ps *scribe,
 		memcpy(de->data, data + offset, de->size);
 		memset(de->data + de->size, 0, sizeof(de->data) - de->size);
 	}
-	scribe_emergency_stop(scribe->ctx, (struct scribe_event *)de);
+	__scribe_kill(scribe->ctx, (struct scribe_event *)de);
 }
 
 static void scribe_post_uaccess_record(struct scribe_ps *scribe,
@@ -343,7 +343,7 @@ static void scribe_post_uaccess_replay(struct scribe_ps *scribe,
 		old_data_flags = scribe->data_flags;
 		scribe->data_flags = SCRIBE_DATA_IGNORE;
 		if (__clear_user(desc->user_ptr, desc->size))
-			scribe_emergency_stop(scribe->ctx, ERR_PTR(-EDIVERGE));
+			scribe_kill(scribe->ctx, -EDIVERGE);
 		scribe->data_flags = old_data_flags;
 		return;
 	}
@@ -381,7 +381,7 @@ static void scribe_post_uaccess_replay(struct scribe_ps *scribe,
 		 */
 		WARN(in_atomic(), "Need to implement proper "
 				  "atomic copies in replay\n");
-		scribe_emergency_stop(scribe->ctx, ERR_PTR(-EDIVERGE));
+		scribe_kill(scribe->ctx, -EDIVERGE);
 	}
 
 	scribe->data_flags = old_data_flags;
@@ -585,9 +585,10 @@ int __scribe_buffer_record(struct scribe_ps *scribe, scribe_insert_point_t *ip,
 			   const void *data, size_t size)
 {
 	int data_extra = should_scribe_data_extra(scribe);
+	int need_info = scribe->data_flags & SCRIBE_DATA_NEED_INFO;
 	union scribe_event_data_union event;
 
-	 data_extra |= scribe->data_flags & SCRIBE_DATA_NEED_INFO;
+	data_extra |= need_info;
 
 	if (data_extra)
 		event.extra = scribe_alloc_event_sized(
@@ -600,7 +601,7 @@ int __scribe_buffer_record(struct scribe_ps *scribe, scribe_insert_point_t *ip,
 		return -ENOMEM;
 
 	if (data_extra) {
-		event.extra->data_type = SCRIBE_DATA_INTERNAL;
+		event.extra->data_type = SCRIBE_DATA_INTERNAL | need_info;
 		event.extra->user_ptr = 0;
 		memcpy(event.extra->data, data, size);
 	} else {
@@ -628,7 +629,7 @@ int __scribe_buffer_replay(struct scribe_ps *scribe, void *data, size_t size)
 		return PTR_ERR(event.generic);
 
 	if (data_extra) {
-		if (event.extra->data_type != SCRIBE_DATA_INTERNAL) {
+		if (!(event.extra->data_type & SCRIBE_DATA_INTERNAL)) {
 			scribe_free_event(event.generic);
 			scribe_diverge(scribe, SCRIBE_EVENT_DIVERGE_DATA_TYPE,
 				       .type = SCRIBE_DATA_INTERNAL);

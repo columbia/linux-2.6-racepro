@@ -290,7 +290,7 @@ free:
 		scribe_free_event(pending_event);
 	return;
 err:
-	scribe_emergency_stop(ctx, ERR_PTR(ret));
+	scribe_kill(ctx, ret);
 	goto free;
 }
 
@@ -437,7 +437,6 @@ static void event_pump_replay(struct scribe_context *ctx, char *buf,
 	struct scribe_event *pending_event = NULL;
 	size_t pending_offset = 0;
 	size_t count = 0;
-	loff_t old_f_pos;
 	ssize_t ret = 0;
 
 	while (!kthread_should_stop() && !ctx->queues_sealed) {
@@ -460,12 +459,10 @@ static void event_pump_replay(struct scribe_context *ctx, char *buf,
 		if (ret < 0)
 			break;
 
-		old_f_pos = file->f_pos;
-
 		file->f_pos += ret;
 		count += ret;
 
-		ret = deserialize_events(ctx, buf, count, old_f_pos,
+		ret = deserialize_events(ctx, buf, count, file->f_pos - count,
 					 &current_queue, &pre_alloc_queue,
 					 &pending_event, &pending_offset);
 		if (ret < 0)
@@ -483,11 +480,11 @@ static void event_pump_replay(struct scribe_context *ctx, char *buf,
 	}
 
 	/*
-	 * emergency_stop() is called before kill_queue() to avoid races with
+	 * scribe_kill() is called before kill_queue() to avoid races with
 	 * scribe_maybe_detach().
 	 */
 	if (ret < 0)
-		scribe_emergency_stop(ctx, ERR_PTR(ret));
+		scribe_kill(ctx, ret);
 
 retry:
 	spin_lock(&ctx->queues_lock);
@@ -501,9 +498,9 @@ retry:
 		if (ret < 0) {
 			if (!is_scribe_context_dead(ctx)) {
 				spin_unlock(&ctx->queues_lock);
-				scribe_emergency_stop(ctx, ERR_PTR(ret));
+				scribe_kill(ctx, ret);
 				/*
-				 * after the emergency stop we are now idle,
+				 * after the scribe_kill() we are now idle,
 				 * so this goto will only occur once.
 				 */
 				goto retry;
@@ -619,7 +616,7 @@ void scribe_pump_stop(struct scribe_pump *pump)
 	if (!pump->kthread)
 		return;
 
-	scribe_emergency_stop(pump->ctx, ERR_PTR(-EINTR));
+	scribe_kill(pump->ctx, -EINTR);
 	scribe_pump_abort_start(pump);
 }
 

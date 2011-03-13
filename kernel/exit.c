@@ -773,12 +773,10 @@ static void reparent_leader(struct task_struct *father, struct task_struct *p,
 	kill_orphaned_pgrp(p, father);
 }
 
-static void forget_original_parent(struct task_struct *father)
+static void __forget_original_parent_fast(struct task_struct *father,
+					  struct list_head *dead_children)
 {
 	struct task_struct *p, *n, *reaper;
-	LIST_HEAD(dead_children);
-
-	exit_ptrace(father);
 
 	write_lock_irq(&tasklist_lock);
 	reaper = find_new_reaper(father);
@@ -795,9 +793,114 @@ static void forget_original_parent(struct task_struct *father)
 				group_send_sig_info(t->pdeath_signal,
 						    SEND_SIG_NOINFO, t);
 		} while_each_thread(p, t);
-		reparent_leader(father, p, &dead_children);
+		reparent_leader(father, p, dead_children);
 	}
 	write_unlock_irq(&tasklist_lock);
+}
+
+static struct task_struct *__get_next_task_to_reparent(
+						struct task_struct *father,
+						struct task_struct *reaper)
+{
+	struct task_struct *t, *p;
+
+	if (list_empty(&father->children))
+		return NULL;
+
+	p = list_first_entry(&father->children, struct task_struct, sibling);
+	t = p;
+	do {
+		/* Threads first */
+		if (t == p)
+			continue;
+
+		if (t->real_parent != reaper)
+			return t;
+	} while_each_thread(p, t);
+
+	return p;
+}
+
+static void __forget_original_parent_scribe(struct task_struct *father,
+					    struct list_head *dead_children)
+{
+	struct task_struct *p, *reaper;
+
+	write_lock_irq(&tasklist_lock);
+	reaper = find_new_reaper(father);
+	get_task_struct(reaper);
+	write_unlock_irq(&tasklist_lock);
+
+	if (same_thread_group(father, reaper)) {
+		/*
+		 * Not synchronizing when reparenting on threads, but that's
+		 * okey because sys_getppid() returns the tgid, which doesn't
+		 * change in that case.
+		 */
+		put_task_struct(reaper);
+		__forget_original_parent_fast(father, dead_children);
+		return;
+	}
+
+	while (1) {
+		read_lock_irq(&tasklist_lock);
+		p = __get_next_task_to_reparent(father, reaper);
+		if (p)
+			get_task_struct(p);
+		read_unlock_irq(&tasklist_lock);
+
+		if (!p) {
+			put_task_struct(reaper);
+			return;
+		}
+
+		if (scribe_resource_prepare()) {
+			put_task_struct(p);
+			put_task_struct(reaper);
+			scribe_kill(current->scribe->ctx, -ENOMEM);
+			__forget_original_parent_fast(father, dead_children);
+			return;
+		}
+
+		scribe_lock_ppid_ptr_write(p);
+		write_lock_irq(&tasklist_lock);
+
+		if (p != __get_next_task_to_reparent(father, reaper)) {
+			write_unlock_irq(&tasklist_lock);
+			scribe_unlock_discard(p);
+			put_task_struct(p);
+			continue;
+		}
+
+		p->real_parent = reaper;
+		if (p->parent == father) {
+			BUG_ON(task_ptrace(p));
+			p->parent = p->real_parent;
+		}
+		if (p->pdeath_signal)
+			group_send_sig_info(p->pdeath_signal,
+					    SEND_SIG_NOINFO, p);
+
+		if (p->group_leader == p)
+			reparent_leader(father, p, dead_children);
+
+		write_unlock_irq(&tasklist_lock);
+		scribe_unlock(p);
+		put_task_struct(p);
+	}
+}
+
+static void forget_original_parent(struct task_struct *father)
+{
+	struct task_struct *p, *n;
+	LIST_HEAD(dead_children);
+
+	exit_ptrace(father);
+
+	if (is_ps_scribed(father))
+		__forget_original_parent_scribe(father, &dead_children);
+	else
+		__forget_original_parent_fast(father, &dead_children);
 
 	BUG_ON(!list_empty(&father->children));
 
@@ -874,7 +977,7 @@ static void exit_notify(struct task_struct *tsk, int group_dead)
 	pid_t pid = task_pid_vnr(tsk);
 
 	if (scribe_resource_prepare()) {
-		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		scribe_kill(current->scribe->ctx, -ENOMEM);
 		__exit_notify(tsk, group_dead);
 		return;
 	}
@@ -928,6 +1031,8 @@ static void scribe_do_exit(struct task_struct *p, long code)
 	 * properly (it's going to be sys_exit_group()).
 	 */
 	scribe_commit_syscall(scribe, task_pt_regs(p), code);
+
+	scribe_bookmark_point();
 
 	__scribe_detach(scribe);
 
@@ -1787,10 +1892,18 @@ repeat:
 	if ((wo->wo_type < PIDTYPE_MAX) && !wo->wo_pid)
 		goto notask;
 
+	if (is_scribed(scribe)) {
+		wo->wo_flags &= ~WCONTINUED;
+	}
+
 	if (is_replaying(scribe) &&
 	    !is_scribe_context_dead(scribe->ctx)) {
-		/* The task might have to get reparented, so we wait */
+		/*
+		 * The task might have to get reparented, or we are waiting
+		 * for its threads to die, we must wait
+		 */
 		wo->notask_error = 0;
+		wo->wo_flags &= ~WNOHANG;
 	}
 
 	/*
@@ -1864,7 +1977,7 @@ static int scribe_pre_wait(struct wait_opts *wo, long *ret, int options)
 		 * We don't return an error because reaping children is
 		 * important (zap_pid_ns_processes())
 		 */
-		scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
+		scribe_kill(scribe->ctx, -ENOMEM);
 	}
 
 	if (is_recording(scribe)) {
@@ -1913,10 +2026,10 @@ static void scribe_post_wait(struct wait_opts *wo, long ret)
 		pid_ip = &wo->wo_scribe_pid_ip;
 
 		if (scribe_value_at(&pid, pid_ip))
-			scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
+			scribe_kill(scribe->ctx, -ENOMEM);
 
 		if (!pid && scribe_value_at(&ret, pid_ip))
-			scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
+			scribe_kill(scribe->ctx, -ENOMEM);
 
 		scribe_commit_insert_point(pid_ip);
 	} else if (wo->wo_scribe_pid_locked)

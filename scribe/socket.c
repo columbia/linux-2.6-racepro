@@ -90,7 +90,7 @@ static int scribe_getname(struct socket *sock, struct sockaddr *addr,
 
 out:
 	if (err) {
-		scribe_emergency_stop(scribe->ctx, ERR_PTR(err));
+		scribe_kill(scribe->ctx, err);
 		return err;
 	}
 	return ret;
@@ -129,7 +129,16 @@ static int scribe_listen(struct socket *sock, int len)
 
 static int scribe_shutdown(struct socket *sock, int flags)
 {
-	return sock->real_ops->shutdown(sock, flags);
+	struct scribe_ps *scribe = current->scribe;
+	int ret, err;
+
+	if (scribe_is_deterministic(sock) || !is_scribed(scribe))
+		return sock->real_ops->shutdown(sock, flags);
+
+	err = scribe_result(
+		ret, sock->real_ops->shutdown(sock, flags));
+
+	return err ?: ret;
 }
 
 static int scribe_setsockopt(struct socket *sock, int level,
@@ -199,8 +208,14 @@ static int scribe_sendmsg(struct kiocb *iocb, struct socket *sock,
 	int ret, err;
 
 	if (scribe_is_deterministic(sock) || !is_scribed(scribe)) {
-		if (is_replaying(scribe))
+		if (is_replaying(scribe)) {
 			m->msg_flags &= ~MSG_DONTWAIT;
+
+			if (!scribe_is_in_read_write(scribe))
+				total_len = scribe->orig_ret;
+			if ((ssize_t)total_len <= 0)
+				return total_len;
+		}
 		ret = sock->real_ops->sendmsg(iocb, sock, m, total_len);
 		return ret;
 	}
@@ -234,6 +249,11 @@ static int scribe_recvmsg(struct kiocb *iocb, struct socket *sock,
 		if (is_replaying(scribe)) {
 			flags &= ~MSG_DONTWAIT;
 			flags |= MSG_WAITALL;
+
+			if (!scribe_is_in_read_write(scribe))
+				total_len = scribe->orig_ret;
+			if ((ssize_t)total_len <= 0)
+				return total_len;
 		}
 		scribe_data_det();
 		ret = sock->real_ops->recvmsg(iocb, sock, m, total_len, flags),
