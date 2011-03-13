@@ -681,6 +681,7 @@ static size_t get_lock_region_desc(struct scribe_ps *scribe,
 	int type = lock_region->res->type & SCRIBE_RES_TYPE_MASK;
 	struct file *file;
 	char *tmp, *pathname;
+	struct task_struct *p;
 	ssize_t ret;
 
 	switch (type) {
@@ -703,6 +704,10 @@ static size_t get_lock_region_desc(struct scribe_ps *scribe,
 			ret = snprintf(buffer, size, "%s", pathname);
 
 		free_page((unsigned long)tmp);
+		break;
+	case SCRIBE_RES_TYPE_PPID:
+		p = lock_region->object;
+		ret = snprintf(buffer, size, "%d", task_pid_vnr(p));
 		break;
 	default:
 		ret = snprintf(buffer, size, "none");
