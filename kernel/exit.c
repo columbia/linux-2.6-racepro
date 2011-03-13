@@ -1033,6 +1033,8 @@ static void scribe_do_exit(struct task_struct *p, long code)
 	 */
 	scribe_commit_syscall(scribe, task_pt_regs(p), code);
 
+	scribe_bookmark_point();
+
 	__scribe_detach(scribe);
 
 out:
