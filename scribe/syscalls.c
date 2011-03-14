@@ -24,7 +24,21 @@ union scribe_syscall_event_union {
 static int scribe_regs(struct scribe_ps *scribe, struct pt_regs *regs)
 {
 	struct scribe_event_regs *event_regs;
+	struct pt_regs regs_tmp;
 	int ret;
+
+	/* We don't want to touch the given registers */
+	regs_tmp = *regs;
+	regs = &regs_tmp;
+
+	/*
+	 * Somehow the high bits are non zero in some cases, don't really know
+	 * why.
+	 */
+	regs->gs &= 0xFFFF;
+	regs->fs &= 0xFFFF;
+	regs->es &= 0xFFFF;
+	regs->ds &= 0xFFFF;
 
 	if (is_recording(scribe)) {
 		if (scribe_queue_new_event(scribe->queue, SCRIBE_EVENT_REGS,
