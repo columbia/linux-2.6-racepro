@@ -1418,6 +1418,11 @@ void scribe_lock_inode_write(struct inode *inode)
 	lock_inode(inode, SCRIBE_WRITE);
 }
 
+void scribe_lock_inode_write_nested(struct inode *inode)
+{
+	lock_inode(inode, SCRIBE_WRITE | SCRIBE_NESTED);
+}
+
 static int __track_next_file(int flags)
 {
 	struct scribe_ps *scribe = current->scribe;
