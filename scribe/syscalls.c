@@ -40,6 +40,8 @@ static int scribe_regs(struct scribe_ps *scribe, struct pt_regs *regs)
 	regs->es &= 0xFFFF;
 	regs->ds &= 0xFFFF;
 	regs->flags &= 0xFFFF;
+	regs->cs &= 0xFFFF;
+	regs->ss &= 0xFFFF;
 
 	if (is_recording(scribe)) {
 		if (scribe_queue_new_event(scribe->queue, SCRIBE_EVENT_REGS,
