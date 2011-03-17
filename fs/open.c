@@ -279,6 +279,49 @@ asmlinkage long SyS_fallocate(long fd, long mode, loff_t offset, loff_t len)
 SYSCALL_ALIAS(sys_fallocate, SyS_fallocate);
 #endif
 
+static void __scribe_lock_parent(struct path *path, struct dentry **pparent,
+				 unsigned long flags)
+{
+	struct dentry *parent = NULL;
+
+	if (!is_ps_scribed(current))
+		goto out;
+
+	if (path->dentry == path->mnt->mnt_root)
+		goto out;
+
+	spin_lock(&path->dentry->d_lock);
+	parent = dget(path->dentry->d_parent);
+	spin_unlock(&path->dentry->d_lock);
+
+	if (flags == SCRIBE_WRITE)
+		scribe_lock_inode_write(parent->d_inode);
+	else
+		scribe_lock_inode_read(parent->d_inode);
+
+out:
+	*pparent = parent;
+}
+
+static void scribe_lock_parent_read(struct path *path, struct dentry **pparent)
+{
+	__scribe_lock_parent(path, pparent, SCRIBE_READ);
+}
+
+static void scribe_lock_parent_write(struct path *path, struct dentry **pparent)
+{
+	__scribe_lock_parent(path, pparent, SCRIBE_WRITE);
+}
+
+static void scribe_unlock_parent(struct dentry *parent)
+{
+	if (!parent)
+		return;
+
+	scribe_unlock(parent->d_inode);
+	dput(parent);
+}
+
 /*
  * access() needs to use the real uid/gid, not the effective uid/gid.
  * We do this by temporarily clearing all FS-related capabilities and
@@ -290,6 +333,7 @@ SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)
 	struct cred *override_cred;
 	struct path path;
 	struct inode *inode;
+	struct dentry *parent;
 	int res;
 
 	if (mode & ~S_IRWXO)	/* where's F_OK, X_OK, W_OK, R_OK? */
@@ -313,6 +357,7 @@ SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)
 
 	old_cred = override_creds(override_cred);
 
+	/* refuel the pre-allocated resource cache */
 	res = user_path_at(dfd, filename, LOOKUP_FOLLOW, &path);
 	if (res)
 		goto out;
@@ -329,7 +374,9 @@ SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)
 			goto out_path_release;
 	}
 
+	scribe_lock_parent_read(&path, &parent);
 	res = inode_permission(inode, mode | MAY_ACCESS);
+	scribe_unlock_parent(parent);
 	/* SuS v2 requires we report a read only fs too */
 	if (res || !(mode & S_IWOTH) || special_file(inode->i_mode))
 		goto out_path_release;
@@ -441,6 +488,13 @@ SYSCALL_DEFINE2(fchmod, unsigned int, fd, mode_t, mode)
 	struct file * file;
 	int err = -EBADF;
 	struct iattr newattrs;
+	struct dentry *parent;
+
+	/* refuel the pre-allocated resource cache */
+	if (scribe_track_next_file_no_inode()) {
+		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		return -ENOMEM;
+	}
 
 	file = fget(fd);
 	if (!file)
@@ -454,6 +508,7 @@ SYSCALL_DEFINE2(fchmod, unsigned int, fd, mode_t, mode)
 	err = mnt_want_write_file(file);
 	if (err)
 		goto out_putf;
+	scribe_lock_parent_write(&file->f_path, &parent);
 	mutex_lock(&inode->i_mutex);
 	err = security_path_chmod(dentry, file->f_vfsmnt, mode);
 	if (err)
@@ -465,6 +520,7 @@ SYSCALL_DEFINE2(fchmod, unsigned int, fd, mode_t, mode)
 	err = notify_change(dentry, &newattrs);
 out_unlock:
 	mutex_unlock(&inode->i_mutex);
+	scribe_unlock_parent(parent);
 	mnt_drop_write(file->f_path.mnt);
 out_putf:
 	fput(file);
@@ -478,7 +534,9 @@ SYSCALL_DEFINE3(fchmodat, int, dfd, const char __user *, filename, mode_t, mode)
 	struct inode *inode;
 	int error;
 	struct iattr newattrs;
+	struct dentry *parent;
 
+	/* user_path_at refuel the pre-allocated resource cache */
 	error = user_path_at(dfd, filename, LOOKUP_FOLLOW, &path);
 	if (error)
 		goto out;
@@ -487,6 +545,8 @@ SYSCALL_DEFINE3(fchmodat, int, dfd, const char __user *, filename, mode_t, mode)
 	error = mnt_want_write(path.mnt);
 	if (error)
 		goto dput_and_out;
+
+	scribe_lock_parent_write(&path, &parent);
 	mutex_lock(&inode->i_mutex);
 	error = security_path_chmod(path.dentry, path.mnt, mode);
 	if (error)
@@ -498,6 +558,7 @@ SYSCALL_DEFINE3(fchmodat, int, dfd, const char __user *, filename, mode_t, mode)
 	error = notify_change(path.dentry, &newattrs);
 out_unlock:
 	mutex_unlock(&inode->i_mutex);
+	scribe_unlock_parent(parent);
 	mnt_drop_write(path.mnt);
 dput_and_out:
 	path_put(&path);
@@ -515,6 +576,12 @@ static int chown_common(struct path *path, uid_t user, gid_t group)
 	struct inode *inode = path->dentry->d_inode;
 	int error;
 	struct iattr newattrs;
+	struct dentry *parent;
+
+	if (scribe_resource_prepare()) {
+		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		return -ENOMEM;
+	}
 
 	newattrs.ia_valid =  ATTR_CTIME;
 	if (user != (uid_t) -1) {
@@ -528,11 +595,13 @@ static int chown_common(struct path *path, uid_t user, gid_t group)
 	if (!S_ISDIR(inode->i_mode))
 		newattrs.ia_valid |=
 			ATTR_KILL_SUID | ATTR_KILL_SGID | ATTR_KILL_PRIV;
+	scribe_lock_parent_write(path, &parent);
 	mutex_lock(&inode->i_mutex);
 	error = security_path_chown(path, user, group);
 	if (!error)
 		error = notify_change(path->dentry, &newattrs);
 	mutex_unlock(&inode->i_mutex);
+	scribe_unlock_parent(parent);
 
 	return error;
 }
