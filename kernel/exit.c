@@ -1893,6 +1893,10 @@ repeat:
 	if ((wo->wo_type < PIDTYPE_MAX) && !wo->wo_pid)
 		goto notask;
 
+	if (is_scribed(scribe)) {
+		wo->wo_flags &= ~WCONTINUED;
+	}
+
 	if (is_replaying(scribe) &&
 	    !is_scribe_context_dead(scribe->ctx)) {
 		/*
