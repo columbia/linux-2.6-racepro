@@ -55,6 +55,9 @@ static int scribe_regs(struct scribe_ps *scribe, struct pt_regs *regs)
 		if (IS_ERR(event_regs))
 			return PTR_ERR(event_regs);
 
+		/* Eflags diverges are NOT funny */
+		regs->flags = event_regs->regs.flags;
+
 		ret = memcmp(regs, &event_regs->regs, sizeof(*regs));
 		scribe_free_event(event_regs);
 
