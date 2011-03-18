@@ -131,7 +131,14 @@ static inline int has_pending_signals(sigset_t *signal, sigset_t *blocked)
 
 static int recalc_sigpending_tsk(struct task_struct *t)
 {
-	if (t->signal->group_stop_count > 0 ||
+	bool group_stop;
+
+	if (is_ps_scribed_safe(t))
+		group_stop = false;
+	else
+		group_stop = t->signal->group_stop_count > 0;
+
+	if (group_stop ||
 	    PENDING(&t->pending, &t->blocked) ||
 	    PENDING(&t->signal->shared_pending, &t->blocked)) {
 		set_tsk_thread_flag(t, TIF_SIGPENDING);
@@ -2173,7 +2180,7 @@ void ptrace_notify(int exit_code)
 		return;
 	}
 
-	pid = task_pid_vnr(current);
+	pid = task_tgid_vnr(current);
 	scribe_lock_pid_write(pid);
 	__ptrace_notify(pid, exit_code);
 	scribe_unlock_pid(pid);
@@ -2213,12 +2220,13 @@ static int do_signal_stop(pid_t pid, int signr)
 			if (!(t->flags & PF_EXITING) &&
 			    !task_is_stopped_or_traced(t)) {
 				sig->group_stop_count++;
-				signal_wake_up(t, 0);
+				if (is_ps_scribed(current)) {
+					specific_send_sig_info(SIGSTOP,
+							       SEND_SIG_FORCED,
+							       t);
+				} else
+					signal_wake_up(t, 0);
 			}
-			/*
-			 * Scribe: FIXME we need to send a SIGSTOP to each
-			 * thread, so we know where to replay them...
-			 */
 	}
 	/*
 	 * If there are no other threads in the group, or if there is
@@ -2329,7 +2337,7 @@ int get_signal_to_deliver(siginfo_t *info, struct k_sigaction *return_ka,
 
 		local_irq_enable();
 
-		pid = task_pid_vnr(current);
+		pid = task_tgid_vnr(current);
 		if (scribe_resource_prepare()) {
 			scribe_emergency_stop(current->scribe->ctx,
 					      ERR_PTR(-ENOMEM));
@@ -2389,9 +2397,15 @@ relock:
 		if (unlikely(signr != 0))
 			ka = return_ka;
 		else {
-			if (unlikely(signal->group_stop_count > 0) &&
-			    do_signal_stop(pid, 0))
-				goto relock;
+			if (unlikely(signal->group_stop_count > 0)) {
+				if (pid != -1) {
+					collect_signal(SIGSTOP,
+						       &current->pending, info);
+				}
+
+				if (do_signal_stop(pid, 0))
+					goto relock;
+			}
 
 			signr = dequeue_signal(current, &current->blocked,
 					       info);
@@ -2572,7 +2586,7 @@ void exit_signals(struct task_struct *tsk)
 		return;
 	}
 
-	pid = task_pid_vnr(tsk);
+	pid = task_tgid_vnr(tsk);
 	scribe_lock_pid_write(pid);
 	__exit_signals(tsk);
 	scribe_unlock_pid(pid);

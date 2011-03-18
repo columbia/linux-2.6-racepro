@@ -690,6 +690,7 @@ SYSCALL_DEFINE4(ptrace, long, request, long, pid, long, addr, long, data)
 {
 	struct task_struct *child;
 	long ret;
+	pid_t locked_pid;
 
 	if (request == PTRACE_TRACEME) {
 		ret = ptrace_traceme();
@@ -704,11 +705,18 @@ SYSCALL_DEFINE4(ptrace, long, request, long, pid, long, addr, long, data)
 		goto out;
 	}
 
-	scribe_lock_pid_write(pid);
+	locked_pid = pid;
+	scribe_lock_pid_write(locked_pid);
 	child = ptrace_get_task_struct(pid);
 	if (IS_ERR(child)) {
 		ret = PTR_ERR(child);
 		goto out_unlock;
+	}
+
+	if (child->group_leader != child) {
+		scribe_unlock_pid(locked_pid);
+		locked_pid = task_tgid_vnr(child);
+		scribe_lock_pid_write(locked_pid);
 	}
 
 	if (request == PTRACE_ATTACH) {
@@ -731,7 +739,7 @@ SYSCALL_DEFINE4(ptrace, long, request, long, pid, long, addr, long, data)
  out_put_task_struct:
 	put_task_struct(child);
  out_unlock:
-	scribe_unlock_pid(pid);
+	scribe_unlock_pid(locked_pid);
  out:
 	return ret;
 }
