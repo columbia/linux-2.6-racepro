@@ -22,7 +22,6 @@ struct scribe_bookmark {
 	int			npr_total;
 	bool			resume;
 	wait_queue_head_t	wait;
-	wait_queue_head_t	ctx_wait;
 	struct scribe_event_bookmark_reached *reached_event;
 };
 
@@ -40,7 +39,6 @@ struct scribe_bookmark *scribe_bookmark_alloc(struct scribe_context *ctx)
 	bmark->npr = 0;
 	bmark->npr_total = 0;
 	init_waitqueue_head(&bmark->wait);
-	init_waitqueue_head(&bmark->ctx_wait);
 	bmark->reached_event = NULL;
 
 	return bmark;
@@ -111,7 +109,7 @@ int scribe_bookmark_request(struct scribe_bookmark *bmark)
 	 */
 	bmark->npr_total = NPR_PENDING;
 
-	wait_event(bmark->ctx_wait,
+	wait_event(ctx->tasks_wait,
 		   (npr = scribe_wait_all_sync(ctx)) != -EAGAIN);
 
 	/*
@@ -167,7 +165,7 @@ void scribe_bookmark_point_record(struct scribe_ps *scribe,
 		return;
 
 	scribe->bmark_waiting = 1;
-	wake_up(&bmark->ctx_wait);
+	wake_up(&bmark->ctx->tasks_wait);
 	wait_event(bmark->wait, bmark->npr_total > 0);
 	scribe->bmark_waiting = 0;
 
