@@ -294,6 +294,8 @@ void scribe_emergency_stop(struct scribe_context *ctx,
 		 * during the replay. wake_up_process() is necessary in that
 		 * case.
 		 * It may also fail because the init process is unkillable.
+		 * It also wakes up tasks waiting on some event and checking
+		 * on is_scribe_context_dead().
 		 */
 		wake_up_process(scribe->p);
 	}
@@ -321,6 +323,7 @@ int scribe_stop(struct scribe_context *ctx)
 		ctx->flags |= SCRIBE_STOP;
 		if (ctx->flags & SCRIBE_RECORD)
 			scribe_wake_all_fake_sig(ctx);
+		scribe_bookmark_resume(ctx->bmark);
 	}
 	spin_unlock(&ctx->tasks_lock);
 

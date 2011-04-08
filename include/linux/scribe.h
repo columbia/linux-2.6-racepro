@@ -399,9 +399,7 @@ extern void scribe_bookmark_free(struct scribe_bookmark *bmark);
 extern void scribe_bookmark_reset(struct scribe_bookmark *bmark);
 extern int scribe_bookmark_request(struct scribe_bookmark *bmark);
 extern void scribe_bookmark_point(void);
-extern int scribe_golive_on_bookmark_id(struct scribe_bookmark *bmark, int id);
-extern int scribe_golive_on_next_bookmark(struct scribe_bookmark *bmark);
-
+extern int scribe_bookmark_resume(struct scribe_bookmark *bmark);
 
 /* Resources */
 
