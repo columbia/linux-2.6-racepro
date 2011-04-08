@@ -90,7 +90,7 @@ static int scribe_getname(struct socket *sock, struct sockaddr *addr,
 
 out:
 	if (err) {
-		scribe_emergency_stop(scribe->ctx, ERR_PTR(err));
+		scribe_kill(scribe->ctx, err);
 		return err;
 	}
 	return ret;

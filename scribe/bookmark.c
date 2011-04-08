@@ -174,8 +174,8 @@ void scribe_bookmark_point_record(struct scribe_ps *scribe,
 	ret = scribe_queue_new_event(scribe->queue,
 				     SCRIBE_EVENT_BOOKMARK,
 				     .id = bmark->id, .npr = bmark->npr_total);
-	if (ret)
-		scribe_emergency_stop(scribe->ctx, ERR_PTR(ret));
+	if (ret < 0)
+		scribe_kill(scribe->ctx, ret);
 
 	sync_on_bookmark(scribe, bmark);
 }
@@ -208,7 +208,7 @@ void scribe_bookmark_point_replay(struct scribe_ps *scribe,
 			return;
 
 		if (prealloc_reached_event(bmark) < 0) {
-			scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
+			scribe_kill(scribe->ctx, -ENOMEM);
 			return;
 		}
 

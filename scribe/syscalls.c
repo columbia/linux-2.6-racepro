@@ -46,7 +46,7 @@ static int scribe_regs(struct scribe_ps *scribe, struct pt_regs *regs)
 	if (is_recording(scribe)) {
 		if (scribe_queue_new_event(scribe->queue, SCRIBE_EVENT_REGS,
 					   .regs = *regs)) {
-			scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
+			scribe_kill(scribe->ctx, -ENOMEM);
 			return -ENOMEM;
 		}
 	} else {
@@ -256,7 +256,7 @@ static void scribe_commit_syscall_record(struct scribe_ps *scribe,
 
 	return;
 err:
-	scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
+	scribe_kill(scribe->ctx, -ENOMEM);
 }
 
 static void scribe_commit_syscall_replay(struct scribe_ps *scribe,
@@ -324,7 +324,7 @@ void scribe_exit_syscall(struct pt_regs *regs)
 	recalc_sigpending_and_wake(current);
 
 	if (unlikely(!scribe->can_uaccess))
-		scribe_emergency_stop(scribe->ctx, ERR_PTR(-EINVAL));
+		scribe_kill(scribe->ctx, -EINVAL);
 }
 
 SYSCALL_DEFINE0(get_scribe_flags)

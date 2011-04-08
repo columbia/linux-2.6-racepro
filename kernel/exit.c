@@ -857,8 +857,7 @@ static void __forget_original_parent_scribe(struct task_struct *father,
 		if (scribe_resource_prepare()) {
 			put_task_struct(p);
 			put_task_struct(reaper);
-			scribe_emergency_stop(current->scribe->ctx,
-					      ERR_PTR(-ENOMEM));
+			scribe_kill(current->scribe->ctx, -ENOMEM);
 			__forget_original_parent_fast(father, dead_children);
 			return;
 		}
@@ -978,7 +977,7 @@ static void exit_notify(struct task_struct *tsk, int group_dead)
 	pid_t pid = task_pid_vnr(tsk);
 
 	if (scribe_resource_prepare()) {
-		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		scribe_kill(current->scribe->ctx, -ENOMEM);
 		__exit_notify(tsk, group_dead);
 		return;
 	}
@@ -1972,7 +1971,7 @@ static int scribe_pre_wait(struct wait_opts *wo, long *ret, int options)
 		 * We don't return an error because reaping children is
 		 * important (zap_pid_ns_processes())
 		 */
-		scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
+		scribe_kill(scribe->ctx, -ENOMEM);
 	}
 
 	if (is_recording(scribe)) {
@@ -2021,10 +2020,10 @@ static void scribe_post_wait(struct wait_opts *wo, long ret)
 		pid_ip = &wo->wo_scribe_pid_ip;
 
 		if (scribe_value_at(&pid, pid_ip))
-			scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
+			scribe_kill(scribe->ctx, -ENOMEM);
 
 		if (!pid && scribe_value_at(&ret, pid_ip))
-			scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
+			scribe_kill(scribe->ctx, -ENOMEM);
 
 		scribe_commit_insert_point(pid_ip);
 	} else if (wo->wo_scribe_pid_locked)

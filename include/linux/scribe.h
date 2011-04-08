@@ -173,7 +173,7 @@ extern struct scribe_event *scribe_peek_event(
 									\
 	__event = scribe_dequeue_event((sp)->queue, SCRIBE_WAIT);	\
 	if (IS_ERR(__event))						\
-		scribe_emergency_stop((sp)->ctx, __event);		\
+		scribe_kill((sp)->ctx, PTR_ERR(__event));		\
 	else if (__event->type != _type) {				\
 		scribe_free_event(__event);				\
 		scribe_diverge(sp, SCRIBE_EVENT_DIVERGE_EVENT_TYPE,	\
@@ -349,8 +349,13 @@ static inline void scribe_put_context(struct scribe_context *ctx)
 }
 
 extern struct scribe_context *scribe_alloc_context(void);
-extern void scribe_emergency_stop(struct scribe_context *ctx,
-				  struct scribe_event *reason);
+extern void __scribe_kill(struct scribe_context *ctx,
+			  struct scribe_event *reason);
+static inline void scribe_kill(struct scribe_context *ctx, long error)
+{
+	__scribe_kill(ctx, ERR_PTR(error));
+}
+
 extern void scribe_exit_context(struct scribe_context *ctx);
 
 extern int scribe_start(struct scribe_context *ctx, unsigned long flags,
@@ -388,7 +393,7 @@ extern void scribe_wake_all_fake_sig(struct scribe_context *ctx);
 			__VA_ARGS__					\
 		};							\
 	}								\
-	scribe_emergency_stop((sp)->ctx, (struct scribe_event *)__event); \
+	__scribe_kill((sp)->ctx, (struct scribe_event *)__event);	\
 })
 
 /* Bookmarks */

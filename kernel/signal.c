@@ -269,7 +269,7 @@ static void scribe_sigqueue(struct task_struct *t, struct sigqueue *q)
 		return;
 
 	if (!q) {
-		scribe_emergency_stop(target_scribe->ctx, ERR_PTR(-ENOMEM));
+		scribe_kill(target_scribe->ctx, -ENOMEM);
 		return;
 	}
 
@@ -695,7 +695,7 @@ err_nomem:
 	 * We cannot really fail gracefully here: sys_kill() cannot fail with
 	 * a -ENOMEM, so even preallocation won't do it.
 	 */
-	scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
+	scribe_kill(scribe->ctx, -ENOMEM);
 }
 
 static void scribe_signal_enter_sync_point_record(struct scribe_ps *scribe,
@@ -777,8 +777,8 @@ void scribe_signal_enter_sync_point(int *num_deferred)
 		return;
 
 	ret = scribe_enter_fenced_region(SCRIBE_REGION_SIGNAL);
-	if (ret) {
-		scribe_emergency_stop(scribe->ctx, ERR_PTR(ret));
+	if (ret < 0) {
+		scribe_kill(scribe->ctx, ret);
 		return;
 	}
 
@@ -840,15 +840,15 @@ static void scribe_pre_send_cookie(void)
 		return;
 
 	ret = scribe_enter_fenced_region(SCRIBE_REGION_SIG_COOKIE);
-	if (ret) {
-		scribe_emergency_stop(scribe->ctx, ERR_PTR(ret));
+	if (ret < 0) {
+		scribe_kill(scribe->ctx, ret);
 		return;
 	}
 
 	if (is_recording(scribe)) {
 		event = scribe_alloc_event(SCRIBE_EVENT_SIG_SEND_COOKIE);
 		if (!event)
-			scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
+			scribe_kill(scribe->ctx, -ENOMEM);
 
 		BUG_ON(scribe->signal.send_cookie_event);
 		scribe->signal.send_cookie_event = event;
@@ -1240,7 +1240,7 @@ static bool scribe_should_defer_signal(struct scribe_ps *scribe, int sig)
 	 * - We don't care about being in a sync point because the signal to
 	 *   get delivered will not need a sync point (but fences are still
 	 *   needed).
-	 * - If the context is dead, it means that emergency_stop() got
+	 * - If the context is dead, it means that scribe_kill() got
 	 *   called, and we have a SIGKILL to process ASAP, synchronizing
 	 *   doesn't really matter here because something has already gone
 	 *   wrong.
@@ -2175,7 +2175,7 @@ void ptrace_notify(int exit_code)
 	pid_t pid;
 
 	if (scribe_resource_prepare()) {
-		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		scribe_kill(current->scribe->ctx, -ENOMEM);
 		__ptrace_notify(-1, exit_code);
 		return;
 	}
@@ -2339,8 +2339,7 @@ int get_signal_to_deliver(siginfo_t *info, struct k_sigaction *return_ka,
 
 		pid = task_tgid_vnr(current);
 		if (scribe_resource_prepare()) {
-			scribe_emergency_stop(current->scribe->ctx,
-					      ERR_PTR(-ENOMEM));
+			scribe_kill(current->scribe->ctx, -ENOMEM);
 			pid = -1;
 		} else
 			scribe_lock_pid_write(pid);
@@ -2348,8 +2347,7 @@ int get_signal_to_deliver(siginfo_t *info, struct k_sigaction *return_ka,
 
 relock:
 	if (scribe_resource_prepare()) {
-		scribe_emergency_stop(current->scribe->ctx,
-				      ERR_PTR(-ENOMEM));
+		scribe_kill(current->scribe->ctx, -ENOMEM);
 		scribe_unlock_pid(pid);
 		pid = -1;
 	}
@@ -2581,7 +2579,7 @@ void exit_signals(struct task_struct *tsk)
 	pid_t pid;
 
 	if (scribe_resource_prepare()) {
-		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		scribe_kill(current->scribe->ctx, -ENOMEM);
 		__exit_signals(tsk);
 		return;
 	}

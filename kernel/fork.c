@@ -1096,7 +1096,7 @@ static struct task_struct *copy_process(unsigned long long clone_flags,
 
 	if ((clone_flags & CLONE_NEWPID) && is_ps_scribed(current)) {
 		/* Not implemented yet */
-		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOSYS));
+		scribe_kill(current->scribe->ctx, -ENOSYS);
 		return ERR_PTR(-ENOSYS);
 	}
 
