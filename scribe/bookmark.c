@@ -51,8 +51,8 @@ void scribe_bookmark_free(struct scribe_bookmark *bmark)
 }
 
 /*
- * returns -EAGAIN if some scribed task are still waiting
- * otherwise return the number of processes waiting on the bookmark sync
+ * returns -EAGAIN if some scribed task are not blocking in sync_on_bookmark
+ * yet, otherwise return the number of processes waiting on the bookmark sync
  */
 static int scribe_wait_all_sync(struct scribe_context *ctx)
 {
@@ -109,6 +109,10 @@ int scribe_bookmark_request(struct scribe_bookmark *bmark)
 	 */
 	bmark->npr_total = NPR_PENDING;
 
+	/*
+	 * We need to wait on tasks_wait because tasks can die in do_exit()
+	 * and we want to be woken up in that case.
+	 */
 	wait_event(ctx->tasks_wait,
 		   (npr = scribe_wait_all_sync(ctx)) != -EAGAIN);
 
@@ -123,8 +127,7 @@ int scribe_bookmark_request(struct scribe_bookmark *bmark)
 	return 0;
 }
 
-static void sync_on_bookmark(struct scribe_ps *scribe,
-			     struct scribe_bookmark *bmark)
+static void sync_on_bookmark(struct scribe_bookmark *bmark)
 {
 	bool last = false;
 
@@ -138,6 +141,11 @@ static void sync_on_bookmark(struct scribe_ps *scribe,
 	spin_unlock(&bmark->lock);
 
 	if (last) {
+		/*
+		 * Only the last thread gets to send the notification so that
+		 * we guarentee that all tasks are paused when userspace gets
+		 * the notification
+		 */
 		bmark->reached_event->id = bmark->id;
 		bmark->reached_event->npr = bmark->npr_total;
 		scribe_queue_event_stream(&bmark->ctx->notifications,
@@ -147,6 +155,13 @@ static void sync_on_bookmark(struct scribe_ps *scribe,
 
 	wait_event(bmark->wait, bmark->resume ||
 				is_scribe_context_dead(bmark->ctx));
+
+	/*
+	 * We want to keep npr_total non-zero until all tasks passed the
+	 * bookmark to make sure scribe_bookmark_request sleep.
+	 * It also ensure that scribe_bookmark_resume() operate on the right
+	 * bookmark.
+	 */
 
 	spin_lock(&bmark->lock);
 	if (!--bmark->npr_total) {
@@ -175,7 +190,7 @@ void scribe_bookmark_point_record(struct scribe_ps *scribe,
 	if (ret < 0)
 		scribe_kill(scribe->ctx, ret);
 
-	sync_on_bookmark(scribe, bmark);
+	sync_on_bookmark(bmark);
 }
 
 void scribe_bookmark_point_replay(struct scribe_ps *scribe,
@@ -211,7 +226,7 @@ void scribe_bookmark_point_replay(struct scribe_ps *scribe,
 		}
 
 		bmark->npr_total = npr;
-		sync_on_bookmark(scribe, bmark);
+		sync_on_bookmark(bmark);
 	}
 }
 
