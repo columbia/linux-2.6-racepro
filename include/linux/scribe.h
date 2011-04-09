@@ -667,6 +667,10 @@ static inline int should_scribe_syscall_extra(struct scribe_ps *scribe)
 {
 	return scribe->ctx->flags & SCRIBE_SYSCALL_EXTRA;
 }
+static inline int should_scribe_sig_extra(struct scribe_ps *scribe)
+{
+	return scribe->ctx->flags & SCRIBE_SIG_EXTRA;
+}
 static inline int should_scribe_sig_cookie(struct scribe_ps *scribe)
 {
 	return scribe->ctx->flags & SCRIBE_SIG_COOKIE;

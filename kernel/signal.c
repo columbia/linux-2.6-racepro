@@ -520,13 +520,21 @@ static void clear_info(siginfo_t *info, int sig)
 	info->si_uid = 0;
 }
 
-static void collect_signal(int sig, struct sigpending *list, siginfo_t *info)
+static void collect_signal(int sig, struct sigpending *list, siginfo_t *info,
+			   unsigned int *scribe_cookie)
 {
 	struct sigqueue *first;
+
+	if (scribe_cookie)
+		*scribe_cookie = NO_COOKIE;
 
 	first = next_sigqueue(list, sig);
 	if (first) {
 		copy_siginfo(info, &first->info);
+
+		if (scribe_cookie)
+			*scribe_cookie = first->scribe_cookie;
+
 		__sigqueue_free(first);
 	} else {
 		/* Ok, it wasn't in the queue.  This must be
@@ -538,7 +546,7 @@ static void collect_signal(int sig, struct sigpending *list, siginfo_t *info)
 }
 
 static int __dequeue_signal(struct sigpending *pending, sigset_t *mask,
-			siginfo_t *info)
+			siginfo_t *info, unsigned int *scribe_cookie)
 {
 	int sig = next_signal(pending, mask);
 
@@ -552,7 +560,7 @@ static int __dequeue_signal(struct sigpending *pending, sigset_t *mask,
 			}
 		}
 
-		collect_signal(sig, pending, info);
+		collect_signal(sig, pending, info, scribe_cookie);
 	}
 
 	return sig;
@@ -564,17 +572,18 @@ static int __dequeue_signal(struct sigpending *pending, sigset_t *mask,
  *
  * All callers have to hold the siglock.
  */
-int dequeue_signal(struct task_struct *tsk, sigset_t *mask, siginfo_t *info)
+static int dequeue_signal_cookie(struct task_struct *tsk, sigset_t *mask,
+				 siginfo_t *info, unsigned int *scribe_cookie)
 {
 	int signr;
 
 	/* We only dequeue private signals from ourselves, we don't let
 	 * signalfd steal them
 	 */
-	signr = __dequeue_signal(&tsk->pending, mask, info);
+	signr = __dequeue_signal(&tsk->pending, mask, info, scribe_cookie);
 	if (!signr) {
 		signr = __dequeue_signal(&tsk->signal->shared_pending,
-					 mask, info);
+					 mask, info, scribe_cookie);
 		/*
 		 * itimer signal ?
 		 *
@@ -633,6 +642,11 @@ int dequeue_signal(struct task_struct *tsk, sigset_t *mask, siginfo_t *info)
 	return signr;
 }
 
+int dequeue_signal(struct task_struct *tsk, sigset_t *mask, siginfo_t *info)
+{
+	return dequeue_signal_cookie(tsk, mask, info, NULL);
+}
+
 #ifdef CONFIG_SCRIBE
 static sigset_t empty_mask;
 
@@ -642,6 +656,35 @@ static sigset_t empty_mask;
 static inline bool sig_kernel_stop_cont(int sig)
 {
 	return sig == SIGCONT || sig_kernel_stop(sig);
+}
+
+static void scribe_handle_signal(struct scribe_ps *scribe,
+		struct scribe_event_sig_handled **h_event,
+		struct scribe_event_sig_handled_cookie **hc_event,
+		int signr, unsigned int cookie)
+{
+	if (is_recording(scribe)) {
+		if (*h_event) {
+			(*h_event)->nr = signr;
+			scribe_queue_event(scribe->queue, *h_event);
+			*h_event = NULL;
+		}
+
+		if (*hc_event) {
+			(*hc_event)->cookie = cookie;
+			scribe_queue_event(scribe->queue, *hc_event);
+			*hc_event = NULL;
+		}
+	}
+
+	if (is_replaying(scribe)) {
+		if (should_scribe_sig_extra(scribe))
+			*h_event = scribe_dequeue_event_specific(scribe,
+						SCRIBE_EVENT_SIG_HANDLED);
+		if (should_scribe_sig_cookie(scribe))
+			*hc_event = scribe_dequeue_event_specific(scribe,
+						SCRIBE_EVENT_SIG_HANDLED_COOKIE);
+	}
 }
 
 static void scribe_record_signal(struct scribe_ps *scribe,
@@ -2317,17 +2360,43 @@ static int ptrace_signal(pid_t pid, int signr, siginfo_t *info,
 	return signr;
 }
 
+static int pre_alloc_handled_event(struct scribe_ps *scribe,
+		struct scribe_event_sig_handled **h_event,
+		struct scribe_event_sig_handled_cookie **hc_event)
+{
+	if (!is_recording(scribe))
+		return 0;
+
+	if (should_scribe_sig_extra(scribe)) {
+		*h_event = scribe_alloc_event(SCRIBE_EVENT_SIG_HANDLED);
+		if (!*h_event)
+			return -ENOMEM;
+	}
+
+	if (should_scribe_sig_cookie(scribe)) {
+		*hc_event = scribe_alloc_event(SCRIBE_EVENT_SIG_HANDLED_COOKIE);
+		if (!*hc_event)
+			return -ENOMEM;
+	}
+
+	return 0;
+}
+
 int get_signal_to_deliver(siginfo_t *info, struct k_sigaction *return_ka,
 			  struct pt_regs *regs, void *cookie)
 {
 	pid_t pid = -1;
 	struct sighand_struct *sighand = current->sighand;
 	struct signal_struct *signal = current->signal;
+	struct scribe_ps *scribe = current->scribe;
+	struct scribe_event_sig_handled *h_event = NULL;
+	struct scribe_event_sig_handled_cookie *hc_event = NULL;
+	unsigned int scribe_cookie;
 	int signr;
 
 	try_to_freeze();
 
-	if (is_ps_scribed(current)) {
+	if (is_scribed(scribe)) {
 		/*
 		 * We don't want to take the lock if nothing is happening
 		 */
@@ -2337,9 +2406,12 @@ int get_signal_to_deliver(siginfo_t *info, struct k_sigaction *return_ka,
 
 		local_irq_enable();
 
+		if (pre_alloc_handled_event(scribe, &h_event, &hc_event) < 0)
+			scribe_kill(scribe->ctx, -ENOMEM);
+
 		pid = task_tgid_vnr(current);
 		if (scribe_resource_prepare()) {
-			scribe_kill(current->scribe->ctx, -ENOMEM);
+			scribe_kill(scribe->ctx, -ENOMEM);
 			pid = -1;
 		} else
 			scribe_lock_pid_write(pid);
@@ -2347,7 +2419,7 @@ int get_signal_to_deliver(siginfo_t *info, struct k_sigaction *return_ka,
 
 relock:
 	if (scribe_resource_prepare()) {
-		scribe_kill(current->scribe->ctx, -ENOMEM);
+		scribe_kill(scribe->ctx, -ENOMEM);
 		scribe_unlock_pid(pid);
 		pid = -1;
 	}
@@ -2392,21 +2464,26 @@ relock:
 		signr = tracehook_get_signal(current, regs, info, return_ka);
 		if (unlikely(signr < 0))
 			goto relock;
-		if (unlikely(signr != 0))
+		if (unlikely(signr != 0)) {
 			ka = return_ka;
-		else {
+			scribe_cookie = NO_COOKIE;
+		} else {
 			if (unlikely(signal->group_stop_count > 0)) {
 				if (pid != -1) {
 					collect_signal(SIGSTOP,
-						       &current->pending, info);
+						       &current->pending, info,
+						       &scribe_cookie);
+					scribe_handle_signal(scribe,
+							&h_event, &hc_event,
+							SIGSTOP, scribe_cookie);
 				}
 
 				if (do_signal_stop(pid, 0))
 					goto relock;
 			}
 
-			signr = dequeue_signal(current, &current->blocked,
-					       info);
+			signr = dequeue_signal_cookie(current, &current->blocked,
+						      info, &scribe_cookie);
 
 			if (!signr)
 				break; /* will return 0 */
@@ -2478,6 +2555,9 @@ relock:
 				spin_lock_irq(&sighand->siglock);
 			}
 
+			scribe_handle_signal(scribe, &h_event, &hc_event,
+					     signr, scribe_cookie);
+
 			if (likely(do_signal_stop(pid, info->si_signo))) {
 				/* It released the siglock.  */
 				goto relock;
@@ -2497,6 +2577,12 @@ relock:
 
 		scribe_forbid_uaccess();
 		scribe_signal_enter_sync_point(NULL);
+
+		scribe_handle_signal(scribe, &h_event, &hc_event,
+				     signr, scribe_cookie);
+
+		scribe_free_event(h_event);
+		scribe_free_event(hc_event);
 
 		/*
 		 * Anything else is fatal, maybe with a core dump.
@@ -2526,6 +2612,12 @@ relock:
 	spin_unlock_irq(&sighand->siglock);
 	if (pid != -1)
 		scribe_unlock_pid(pid);
+
+	scribe_handle_signal(scribe, &h_event, &hc_event,
+			     signr, scribe_cookie);
+
+	scribe_free_event(h_event);
+	scribe_free_event(hc_event);
 
 	/* That's a hint for all the do_signal() user accesses */
 	scribe_data_det();
