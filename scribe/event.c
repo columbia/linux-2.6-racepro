@@ -245,7 +245,7 @@ static void __insert_fences(struct scribe_stream *stream,
 	if (num_regions > 1) {
 		/* We don't want to get a performance hit on sorting */
 		WARN(1, "Need to sort the events by serial number\n");
-		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOSYS));
+		scribe_kill(current->scribe->ctx, -ENOSYS);
 	}
 }
 

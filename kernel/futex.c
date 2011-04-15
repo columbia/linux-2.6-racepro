@@ -1072,7 +1072,7 @@ retry_private:
 		scribe_double_unlock_hb_discard(hb1, hb2);
 
 		if (is_scribed(scribe))
-			scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOSYS));
+			scribe_kill(scribe->ctx, -ENOSYS);
 
 		if (!fshared)
 			goto retry_private;
@@ -1338,8 +1338,7 @@ retry_private:
 			scribe_double_unlock_hb_discard(hb1, hb2);
 
 			if (is_ps_scribed(current))
-				scribe_emergency_stop(current->scribe->ctx,
-						      ERR_PTR(-ENOSYS));
+				scribe_kill(current->scribe->ctx, -ENOSYS);
 
 			if (!fshared)
 				goto retry_private;
@@ -1929,8 +1928,7 @@ retry_private:
 		scribe_unlock_discard(*hb);
 
 		if (is_ps_scribed(current))
-			scribe_emergency_stop(current->scribe->ctx,
-					      ERR_PTR(-ENOSYS));
+			scribe_kill(current->scribe->ctx, -ENOSYS);
 
 		if (!fshared)
 			goto retry_private;
@@ -2004,7 +2002,7 @@ retry:
 		put_futex_key(fshared, &q.key);
 
 		if (is_scribed(scribe))
-			scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOSYS));
+			scribe_kill(scribe->ctx, -ENOSYS);
 
 		goto retry;
 	}
@@ -2732,8 +2730,7 @@ long do_futex(u32 __user *uaddr, int op, u32 val, ktime_t *timeout,
 			 * We can't really return -ENOMEM, userspace might not
 			 * handle it, better kill the whole thing.
 			 */
-			scribe_emergency_stop(current->scribe->ctx,
-					      ERR_PTR(-ENOMEM));
+			scribe_kill(current->scribe->ctx, -ENOMEM);
 			return -ENOMEM;
 		}
 

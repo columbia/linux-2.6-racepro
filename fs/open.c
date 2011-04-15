@@ -492,7 +492,7 @@ SYSCALL_DEFINE2(fchmod, unsigned int, fd, mode_t, mode)
 
 	/* refuel the pre-allocated resource cache */
 	if (scribe_track_next_file_no_inode()) {
-		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		scribe_kill(current->scribe->ctx, -ENOMEM);
 		return -ENOMEM;
 	}
 
@@ -579,7 +579,7 @@ static int chown_common(struct path *path, uid_t user, gid_t group)
 	struct dentry *parent;
 
 	if (scribe_resource_prepare()) {
-		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		scribe_kill(current->scribe->ctx, -ENOMEM);
 		return -ENOMEM;
 	}
 

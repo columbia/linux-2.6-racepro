@@ -1351,8 +1351,7 @@ SYSCALL_DEFINE0(getppid)
 	int pid;
 
 	if (scribe_resource_prepare()) {
-		scribe_emergency_stop(current->scribe->ctx,
-				      ERR_PTR(-ENOMEM));
+		scribe_kill(current->scribe->ctx, -ENOMEM);
 		return -ENOMEM;
 	}
 

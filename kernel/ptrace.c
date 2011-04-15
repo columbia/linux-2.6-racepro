@@ -701,7 +701,7 @@ SYSCALL_DEFINE4(ptrace, long, request, long, pid, long, addr, long, data)
 
 	if (scribe_resource_prepare()) {
 		ret = -ENOMEM;
-		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		scribe_kill(current->scribe->ctx, -ENOMEM);
 		goto out;
 	}
 

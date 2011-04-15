@@ -202,6 +202,14 @@ SCRIBE_EVENT(sig_recv_cookie,
 	__field(__u32, cookie)
 )
 
+SCRIBE_EVENT(sig_handled_cookie,
+	__field(__u32, cookie)
+)
+
+SCRIBE_EVENT(sig_handled,
+	__field(__u8, nr)
+)
+
 /* Command events */
 SCRIBE_START_COMMAND_DECL
 
@@ -224,13 +232,9 @@ SCRIBE_EVENT(stop)
 
 SCRIBE_EVENT(bookmark_request)
 
-SCRIBE_EVENT(golive_on_next_bookmark)
-
-SCRIBE_EVENT(golive_on_bookmark_id,
-	__field(__u32, id)
-)
-
 SCRIBE_EVENT(check_deadlock)
+
+SCRIBE_EVENT(resume)
 
 /* Notification events */
 SCRIBE_START_NOTIFICATION_DECL
@@ -241,6 +245,11 @@ SCRIBE_EVENT(backtrace,
 
 SCRIBE_EVENT(context_idle,
 	__field(__s32, error)
+)
+
+SCRIBE_EVENT(bookmark_reached,
+	__field(__u32, id)
+	__field(__u32, npr)
 )
 
 /* Diverge Notification events */

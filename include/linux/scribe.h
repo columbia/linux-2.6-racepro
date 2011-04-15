@@ -173,7 +173,7 @@ extern struct scribe_event *scribe_peek_event(
 									\
 	__event = scribe_dequeue_event((sp)->queue, SCRIBE_WAIT);	\
 	if (IS_ERR(__event))						\
-		scribe_emergency_stop((sp)->ctx, __event);		\
+		scribe_kill((sp)->ctx, PTR_ERR(__event));		\
 	else if (__event->type != _type) {				\
 		scribe_free_event(__event);				\
 		scribe_diverge(sp, SCRIBE_EVENT_DIVERGE_EVENT_TYPE,	\
@@ -349,8 +349,13 @@ static inline void scribe_put_context(struct scribe_context *ctx)
 }
 
 extern struct scribe_context *scribe_alloc_context(void);
-extern void scribe_emergency_stop(struct scribe_context *ctx,
-				  struct scribe_event *reason);
+extern void __scribe_kill(struct scribe_context *ctx,
+			  struct scribe_event *reason);
+static inline void scribe_kill(struct scribe_context *ctx, long error)
+{
+	__scribe_kill(ctx, ERR_PTR(error));
+}
+
 extern void scribe_exit_context(struct scribe_context *ctx);
 
 extern int scribe_start(struct scribe_context *ctx, unsigned long flags,
@@ -388,7 +393,7 @@ extern void scribe_wake_all_fake_sig(struct scribe_context *ctx);
 			__VA_ARGS__					\
 		};							\
 	}								\
-	scribe_emergency_stop((sp)->ctx, (struct scribe_event *)__event); \
+	__scribe_kill((sp)->ctx, (struct scribe_event *)__event);	\
 })
 
 /* Bookmarks */
@@ -399,9 +404,7 @@ extern void scribe_bookmark_free(struct scribe_bookmark *bmark);
 extern void scribe_bookmark_reset(struct scribe_bookmark *bmark);
 extern int scribe_bookmark_request(struct scribe_bookmark *bmark);
 extern void scribe_bookmark_point(void);
-extern int scribe_golive_on_bookmark_id(struct scribe_bookmark *bmark, int id);
-extern int scribe_golive_on_next_bookmark(struct scribe_bookmark *bmark);
-
+extern int scribe_bookmark_resume(struct scribe_bookmark *bmark);
 
 /* Resources */
 
@@ -663,6 +666,10 @@ static inline int should_scribe_syscall_ret(struct scribe_ps *scribe)
 static inline int should_scribe_syscall_extra(struct scribe_ps *scribe)
 {
 	return scribe->ctx->flags & SCRIBE_SYSCALL_EXTRA;
+}
+static inline int should_scribe_sig_extra(struct scribe_ps *scribe)
+{
+	return scribe->ctx->flags & SCRIBE_SIG_EXTRA;
 }
 static inline int should_scribe_sig_cookie(struct scribe_ps *scribe)
 {

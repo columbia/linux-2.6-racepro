@@ -2949,7 +2949,7 @@ static struct tgid_iter scribe_next_tgid(struct scribe_ps *scribe,
 	}
 
 	if (scribe_resource_prepare()) {
-		scribe_emergency_stop(scribe->ctx, ERR_PTR(-ENOMEM));
+		scribe_kill(scribe->ctx, -ENOMEM);
 		return iter;
 	}
 

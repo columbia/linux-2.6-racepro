@@ -1527,8 +1527,8 @@ void scribe_mem_sync_point(struct scribe_ps *scribe, int mode)
 			ret = fence_ret;
 	}
 
-	if (ret)
-		scribe_emergency_stop(scribe->ctx, ERR_PTR(ret));
+	if (ret < 0)
+		scribe_kill(scribe->ctx, ret);
 }
 
 void scribe_disable_sync_sleep(void)
@@ -1906,7 +1906,7 @@ static int serial_match(struct scribe_ps *scribe,
 		return 1;
 
 	if (is_scribe_context_dead(scribe->ctx)) {
-		/* emergency_stop() has been triggered, we need to leave */
+		/* scribe_kill() has been triggered, we need to leave */
 		return 1;
 	}
 
@@ -1980,7 +1980,7 @@ static int scribe_page_access_replay(struct scribe_ps *scribe,
 
 	event = scribe_dequeue_event(scribe->queue, SCRIBE_WAIT);
 	if (IS_ERR(event)) {
-		scribe_emergency_stop(scribe->ctx, event);
+		scribe_kill(scribe->ctx, PTR_ERR(event));
 		down_read(&mm->mmap_sem);
 		return PTR_ERR(event);
 	}

@@ -478,7 +478,7 @@ SYSCALL_DEFINE3(msgctl, int, msqid, int, cmd, struct msqid_ds __user *, buf)
 
 	if (scribe_resource_prepare()) {
 		/* Userspace may not expect ENOMEM */
-		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		scribe_kill(current->scribe->ctx, -ENOMEM);
 		return -ENOMEM;
 	}
 
@@ -947,7 +947,7 @@ SYSCALL_DEFINE5(msgrcv, int, msqid, struct msgbuf __user *, msgp, size_t, msgsz,
 
 	if (scribe_resource_prepare()) {
 		/* Userspace may not expect ENOMEM */
-		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		scribe_kill(current->scribe->ctx, -ENOMEM);
 		return -ENOMEM;
 	}
 

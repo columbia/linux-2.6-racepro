@@ -111,7 +111,7 @@ SYSCALL_DEFINE3(old_readdir, unsigned int, fd,
 	struct readdir_callback buf;
 
 	if (scribe_track_next_file_read()) {
-		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		scribe_kill(current->scribe->ctx, -ENOMEM);
 		return -ENOMEM;
 	}
 
@@ -213,7 +213,7 @@ SYSCALL_DEFINE3(getdents, unsigned int, fd,
 		goto out;
 
 	if (scribe_track_next_file_read()) {
-		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		scribe_kill(current->scribe->ctx, -ENOMEM);
 		return -ENOMEM;
 	}
 
@@ -306,7 +306,7 @@ SYSCALL_DEFINE3(getdents64, unsigned int, fd,
 		goto out;
 
 	if (scribe_track_next_file_read()) {
-		scribe_emergency_stop(current->scribe->ctx, ERR_PTR(-ENOMEM));
+		scribe_kill(current->scribe->ctx, -ENOMEM);
 		return -ENOMEM;
 	}
 

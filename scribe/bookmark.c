@@ -16,15 +16,13 @@
 
 struct scribe_bookmark {
 	struct scribe_context	*ctx;
-	struct timeval		time_start;
 	spinlock_t		lock;
 	int			id;
 	int			npr;
 	int			npr_total;
+	bool			resume;
 	wait_queue_head_t	wait;
-	wait_queue_head_t	ctx_wait;
-	int			golive_id;
-	int			golive_latch;
+	struct scribe_event_bookmark_reached *reached_event;
 };
 
 struct scribe_bookmark *scribe_bookmark_alloc(struct scribe_context *ctx)
@@ -36,51 +34,58 @@ struct scribe_bookmark *scribe_bookmark_alloc(struct scribe_context *ctx)
 		return NULL;
 
 	bmark->ctx = ctx;
-	init_waitqueue_head(&bmark->wait);
-	init_waitqueue_head(&bmark->ctx_wait);
 	spin_lock_init(&bmark->lock);
+	bmark->id = 0;
 	bmark->npr = 0;
 	bmark->npr_total = 0;
-	bmark->golive_id = -1;
-	bmark->golive_latch = 0;
+	init_waitqueue_head(&bmark->wait);
+	bmark->reached_event = NULL;
 
-	scribe_bookmark_reset(bmark);
 	return bmark;
 }
 
 void scribe_bookmark_free(struct scribe_bookmark *bmark)
 {
+	scribe_free_event(bmark->reached_event);
 	kfree(bmark);
 }
 
-void scribe_bookmark_reset(struct scribe_bookmark *bmark)
-{
-	bmark->id = 0;
-	do_gettimeofday(&bmark->time_start);
-}
-
 /*
- * returns -EAGAIN if some scribed task are still waiting
- * otherwise return the number of processes waiting on the bookmark sync
+ * returns -EAGAIN if some scribed task are not blocking in sync_on_bookmark
+ * yet, otherwise return the number of processes waiting on the bookmark sync
  */
 static int scribe_wait_all_sync(struct scribe_context *ctx)
 {
 	struct scribe_ps *scribe;
 	int npr_waiting = 0;
 	int npr = 0;
+	int ret;
 
 	spin_lock(&ctx->tasks_lock);
 	list_for_each_entry(scribe, &ctx->tasks, node) {
-		/* FIXME This is racy */
-		if (!(scribe->p->flags & PF_EXITING)) {
-			npr_waiting += scribe->bmark_waiting;
-			npr++;
-		}
+		npr_waiting += scribe->bmark_waiting;
+		npr++;
 	}
-	scribe_wake_all_fake_sig(ctx);
+	if (npr != npr_waiting) {
+		scribe_wake_all_fake_sig(ctx);
+		ret = -EAGAIN;
+	} else
+		ret = npr;
 	spin_unlock(&ctx->tasks_lock);
 
-	return npr != npr_waiting ? -EAGAIN : npr;
+	return ret;
+}
+
+static int prealloc_reached_event(struct scribe_bookmark *bmark)
+{
+	if (bmark->reached_event)
+		return 0;
+
+	bmark->reached_event = scribe_alloc_event(SCRIBE_EVENT_BOOKMARK_REACHED);
+	if (!bmark->reached_event)
+		return -ENOMEM;
+
+	return 0;
 }
 
 int scribe_bookmark_request(struct scribe_bookmark *bmark)
@@ -95,113 +100,97 @@ int scribe_bookmark_request(struct scribe_bookmark *bmark)
 	if (wait_event_interruptible(bmark->wait, !bmark->npr_total))
 		return -ERESTARTSYS;
 
-	spin_lock(&bmark->lock);
-	bmark->npr_total = NPR_PENDING;
-	spin_unlock(&bmark->lock);
-
-	wait_event(bmark->ctx_wait,
-		   (npr = scribe_wait_all_sync(ctx)) != -EAGAIN);
-
-	spin_lock(&bmark->lock);
-	bmark->npr_total = npr;
-	spin_unlock(&bmark->lock);
-
-	wake_up(&bmark->wait); /* will wakeup anyone waiting on NPR_PENDING */
-
-	return 0;
-
-}
-
-static inline int bookmark_is_wait_over(struct scribe_bookmark *bmark, int id)
-{
-	if (bmark->golive_latch)
-		return 0;
-
-	if (is_scribe_context_dead(bmark->ctx))
-		return 1;
-
-	return bmark->npr == 0 || bmark->id != id;
-}
-
-static void sync_on_bookmark(struct scribe_ps *scribe,
-			     struct scribe_bookmark *bmark, int *id, int *npr)
-{
-	int no_wait = 0;
+	if (prealloc_reached_event(bmark) < 0)
+		return -ENOMEM;
 
 	/*
-	 * current task arrives on a bookmark point:
-	 * - if we are not the last task to arrive on the bookmark, we have to
-	 *   wait for all the tasks.
-	 * - if we are the last task, we should wait everybody up, the wait is
-	 * over.
+	 * Tasks will start blocking in scribe_bookmark_point_record() because
+	 * of NPR_PENDING.
 	 */
+	bmark->npr_total = NPR_PENDING;
 
-	if (is_recording(scribe)) {
-		scribe->bmark_waiting = 1;
-		wake_up(&bmark->ctx_wait);
-		wait_event(bmark->wait, bmark->npr_total > 0);
-		scribe->bmark_waiting = 0;
-	} else {
-		/* First we have to wait for the right bookmark... */
-		BUG_ON(bmark->id > *id);
-		wait_event(bmark->wait, bmark->id == *id ||
-					is_scribe_context_dead(bmark->ctx));
-		if (is_scribe_context_dead(bmark->ctx))
-			return;
-	}
+	/*
+	 * We need to wait on tasks_wait because tasks can die in do_exit()
+	 * and we want to be woken up in that case.
+	 */
+	wait_event(ctx->tasks_wait,
+		   (npr = scribe_wait_all_sync(ctx)) != -EAGAIN);
+
+	/*
+	 * All tasks are now blocking in scribe_bookmark_point_record() and
+	 * npr is the number of task. The tasks will write npr in their
+	 * bookmark event.
+	 */
+	bmark->npr_total = npr;
+	wake_up(&bmark->wait);
+
+	return 0;
+}
+
+static void sync_on_bookmark(struct scribe_bookmark *bmark)
+{
+	bool last = false;
 
 	spin_lock(&bmark->lock);
-
-	*id = bmark->id;
-
-	if (!bmark->npr_total) {
-		BUG_ON(*npr == -1);
-		bmark->npr_total = *npr;
-	} else
-		*npr = bmark->npr_total;
-
-	if (!bmark->npr)
+	if (!bmark->npr) {
 		bmark->npr = bmark->npr_total;
-	if (!--bmark->npr) {
-		if (bmark->id == bmark->golive_id) {
-			bmark->golive_latch = 1;
-			smp_wmb();
-		}
-		bmark->id++;
-		bmark->npr_total = 0;
-		no_wait = 1;
+		bmark->resume = false;
 	}
-	BUG_ON(bmark->npr < 0);
-
+	if (!--bmark->npr)
+		last = true;
 	spin_unlock(&bmark->lock);
 
-	if (no_wait) {
-		if (bmark->golive_latch) {
-			scribe_stop(scribe->ctx);
-			bmark->golive_latch = 0;
-		}
+	if (last) {
+		/*
+		 * Only the last thread gets to send the notification so that
+		 * we guarentee that all tasks are paused when userspace gets
+		 * the notification
+		 */
+		bmark->reached_event->id = bmark->id;
+		bmark->reached_event->npr = bmark->npr_total;
+		scribe_queue_event_stream(&bmark->ctx->notifications,
+					  bmark->reached_event);
+		bmark->reached_event = NULL;
+	}
 
+	wait_event(bmark->wait, bmark->resume ||
+				is_scribe_context_dead(bmark->ctx));
+
+	/*
+	 * We want to keep npr_total non-zero until all tasks passed the
+	 * bookmark to make sure scribe_bookmark_request sleep.
+	 * It also ensure that scribe_bookmark_resume() operate on the right
+	 * bookmark.
+	 */
+
+	spin_lock(&bmark->lock);
+	if (!--bmark->npr_total) {
+		bmark->id++;
 		wake_up(&bmark->wait);
-	} else
-		wait_event(bmark->wait, bookmark_is_wait_over(bmark, *id));
+	}
+	spin_unlock(&bmark->lock);
 }
 
 void scribe_bookmark_point_record(struct scribe_ps *scribe,
 				  struct scribe_bookmark *bmark)
 {
-	int npr, id;
 	int ret;
 
-	if (!bmark->npr_total)
+	if (bmark->npr_total != NPR_PENDING)
 		return;
 
-	sync_on_bookmark(scribe, bmark, &id, &npr);
+	scribe->bmark_waiting = 1;
+	wake_up(&bmark->ctx->tasks_wait);
+	wait_event(bmark->wait, bmark->npr_total > 0);
+	scribe->bmark_waiting = 0;
 
 	ret = scribe_queue_new_event(scribe->queue,
 				     SCRIBE_EVENT_BOOKMARK,
-				     .id = id, .npr = npr);
-	if (ret)
-		scribe_emergency_stop(scribe->ctx, ERR_PTR(ret));
+				     .id = bmark->id, .npr = bmark->npr_total);
+	if (ret < 0)
+		scribe_kill(scribe->ctx, ret);
+
+	sync_on_bookmark(bmark);
 }
 
 void scribe_bookmark_point_replay(struct scribe_ps *scribe,
@@ -225,7 +214,19 @@ void scribe_bookmark_point_replay(struct scribe_ps *scribe,
 		id = event->id;
 		npr = event->npr;
 		scribe_free_event(event);
-		sync_on_bookmark(scribe, bmark, &id, &npr);
+
+		wait_event(bmark->wait, bmark->id == id ||
+					is_scribe_context_dead(bmark->ctx));
+		if (is_scribe_context_dead(bmark->ctx))
+			return;
+
+		if (prealloc_reached_event(bmark) < 0) {
+			scribe_kill(scribe->ctx, -ENOMEM);
+			return;
+		}
+
+		bmark->npr_total = npr;
+		sync_on_bookmark(bmark);
 	}
 }
 
@@ -245,32 +246,12 @@ void scribe_bookmark_point(void)
 		scribe_bookmark_point_replay(scribe, bmark);
 }
 
-static int scribe_golive_on_bookmark(struct scribe_bookmark *bmark,
-				     int id, int next)
+int scribe_bookmark_resume(struct scribe_bookmark *bmark)
 {
-	struct scribe_context *ctx = bmark->ctx;
-
-	if (!(ctx->flags & SCRIBE_REPLAY))
+	if (bmark->npr || !bmark->npr_total)
 		return -EPERM;
 
-	spin_lock(&bmark->lock);
-	if (next)
-		bmark->golive_id = bmark->id;
-	else
-		bmark->golive_id = id;
-	spin_unlock(&bmark->lock);
-
+	bmark->resume = true;
+	wake_up(&bmark->wait);
 	return 0;
-}
-
-int scribe_golive_on_bookmark_id(struct scribe_bookmark *bmark, int id)
-{
-	if (bmark->id > id)
-		return -EINVAL;
-	return scribe_golive_on_bookmark(bmark, id, 0);
-}
-
-int scribe_golive_on_next_bookmark(struct scribe_bookmark *bmark)
-{
-	return scribe_golive_on_bookmark(bmark, 0, 1);
 }
