@@ -273,13 +273,17 @@ void scribe_enter_syscall(struct pt_regs *regs)
 	if (is_scribe_syscall(scribe->nr_syscall))
 		return;
 
+	/* It should already be set to false, but let's be sure */
+	scribe->need_syscall_ret = false;
+	if (should_scribe_syscall_ret(scribe) ||
+	    is_interruptible_syscall(scribe->nr_syscall))
+		__scribe_need_syscall_ret(scribe);
+
 	if (should_scribe_syscalls(scribe) &&
 	    should_scribe_regs(scribe) &&
 	    scribe_regs(scribe, regs))
 		return;
 
-	/* It should already be set to false, but let's be sure */
-	scribe->need_syscall_ret = false;
 
 	scribe_data_det();
 
@@ -300,12 +304,10 @@ void scribe_enter_syscall(struct pt_regs *regs)
 		return;
 
 	/* FIXME signals needs the return value */
+#if 0
 	if (!should_scribe_syscalls(scribe))
 		return;
-
-	if (should_scribe_syscall_ret(scribe) ||
-	    is_interruptible_syscall(scribe->nr_syscall))
-		__scribe_need_syscall_ret(scribe);
+#endif
 
 	recalc_sigpending();
 }
