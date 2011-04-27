@@ -670,7 +670,7 @@ static void scribe_handle_signal(struct scribe_ps *scribe,
 			*h_event = NULL;
 		}
 
-		if (*hc_event) {
+		if (*hc_event && cookie != NO_COOKIE) {
 			(*hc_event)->cookie = cookie;
 			scribe_queue_event(scribe->queue, *hc_event);
 			*hc_event = NULL;
