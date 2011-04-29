@@ -273,6 +273,10 @@ void scribe_enter_syscall(struct pt_regs *regs)
 	if (is_scribe_syscall(scribe->nr_syscall))
 		return;
 
+	/* execute pending injects */
+	if (scribe_inject_action(scribe) < 0)
+		return;
+
 	/* It should already be set to false, but let's be sure */
 	scribe->need_syscall_ret = false;
 	if (should_scribe_syscall_ret(scribe) ||
@@ -295,10 +299,6 @@ void scribe_enter_syscall(struct pt_regs *regs)
 	__scribe_forbid_uaccess(scribe);
 
 	scribe_bookmark_point();
-
-	/* execute pending injects */
-	if (scribe_inject_action(scribe) < 0)
-		return;
 
 	if (scribe_maybe_detach(scribe))
 		return;
