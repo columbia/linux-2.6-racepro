@@ -663,6 +663,7 @@ static void scribe_handle_signal(struct scribe_ps *scribe,
 		struct scribe_event_sig_handled_cookie **hc_event,
 		int signr, unsigned int cookie)
 {
+	struct scribe_event *event;
 	if (is_recording(scribe)) {
 		if (*h_event) {
 			(*h_event)->nr = signr;
@@ -681,9 +682,16 @@ static void scribe_handle_signal(struct scribe_ps *scribe,
 		if (should_scribe_sig_extra(scribe))
 			*h_event = scribe_dequeue_event_specific(scribe,
 						SCRIBE_EVENT_SIG_HANDLED);
-		if (should_scribe_sig_cookie(scribe))
-			*hc_event = scribe_dequeue_event_specific(scribe,
-						SCRIBE_EVENT_SIG_HANDLED_COOKIE);
+		if (should_scribe_sig_cookie(scribe)) {
+			/* Getting rid of the signal cookie event if present */
+			event = scribe_peek_event(scribe->queue, SCRIBE_WAIT);
+			if (!IS_ERR(event) &&
+			    event->type == SCRIBE_EVENT_SIG_HANDLED_COOKIE) {
+				event = scribe_dequeue_event(scribe->queue,
+							     SCRIBE_NO_WAIT);
+				scribe_free_event(event);
+			}
+		}
 	}
 }
 
