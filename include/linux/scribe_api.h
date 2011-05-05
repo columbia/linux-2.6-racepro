@@ -104,6 +104,9 @@
 #define SCRIBE_DATA_IGNORE		0x40
 #endif
 
+#define SCRIBE_BOOKMARK_PRE_SYSCALL	0x00
+#define SCRIBE_BOOKMARK_POST_SYSCALL	0x01
+
 /*
  * Syscalls offsets for multiplexed calls
  */

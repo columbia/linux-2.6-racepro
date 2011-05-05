@@ -204,7 +204,7 @@ void scribe_enter_syscall(struct pt_regs *regs)
 
 	__scribe_forbid_uaccess(scribe);
 
-	scribe_bookmark_point();
+	scribe_bookmark_point(SCRIBE_BOOKMARK_PRE_SYSCALL);
 
 	if (scribe_maybe_detach(scribe))
 		return;
@@ -307,7 +307,7 @@ void scribe_exit_syscall(struct pt_regs *regs)
 	scribe_commit_syscall(scribe, regs,
 			      syscall_get_return_value(current, regs));
 
-	scribe_bookmark_point();
+	scribe_bookmark_point(SCRIBE_BOOKMARK_POST_SYSCALL);
 
 	if (scribe_maybe_detach(scribe))
 		return;
