@@ -291,6 +291,7 @@ static void track_resource(struct scribe_context *ctx,
 		on_create = on_create_res_inode;
 		on_reset = on_reset_res_inode;
 		break;
+	case SCRIBE_RES_TYPE_FILE:
 	case SCRIBE_RES_TYPE_FUTEX:
 		on_reset = on_reset_hres;
 		break;
@@ -1342,7 +1343,8 @@ static int lock_file(struct file *file, int flags)
 	    !(flags & SCRIBE_INODE_EXPLICIT))
 		flags &= ~(SCRIBE_INODE_READ | SCRIBE_INODE_WRITE);
 
-	if (__lock_object(scribe, file, &file->scribe_resource, flags))
+	if (__lock_object_handle(scribe, file, &file->scribe_resource,
+				 SCRIBE_RES_TYPE_FILE, flags))
 		return -EINTR;
 
 	if (flags & SCRIBE_INODE_READ)
