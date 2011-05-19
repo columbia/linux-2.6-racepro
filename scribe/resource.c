@@ -836,7 +836,7 @@ static int __do_lock_replay(struct scribe_ps *scribe,
 		serial = event->serial;
 		scribe_free_event(event);
 
-		if (type != res->type) {
+		if (type != (res->type & SCRIBE_RES_TYPE_MASK)) {
 			scribe_diverge(scribe,
 				       SCRIBE_EVENT_DIVERGE_RESOURCE_TYPE,
 				       .type = res->type);
@@ -975,7 +975,7 @@ static void do_unlock_record(struct scribe_ps *scribe,
 		lock_region->lock_event.extra = NULL;
 		lock_region->unlock_event = NULL;
 
-		lock_event->type = res->type;
+		lock_event->type = res->type & SCRIBE_RES_TYPE_MASK;
 		lock_event->write_access = !!do_write;
 		lock_event->id = res->id;
 		lock_event->serial = serial;
