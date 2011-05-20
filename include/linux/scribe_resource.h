@@ -33,9 +33,6 @@ struct scribe_resource {
 	/* This node correspond to the scribe_resources->tracked list */
 	struct list_head node;
 
-	/* Return -EAGAIN when the lock has been dropped */
-	int (*on_reset) (struct scribe_context *, struct scribe_resource *);
-
 	int id;
 	int type;
 

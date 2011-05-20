@@ -207,7 +207,6 @@ static inline int use_spinlock(struct scribe_resource *res)
 void scribe_init_resource(struct scribe_resource *res, int type)
 {
 	res->ctx = NULL;
-	res->on_reset = NULL;
 	res->id = -1; /* The id will be set once the resource is tracked */
 	res->type = type;
 
@@ -222,22 +221,43 @@ void scribe_init_resource(struct scribe_resource *res, int type)
 	init_waitqueue_head(&res->wait);
 }
 
-static int on_reset_idres(struct scribe_context *ctx,
-			  struct scribe_resource *res)
+static void acquire_res(struct scribe_context *ctx, struct scribe_resource *res,
+			bool *lock_dropped)
+{
+	BUG_ON(res->ctx);
+	BUG_ON(res->first_read_serial != -1);
+	BUG_ON(atomic_read(&res->serial));
+
+	res->ctx = ctx;
+	res->id = ctx->resources->next_id++;
+	list_add(&res->node, &ctx->resources->tracked);
+
+	spin_unlock(&ctx->resources->lock);
+	*lock_dropped = true;
+}
+
+static void release_res(struct scribe_resource *res, bool *lock_dropped)
+{
+	res->ctx = NULL;
+	list_del(&res->node);
+	res->first_read_serial = -1;
+	atomic_set(&res->serial, 0);
+}
+
+static void release_idres(struct scribe_resource *res, bool *lock_dropped)
 {
 	struct scribe_idres *idres;
 	idres = container_of(res, struct scribe_idres, res);
 	remove_idres(idres);
-	return 0;
+	release_res(res, lock_dropped);
 }
 
-static int on_reset_hres(struct scribe_context *ctx,
-			 struct scribe_resource *res)
+static void release_hres(struct scribe_resource *res, bool *lock_dropped)
 {
 	struct scribe_resource_handle *hres;
 	hres = container_of(res, struct scribe_resource_handle, res);
 	remove_scribe_handle(&hres->handle);
-	return 0;
+	release_res(res, lock_dropped);
 }
 
 static struct inode *__get_inode_from_res(struct scribe_resource *res)
@@ -253,99 +273,92 @@ static struct inode *__get_inode_from_res(struct scribe_resource *res)
 	return inode;
 }
 
-static void on_create_res_inode(struct scribe_resource *res)
+static void acquire_res_inode(struct scribe_context *ctx,
+			      struct scribe_resource *res, bool *lock_dropped)
 {
 	struct inode *inode = __get_inode_from_res(res);
+	acquire_res(ctx, res, lock_dropped);
+	/* We don't need to hold the resources->lock anymore */
+	BUG_ON(!*lock_dropped);
 	spin_lock(&inode_lock);
 	__iget(inode);
 	spin_unlock(&inode_lock);
 }
 
-static int on_reset_res_inode(struct scribe_context *ctx,
-			      struct scribe_resource *res)
+static void release_res_inode(struct scribe_resource *res, bool *lock_dropped)
 {
+	struct scribe_context *ctx = res->ctx;
 	struct inode *inode = __get_inode_from_res(res);
-	on_reset_hres(ctx, res);
+
+	release_hres(res, NULL);
 	spin_unlock(&ctx->resources->lock);
+	*lock_dropped = true;
 	/* iput sleeps */
 	iput(inode);
-	return -EAGAIN;
 }
+
+struct resource_ops_struct {
+	void (*acquire) (struct scribe_context *, struct scribe_resource *,
+			 bool *);
+	void (*release) (struct scribe_resource *, bool *);
+};
+
+static struct resource_ops_struct resource_ops[SCRIBE_RES_NUM_TYPES] =
+{
+	[SCRIBE_RES_TYPE_INODE] = { .acquire = acquire_res_inode,
+				    .release = release_res_inode },
+	[SCRIBE_RES_TYPE_FILE]  = { .release = release_hres },
+	[SCRIBE_RES_TYPE_PID]   = { .release = release_idres },
+	[SCRIBE_RES_TYPE_FUTEX] = { .release = release_hres },
+};
 
 static void track_resource(struct scribe_context *ctx,
 			   struct scribe_resource *res)
 {
 	struct scribe_resources *resources;
-	void (*on_create) (struct scribe_resource *);
-	int (*on_reset) (struct scribe_context *, struct scribe_resource *);
+	int type = res->type & SCRIBE_RES_TYPE_MASK;
+	bool lock_dropped = false;
 
 	if (res->ctx) {
 		BUG_ON(res->ctx != ctx);
 		return;
 	}
 
-	on_create = NULL;
-	on_reset = NULL;
-	switch (res->type & SCRIBE_RES_TYPE_MASK) {
-	case SCRIBE_RES_TYPE_INODE:
-		on_create = on_create_res_inode;
-		on_reset = on_reset_res_inode;
-		break;
-	case SCRIBE_RES_TYPE_FILE:
-	case SCRIBE_RES_TYPE_FUTEX:
-		on_reset = on_reset_hres;
-		break;
-	case SCRIBE_RES_TYPE_PID:
-		on_reset = on_reset_idres;
-		break;
-	}
-
 	resources = ctx->resources;
 	spin_lock(&resources->lock);
 	if (likely(!res->ctx)) {
-		BUG_ON(atomic_read(&res->serial));
-		res->ctx = ctx;
-		res->id = resources->next_id++;
-		list_add(&res->node, &resources->tracked);
-		res->on_reset = on_reset;
-		if (on_create)
-			on_create(res);
+		if (resource_ops[type].acquire)
+			resource_ops[type].acquire(ctx, res, &lock_dropped);
+		else
+			acquire_res(ctx, res, &lock_dropped);
+
 	}
-	spin_unlock(&resources->lock);
+	BUG_ON(!lock_dropped);
 }
 
-static int __scribe_reset_resource(struct scribe_resource *res)
+static void __scribe_reset_resource(struct scribe_resource *res,
+				    bool *lock_dropped)
 {
-	struct scribe_context *ctx;
-	int ret = 0;
-
-	ctx = res->ctx;
-	res->ctx = NULL;
-	list_del(&res->node);
-
-	res->first_read_serial = -1;
-	atomic_set(&res->serial, 0);
-
-	if (res->on_reset)
-		ret = res->on_reset(ctx, res);
-
-	return ret;
+	int type = res->type & SCRIBE_RES_TYPE_MASK;
+	if (resource_ops[type].release)
+		resource_ops[type].release(res, lock_dropped);
+	else
+		release_res(res, lock_dropped);
 }
 
 void scribe_reset_resource(struct scribe_resource *res)
 {
-	int ret;
 	struct scribe_resources *resources;
+	bool lock_dropped = false;
 
 	if (!res->ctx)
 		return;
 	resources = res->ctx->resources;
 
 	spin_lock(&resources->lock);
-	ret = __scribe_reset_resource(res);
-	if (ret == -EAGAIN)
-		return;
-	spin_unlock(&resources->lock);
+	__scribe_reset_resource(res, &lock_dropped);
+	if (!lock_dropped)
+		spin_unlock(&resources->lock);
 }
 
 void scribe_reset_resource_container(struct scribe_container *container)
@@ -353,7 +366,7 @@ void scribe_reset_resource_container(struct scribe_container *container)
 	struct scribe_resource_handle *hres;
 	struct scribe_resources *resources;
 	struct scribe_context *ctx;
-	int ret;
+	bool lock_dropped;
 
 retry:
 	rcu_read_lock();
@@ -373,11 +386,12 @@ retry:
 	BUG_ON(!ctx);
 	resources = ctx->resources;
 
+	lock_dropped = false;
 	spin_lock(&resources->lock);
 	rcu_read_unlock();
 
-	ret = __scribe_reset_resource(&hres->res);
-	if (ret == -EAGAIN)
+	__scribe_reset_resource(&hres->res, &lock_dropped);
+	if (lock_dropped)
 		goto retry;
 	spin_unlock(&resources->lock);
 	goto retry;
@@ -386,16 +400,15 @@ retry:
 void scribe_reset_resources(struct scribe_resources *resources)
 {
 	struct scribe_resource *res, *tmp;
-	int ret;
+	bool lock_dropped;
 
 retry:
+	lock_dropped = false;
 	spin_lock(&resources->lock);
 	list_for_each_entry_safe(res, tmp, &resources->tracked, node) {
-		ret = __scribe_reset_resource(res);
-		if (ret == -EAGAIN) {
-			/* The lock was dropped */
+		__scribe_reset_resource(res, &lock_dropped);
+		if (lock_dropped)
 			goto retry;
-		}
 	}
 	spin_unlock(&resources->lock);
 }
