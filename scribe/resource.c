@@ -129,7 +129,7 @@ static struct scribe_idres *get_mapped_res(struct scribe_res_map *map, int id,
 	if (idres)
 		return idres;
 
-	spin_lock(&map->lock);
+	spin_lock_bh(&map->lock);
 	idres = __find_idres(head, id);
 	if (unlikely(idres)) {
 		spin_unlock(&map->lock);
@@ -142,7 +142,7 @@ static struct scribe_idres *get_mapped_res(struct scribe_res_map *map, int id,
 	scribe_init_resource(&idres->res, map->res_type);
 
 	hlist_add_head_rcu(&idres->node, head);
-	spin_unlock(&map->lock);
+	spin_unlock_bh(&map->lock);
 
 	return idres;
 }
@@ -158,9 +158,9 @@ static void remove_idres(struct scribe_idres *idres)
 {
 	struct scribe_res_map *map = idres->map;
 
-	spin_lock(&map->lock);
+	spin_lock_bh(&map->lock);
 	hlist_del_rcu(&idres->node);
-	spin_unlock(&map->lock);
+	spin_unlock_bh(&map->lock);
 	call_rcu(&idres->rcu, free_rcu_idres);
 }
 
@@ -232,7 +232,7 @@ static void acquire_res(struct scribe_context *ctx, struct scribe_resource *res,
 	res->id = ctx->resources->next_id++;
 	list_add(&res->node, &ctx->resources->tracked);
 
-	spin_unlock(&ctx->resources->lock);
+	spin_unlock_bh(&ctx->resources->lock);
 	*lock_dropped = true;
 }
 
@@ -291,7 +291,7 @@ static void release_res_inode(struct scribe_resource *res, bool *lock_dropped)
 	struct inode *inode = __get_inode_from_res(res);
 
 	release_hres(res, NULL);
-	spin_unlock(&ctx->resources->lock);
+	spin_unlock_bh(&ctx->resources->lock);
 	*lock_dropped = true;
 	/* iput sleeps */
 	iput(inode);
@@ -325,7 +325,7 @@ static void track_resource(struct scribe_context *ctx,
 	}
 
 	resources = ctx->resources;
-	spin_lock(&resources->lock);
+	spin_lock_bh(&resources->lock);
 	if (likely(!res->ctx)) {
 		if (resource_ops[type].acquire)
 			resource_ops[type].acquire(ctx, res, &lock_dropped);
@@ -355,10 +355,10 @@ void scribe_reset_resource(struct scribe_resource *res)
 		return;
 	resources = res->ctx->resources;
 
-	spin_lock(&resources->lock);
+	spin_lock_bh(&resources->lock);
 	__scribe_reset_resource(res, &lock_dropped);
 	if (!lock_dropped)
-		spin_unlock(&resources->lock);
+		spin_unlock_bh(&resources->lock);
 }
 
 void scribe_reset_resource_container(struct scribe_container *container)
@@ -387,13 +387,13 @@ retry:
 	resources = ctx->resources;
 
 	lock_dropped = false;
-	spin_lock(&resources->lock);
+	spin_lock_bh(&resources->lock);
 	rcu_read_unlock();
 
 	__scribe_reset_resource(&hres->res, &lock_dropped);
 	if (lock_dropped)
 		goto retry;
-	spin_unlock(&resources->lock);
+	spin_unlock_bh(&resources->lock);
 	goto retry;
 }
 
@@ -404,13 +404,13 @@ void scribe_reset_resources(struct scribe_resources *resources)
 
 retry:
 	lock_dropped = false;
-	spin_lock(&resources->lock);
+	spin_lock_bh(&resources->lock);
 	list_for_each_entry_safe(res, tmp, &resources->tracked, node) {
 		__scribe_reset_resource(res, &lock_dropped);
 		if (lock_dropped)
 			goto retry;
 	}
-	spin_unlock(&resources->lock);
+	spin_unlock_bh(&resources->lock);
 }
 
 void scribe_free_resources(struct scribe_resources *resources)
