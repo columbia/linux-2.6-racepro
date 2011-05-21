@@ -17,6 +17,7 @@
 #include <linux/pid_namespace.h>
 #include <linux/ipc_namespace.h>
 #include <linux/writeback.h>
+#include <linux/magic.h>
 #include <asm/cmpxchg.h>
 
 /*
@@ -1328,7 +1329,18 @@ static inline int inode_need_explicit_locking(struct file *file,
 	 * It's also better in terms of performance.
 	 */
 	mode = inode->i_mode;
-	return S_ISFIFO(mode) || S_ISSOCK(mode);
+	if (S_ISFIFO(mode) || S_ISSOCK(mode))
+		return true;
+
+	/*
+	 * For /proc, we don't need to synchronize the inode because they are
+	 * all fake anyways. We save the data read from any files in /proc
+	 * (see is_deterministic() in fs/read_write.c).
+	 */
+	if (inode->i_sb->s_magic == PROC_SUPER_MAGIC)
+		return true;
+
+	return false;
 }
 
 static int __lock_inode(struct scribe_ps *scribe,
