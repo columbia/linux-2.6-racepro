@@ -720,14 +720,11 @@ static struct task_struct *find_new_reaper(struct task_struct *father)
 	}
 
 	if (unlikely(pid_ns->child_reaper == father)) {
-		pid_t pid = task_pid_vnr(father);
 		write_unlock_irq(&tasklist_lock);
-		scribe_unlock_pid(pid);
 		if (unlikely(pid_ns == &init_pid_ns))
 			panic("Attempted to kill init!");
 
 		zap_pid_ns_processes(pid_ns);
-		scribe_lock_pid_write(pid);
 		write_lock_irq(&tasklist_lock);
 		/*
 		 * We can not clear ->child_reaper or leave it alone.
@@ -914,7 +911,8 @@ static void forget_original_parent(struct task_struct *father)
  * Send signals to all our closest relatives so that they know
  * to properly mourn us..
  */
-static void __exit_notify(struct task_struct *tsk, int group_dead)
+static void __exit_notify(struct task_struct *tsk, int group_dead,
+			  pid_t lock_pid)
 {
 	int signal;
 	void *cookie;
@@ -929,6 +927,9 @@ static void __exit_notify(struct task_struct *tsk, int group_dead)
 	 */
 	forget_original_parent(tsk);
 	exit_task_namespaces(tsk);
+
+	if (lock_pid > 0)
+		scribe_lock_pid_write(lock_pid);
 
 	write_lock_irq(&tasklist_lock);
 	if (group_dead)
@@ -969,27 +970,26 @@ static void __exit_notify(struct task_struct *tsk, int group_dead)
 	/* If the process is dead, release it - nobody will wait for it */
 	if (signal == DEATH_REAP)
 		release_task(tsk);
+
+	if (lock_pid > 0)
+		scribe_unlock_pid(lock_pid);
 }
 
 #ifdef CONFIG_SCRIBE
 static void exit_notify(struct task_struct *tsk, int group_dead)
 {
-	pid_t pid = task_pid_vnr(tsk);
-
 	if (scribe_resource_prepare()) {
 		scribe_kill(current->scribe->ctx, -ENOMEM);
-		__exit_notify(tsk, group_dead);
+		__exit_notify(tsk, group_dead, -1);
 		return;
 	}
 
-	scribe_lock_pid_write(pid);
-	__exit_notify(tsk, group_dead);
-	scribe_unlock_pid(pid);
+	__exit_notify(tsk, group_dead, task_pid_vnr(tsk));
 }
 #else
 static void exit_notify(struct task_struct *tsk, int group_dead)
 {
-	__exit_notify(tsk, group_dead);
+	__exit_notify(tsk, group_dead, -1);
 }
 #endif
 
