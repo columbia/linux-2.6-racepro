@@ -816,9 +816,7 @@ extern void scribe_mem_reload(struct scribe_ps *scribe);
 extern int do_scribe_page(struct scribe_ps *scribe, struct mm_struct *mm,
 			  struct vm_area_struct *vma, unsigned long address,
 			  pte_t *pte, pmd_t *pmd, unsigned int flags);
-extern void scribe_split_vma(struct vm_area_struct *vma,
-			     struct vm_area_struct *new);
-extern void scribe_vma_link(struct vm_area_struct *vma);
+extern void scribe_add_vma(struct vm_area_struct *vma);
 extern void scribe_remove_vma(struct vm_area_struct *vma);
 extern void scribe_clear_shadow_pte_locked(struct mm_struct *mm,
 					   struct vm_area_struct *vma,

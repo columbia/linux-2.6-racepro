@@ -473,7 +473,7 @@ static void vma_link(struct mm_struct *mm, struct vm_area_struct *vma,
 	mm->map_count++;
 	validate_mm(mm);
 
-	scribe_vma_link(vma);
+	scribe_add_vma(vma);
 }
 
 /*
@@ -616,6 +616,7 @@ again:			remove_next = 1 + (end > next->vm_end);
 		 * vma_merge has merged next into vma, and needs
 		 * us to remove next before dropping the locks.
 		 */
+		scribe_remove_vma(next);
 		__vma_unlink(mm, next, vma);
 		if (file)
 			__remove_shared_vm_struct(next, file, mapping);
@@ -1953,6 +1954,9 @@ static int __split_vma(struct mm_struct * mm, struct vm_area_struct * vma,
 
 	/* most fields are the same, copy all, and then fixup */
 	*new = *vma;
+#ifdef CONFIG_SCRIBE
+	new->vm_flags &= ~VM_SCRIBED;
+#endif
 
 	INIT_LIST_HEAD(&new->anon_vma_chain);
 
@@ -1990,7 +1994,7 @@ static int __split_vma(struct mm_struct * mm, struct vm_area_struct * vma,
 
 	/* Success. */
 	if (!err) {
-		scribe_split_vma(vma, new);
+		scribe_add_vma(new);
 		return 0;
 	}
 

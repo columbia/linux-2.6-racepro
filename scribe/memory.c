@@ -2169,29 +2169,7 @@ set_pte:
 
 /******************************************************************************/
 
-void scribe_split_vma(struct vm_area_struct *vma,
-		      struct vm_area_struct *new)
-{
-	struct scribe_ps *scribe = get_scribe_from_mm(vma->vm_mm);
-	void *object;
-
-	if (!should_handle_mm(scribe))
-		return;
-
-	if (!(vma->vm_flags & VM_SCRIBED))
-		return;
-
-	if (!(new->vm_flags & VM_SHARED))
-		return;
-
-	WARN_ON(new->vm_flags & VM_SCRIBED);
-	new->vm_flags |= VM_SCRIBED;
-
-	object = new->vm_file->f_dentry->d_inode;
-	get_obj_ref(scribe->ctx, object);
-}
-
-void scribe_vma_link(struct vm_area_struct *vma)
+void scribe_add_vma(struct vm_area_struct *vma)
 {
 	struct scribe_ps *scribe = get_scribe_from_mm(vma->vm_mm);
 	struct scribe_obj_ref *ref;
@@ -2205,7 +2183,7 @@ void scribe_vma_link(struct vm_area_struct *vma)
 
 	/*
 	 * When a new shared memory region appears, we want to get a reference
-	 * on it. There is only one ref per mm_struct on inodes
+	 * on the file.
 	 */
 	WARN_ON(vma->vm_flags & VM_SCRIBED);
 	vma->vm_flags |= VM_SCRIBED;
@@ -2240,9 +2218,6 @@ void scribe_remove_vma(struct vm_area_struct *vma)
 
 	/* FIXME do we need to unlock i_mmap_lock ? */
 	if (vma->vm_flags & VM_SHARED) {
-		/* FIXME maybe we should not remove the mapping if the
-		 * address range doesn't hit the whole vma ?
-		 */
 		if (vma->vm_flags & VM_SCRIBED) {
 			put_obj(scribe->ctx, vma->vm_file->f_dentry->d_inode);
 			vma->vm_flags &= ~VM_SCRIBED;
