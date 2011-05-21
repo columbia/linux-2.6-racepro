@@ -403,7 +403,7 @@ extern struct scribe_bookmark *scribe_bookmark_alloc(
 extern void scribe_bookmark_free(struct scribe_bookmark *bmark);
 extern void scribe_bookmark_reset(struct scribe_bookmark *bmark);
 extern int scribe_bookmark_request(struct scribe_bookmark *bmark);
-extern void scribe_bookmark_point(void);
+extern void scribe_bookmark_point(unsigned int type);
 extern int scribe_bookmark_resume(struct scribe_bookmark *bmark);
 
 /* Resources */

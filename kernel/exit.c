@@ -1032,7 +1032,7 @@ static void scribe_do_exit(struct task_struct *p, long code)
 	 */
 	scribe_commit_syscall(scribe, task_pt_regs(p), code);
 
-	scribe_bookmark_point();
+	scribe_bookmark_point(SCRIBE_BOOKMARK_POST_SYSCALL);
 
 	__scribe_detach(scribe);
 

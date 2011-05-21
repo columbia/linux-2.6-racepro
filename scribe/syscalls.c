@@ -273,21 +273,8 @@ void scribe_enter_syscall(struct pt_regs *regs)
 	if (is_scribe_syscall(scribe->nr_syscall))
 		return;
 
-	/* execute pending injects */
-	if (scribe_inject_action(scribe) < 0)
-		return;
-
 	/* It should already be set to false, but let's be sure */
 	scribe->need_syscall_ret = false;
-	if (should_scribe_syscall_ret(scribe) ||
-	    is_interruptible_syscall(scribe->nr_syscall))
-		__scribe_need_syscall_ret(scribe);
-
-	if (should_scribe_syscalls(scribe) &&
-	    should_scribe_regs(scribe) &&
-	    scribe_regs(scribe, regs))
-		return;
-
 
 	scribe_data_det();
 
@@ -298,16 +285,27 @@ void scribe_enter_syscall(struct pt_regs *regs)
 
 	__scribe_forbid_uaccess(scribe);
 
-	scribe_bookmark_point();
+	scribe_bookmark_point(SCRIBE_BOOKMARK_PRE_SYSCALL);
+
+	/* execute pending injects */
+	if (scribe_inject_action(scribe) < 0)
+		return;
 
 	if (scribe_maybe_detach(scribe))
 		return;
 
 	/* FIXME signals needs the return value */
-#if 0
 	if (!should_scribe_syscalls(scribe))
 		return;
-#endif
+
+	if (should_scribe_syscall_ret(scribe) ||
+	    is_interruptible_syscall(scribe->nr_syscall))
+		__scribe_need_syscall_ret(scribe);
+
+	if (should_scribe_syscalls(scribe) &&
+	    should_scribe_regs(scribe) &&
+	    scribe_regs(scribe, regs))
+		return;
 
 	recalc_sigpending();
 }
@@ -394,7 +392,7 @@ void scribe_exit_syscall(struct pt_regs *regs)
 	scribe_commit_syscall(scribe, regs,
 			      syscall_get_return_value(current, regs));
 
-	scribe_bookmark_point();
+	scribe_bookmark_point(SCRIBE_BOOKMARK_POST_SYSCALL);
 
 	if (scribe_maybe_detach(scribe))
 		return;

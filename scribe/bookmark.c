@@ -172,7 +172,8 @@ static void sync_on_bookmark(struct scribe_bookmark *bmark)
 }
 
 void scribe_bookmark_point_record(struct scribe_ps *scribe,
-				  struct scribe_bookmark *bmark)
+				  struct scribe_bookmark *bmark,
+				  unsigned int type)
 {
 	int ret;
 
@@ -186,6 +187,7 @@ void scribe_bookmark_point_record(struct scribe_ps *scribe,
 
 	ret = scribe_queue_new_event(scribe->queue,
 				     SCRIBE_EVENT_BOOKMARK,
+				     .type = type,
 				     .id = bmark->id, .npr = bmark->npr_total);
 	if (ret < 0)
 		scribe_kill(scribe->ctx, ret);
@@ -194,7 +196,8 @@ void scribe_bookmark_point_record(struct scribe_ps *scribe,
 }
 
 void scribe_bookmark_point_replay(struct scribe_ps *scribe,
-				  struct scribe_bookmark *bmark)
+				  struct scribe_bookmark *bmark,
+				  unsigned int type)
 {
 	struct scribe_event *generic_event;
 	struct scribe_event_bookmark *event;
@@ -206,6 +209,10 @@ void scribe_bookmark_point_replay(struct scribe_ps *scribe,
 			return;
 
 		if (generic_event->type != SCRIBE_EVENT_BOOKMARK)
+			return;
+
+		event = (void*)generic_event;
+		if (event->type != type)
 			return;
 
 		event = scribe_dequeue_event_specific(scribe,
@@ -230,7 +237,7 @@ void scribe_bookmark_point_replay(struct scribe_ps *scribe,
 	}
 }
 
-void scribe_bookmark_point(void)
+void scribe_bookmark_point(unsigned int type)
 {
 	struct scribe_ps *scribe = current->scribe;
 	struct scribe_bookmark *bmark;
@@ -241,9 +248,9 @@ void scribe_bookmark_point(void)
 	bmark = scribe->ctx->bmark;
 
 	if (is_recording(scribe))
-		scribe_bookmark_point_record(scribe, bmark);
+		scribe_bookmark_point_record(scribe, bmark, type);
 	else
-		scribe_bookmark_point_replay(scribe, bmark);
+		scribe_bookmark_point_replay(scribe, bmark, type);
 }
 
 int scribe_bookmark_resume(struct scribe_bookmark *bmark)
