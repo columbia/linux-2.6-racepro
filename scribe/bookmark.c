@@ -78,12 +78,21 @@ static int scribe_wait_all_sync(struct scribe_context *ctx)
 
 static int prealloc_reached_event(struct scribe_bookmark *bmark)
 {
+	struct scribe_event_bookmark_reached *reached_event;
+
 	if (bmark->reached_event)
 		return 0;
 
-	bmark->reached_event = scribe_alloc_event(SCRIBE_EVENT_BOOKMARK_REACHED);
-	if (!bmark->reached_event)
+	reached_event = scribe_alloc_event(SCRIBE_EVENT_BOOKMARK_REACHED);
+	if (!reached_event)
 		return -ENOMEM;
+
+	spin_lock(&bmark->lock);
+	if (bmark->reached_event)
+		scribe_free_event(reached_event);
+	else
+		bmark->reached_event = reached_event;
+	spin_unlock(&bmark->lock);
 
 	return 0;
 }
@@ -129,28 +138,29 @@ int scribe_bookmark_request(struct scribe_bookmark *bmark)
 
 static void sync_on_bookmark(struct scribe_bookmark *bmark)
 {
-	bool last = false;
+	struct scribe_event_bookmark_reached *reached_event = NULL;
 
 	spin_lock(&bmark->lock);
 	if (!bmark->npr) {
 		bmark->npr = bmark->npr_total;
 		bmark->resume = false;
 	}
-	if (!--bmark->npr)
-		last = true;
-	spin_unlock(&bmark->lock);
-
-	if (last) {
+	if (!--bmark->npr) {
 		/*
 		 * Only the last thread gets to send the notification so that
 		 * we guarentee that all tasks are paused when userspace gets
 		 * the notification
 		 */
-		bmark->reached_event->id = bmark->id;
-		bmark->reached_event->npr = bmark->npr_total;
-		scribe_queue_event_stream(&bmark->ctx->notifications,
-					  bmark->reached_event);
+		reached_event = bmark->reached_event;
 		bmark->reached_event = NULL;
+	}
+	spin_unlock(&bmark->lock);
+
+	if (reached_event) {
+		reached_event->id = bmark->id;
+		reached_event->npr = bmark->npr_total;
+		scribe_queue_event_stream(&bmark->ctx->notifications,
+					  reached_event);
 	}
 
 	wait_event(bmark->wait, bmark->resume ||

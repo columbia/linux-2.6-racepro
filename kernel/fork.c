@@ -366,9 +366,6 @@ static int dup_mmap(struct mm_struct *mm, struct mm_struct *oldmm)
 		if (anon_vma_fork(tmp, mpnt))
 			goto fail_nomem_anon_vma_fork;
 		tmp->vm_flags &= ~VM_LOCKED;
-#ifdef CONFIG_SCRIBE
-		tmp->vm_flags &= ~VM_SCRIBED;
-#endif
 		tmp->vm_mm = mm;
 		tmp->vm_next = NULL;
 		file = tmp->vm_file;

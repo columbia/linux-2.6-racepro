@@ -3186,7 +3186,7 @@ scribe_retry:
 
 	ret = handle_pte_fault(scribe, mm, vma, address, pte, pmd, flags);
 	if (may_be_scribed(scribe) && scribe->mm &&
-	    ret != VM_FAULT_SCRIBE && ret != VM_FAULT_OOM &&
+	    !(ret & (VM_FAULT_SCRIBE | VM_FAULT_ERROR)) &&
 	    !(flags & FAULT_FLAG_NOSCRIBE))
 		goto scribe_retry;
 

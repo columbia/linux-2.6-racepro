@@ -35,10 +35,10 @@ struct scribe_handle *get_scribe_handle(struct scribe_container *container,
 	if (handle)
 		return handle;
 
-	spin_lock(&container->lock);
+	spin_lock_bh(&container->lock);
 	handle = __get_handle(container, ctx);
 	if (unlikely(handle)) {
-		spin_unlock(&container->lock);
+		spin_unlock_bh(&container->lock);
 		return handle;
 	}
 
@@ -49,7 +49,7 @@ struct scribe_handle *get_scribe_handle(struct scribe_container *container,
 
 	list_add_rcu(&handle->node, &container->handles);
 
-	spin_unlock(&container->lock);
+	spin_unlock_bh(&container->lock);
 
 	return handle;
 }
@@ -65,9 +65,9 @@ void remove_scribe_handle(struct scribe_handle *handle)
 {
 	struct scribe_container *container = handle->container;
 
-	spin_lock(&container->lock);
+	spin_lock_bh(&container->lock);
 	list_del_rcu(&handle->node);
-	spin_unlock(&container->lock);
+	spin_unlock_bh(&container->lock);
 	call_rcu(&handle->rcu, free_rcu_handle);
 }
 
