@@ -451,17 +451,12 @@ static int get_all_objects(struct scribe_context *ctx, struct mm_struct *mm)
 	struct vm_area_struct *vma;
 
 	for (vma = mm->mmap; vma; vma = vma->vm_next) {
-		if (!(vma->vm_flags & VM_SHARED))
-			continue;
-
-		WARN_ON(vma->vm_flags & VM_SCRIBED);
-		vma->vm_flags |= VM_SCRIBED;
-
-		ref = get_obj_ref(ctx, vma->vm_file->f_dentry->d_inode);
-
-		if (IS_ERR(ref)) {
-			WARN_ON(1); /* FIXME do the proper cleaning */
-			return PTR_ERR(ref);
+		if (vma->vm_flags & VM_SHARED) {
+			ref = get_obj_ref(ctx, vma->vm_file->f_dentry->d_inode);
+			if (IS_ERR(ref)) {
+				WARN_ON(1); /* FIXME do the proper cleaning */
+				return PTR_ERR(ref);
+			}
 		}
 	}
 
@@ -473,14 +468,8 @@ static void put_all_objects(struct scribe_context *ctx, struct mm_struct *mm)
 	struct vm_area_struct *vma;
 
 	for (vma = mm->mmap; vma; vma = vma->vm_next) {
-		if (!(vma->vm_flags & VM_SHARED))
-			continue;
-
-		if (vma->vm_flags & VM_SCRIBED) {
-			vma->vm_flags &= ~VM_SCRIBED;
+		if (vma->vm_flags & VM_SHARED)
 			put_obj(ctx, vma->vm_file->f_dentry->d_inode);
-		}
-		WARN_ON(vma->vm_flags & VM_SCRIBED);
 	}
 }
 
@@ -733,11 +722,10 @@ static void scribe_page_release_ownership(struct scribe_ps *scribe,
 		return;
 
 	for (vma = mm->mmap; vma; vma = vma->vm_next) {
-		if (!(vma->vm_flags & VM_SHARED))
-			continue;
-
-		object = vma->vm_file->f_dentry->d_inode;
-		__scribe_page_release_ownership(scribe, object);
+		if (vma->vm_flags & VM_SHARED) {
+			object = vma->vm_file->f_dentry->d_inode;
+			__scribe_page_release_ownership(scribe, object);
+		}
 	}
 }
 
@@ -1669,6 +1657,8 @@ static inline int is_vma_scribed(struct scribe_ps *scribe, struct vm_area_struct
 /* Returns 1 if we went alone, 0 if not, -ENOMEM if the allocation failed */
 static int check_for_aloneness(struct scribe_ps *scribe)
 {
+	struct scribe_page_key key;
+
 	if (is_sharing_mm(scribe->p->mm))
 		return 0;
 
@@ -1679,6 +1669,9 @@ static int check_for_aloneness(struct scribe_ps *scribe)
 	scribe->mm->is_alone = 1;
 
 	scribe_page_release_ownership(scribe, ONLY_ANONYMOUS_PAGES);
+	key.object = scribe->p->mm;
+	key.offset = OFFSET_ALL;
+	scribe_remove_page(scribe->ctx, &key);
 
 	if (scribe_queue_new_event(scribe->queue,
 				   SCRIBE_EVENT_MEM_ALONE))
@@ -1961,6 +1954,7 @@ static int scribe_page_access_replay(struct scribe_ps *scribe,
 		struct scribe_page *page, unsigned long address,
 		int write_access)
 {
+	struct scribe_page_key key;
 	struct scribe_event *event;
 	unsigned long page_addr;
 	int rw_flag;
@@ -2021,6 +2015,9 @@ static int scribe_page_access_replay(struct scribe_ps *scribe,
 
 		down_read(&mm->mmap_sem);
 		scribe_page_release_ownership(scribe, ONLY_ANONYMOUS_PAGES);
+		key.object = mm;
+		key.offset = OFFSET_ALL;
+		scribe_remove_page(scribe->ctx, &key);
 		return -EAGAIN;
 	}
 
@@ -2185,8 +2182,6 @@ void scribe_add_vma(struct vm_area_struct *vma)
 	 * When a new shared memory region appears, we want to get a reference
 	 * on the file.
 	 */
-	WARN_ON(vma->vm_flags & VM_SCRIBED);
-	vma->vm_flags |= VM_SCRIBED;
 
 	object = vma->vm_file->f_dentry->d_inode;
 	ref = get_obj_ref(scribe->ctx, object);
@@ -2194,40 +2189,21 @@ void scribe_add_vma(struct vm_area_struct *vma)
 	WARN(IS_ERR(ref), "Cannot get_obj_ref()\n");
 }
 
-/*
- * Okey this is dirty: when unmaping a region, we must clear the corresponding
- * pte's in the private page table, this does the trick.
- * we also need to drop reference on inodes contexts (if shared vma)
- * remove context (if not shared vma).
- */
 void scribe_remove_vma(struct vm_area_struct *vma)
 {
 	struct mm_struct *mm = vma->vm_mm;
 	struct scribe_ps *scribe = get_scribe_from_mm(mm);
-	unsigned long address;
-	struct scribe_page_key key;
 
 	if (!should_handle_mm(scribe))
 		return;
 
-	/* FIXME we should call, is_vma_could_be_scribed or something
-	 * if scribe->mm->alone == 1, is_vma_scribed() returns true ...
-	 */
-	if (!is_vma_scribed(scribe, vma))
-		return;
+	if (vma->vm_flags & VM_SHARED)
+		put_obj(scribe->ctx, vma->vm_file->f_dentry->d_inode);
 
-	/* FIXME do we need to unlock i_mmap_lock ? */
-	if (vma->vm_flags & VM_SHARED) {
-		if (vma->vm_flags & VM_SCRIBED) {
-			put_obj(scribe->ctx, vma->vm_file->f_dentry->d_inode);
-			vma->vm_flags &= ~VM_SCRIBED;
-		}
-	} else {
-		key.object = mm;
-		for (address = vma->vm_start; address < vma->vm_end;
-		     address += PAGE_SIZE) {
-			key.offset = address;
-			scribe_remove_page(scribe->ctx, &key);
-		}
-	}
+	/*
+	 * We don't want to remove any pages. It may suck some memory, but
+	 * since we don't take any synchronization lock on a page fault,
+	 * we cannot reset the serial number of the pages to free some memory.
+	 * We'll be able to free some memory when we'll be alone
+	 */
 }
