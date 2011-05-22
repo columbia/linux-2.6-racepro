@@ -330,12 +330,7 @@ struct scribe_context {
 
 	struct scribe_bookmark *bmark;
 
-	/* memory page hash table */
-	spinlock_t		mem_hash_lock;
-	struct hlist_head	*mem_hash;
-	/* memory objects ref cnt */
-	spinlock_t		mem_list_lock;
-	struct list_head	mem_list;
+	struct scribe_mm_context *mm_ctx;
 };
 
 static inline void scribe_get_context(struct scribe_context *ctx)
@@ -803,8 +798,10 @@ extern int is_kernel_copy(void);
 #define MEM_SYNC_IN		1
 #define MEM_SYNC_OUT		2
 #define MEM_SYNC_SLEEP		4
-extern struct hlist_head *scribe_alloc_mem_hash(void);
-extern void scribe_free_mem_hash(struct hlist_head *hash);
+
+extern struct scribe_mm_context *scribe_alloc_mm_context(void);
+extern void scribe_free_mm_context(struct scribe_mm_context *mm_ctx);
+
 extern int scribe_mem_init_st(struct scribe_ps *scribe);
 
 extern void scribe_mem_exit_st(struct scribe_ps *scribe);
