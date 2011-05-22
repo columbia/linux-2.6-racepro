@@ -596,10 +596,6 @@ void scribe_pump_abort_start(struct scribe_pump *pump)
 	pump->kthread = NULL;
 }
 
-/*
- * The owner gives its logfile reference: fput() should not be performed on
- * the caller's side.
- */
 void scribe_pump_start(struct scribe_pump *pump, int state,
 		       struct file *logfile)
 {

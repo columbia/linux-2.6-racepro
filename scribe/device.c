@@ -55,6 +55,7 @@ static int do_start(struct scribe_dev *dev, int state,
 		goto err_file;
 
 	scribe_pump_start(dev->pump, state, logfile);
+	fput(logfile);
 	return 0;
 
 err_file:
