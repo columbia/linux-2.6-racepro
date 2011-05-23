@@ -679,9 +679,12 @@ static void scribe_handle_signal(struct scribe_ps *scribe,
 	}
 
 	if (is_replaying(scribe)) {
-		if (should_scribe_sig_extra(scribe))
+		if (should_scribe_sig_extra(scribe)) {
 			*h_event = scribe_dequeue_event_specific(scribe,
 						SCRIBE_EVENT_SIG_HANDLED);
+			if (IS_ERR(*h_event))
+				*h_event = NULL;
+		}
 		if (should_scribe_sig_cookie(scribe)) {
 			/* Getting rid of the signal cookie event if present */
 			event = scribe_peek_event(scribe->queue, SCRIBE_WAIT);
