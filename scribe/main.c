@@ -12,6 +12,7 @@
 #include <linux/scribe.h>
 
 extern int scribe_init_device(void);
+extern void scribe_mem_init_caches(void);
 
 static int __init scribe_init(void)
 {
@@ -20,6 +21,7 @@ static int __init scribe_init(void)
 	/* TODO clean exit path */
 	if ((err = scribe_init_device()))
 		return err;
+	scribe_mem_init_caches();
 	return 0;
 }
 
