@@ -200,6 +200,14 @@ struct scribe_resource_handle {
 	struct scribe_resource res;
 };
 
+static struct kmem_cache *hres_cache;
+
+void __init scribe_res_init_caches(void)
+{
+	hres_cache = KMEM_CACHE(scribe_resource_handle,
+				SLAB_HWCACHE_ALIGN | SLAB_PANIC);
+}
+
 static inline int use_spinlock(struct scribe_resource *res)
 {
 	return res->type & SCRIBE_RES_SPINLOCK;
@@ -533,7 +541,7 @@ int scribe_resource_pre_alloc(struct scribe_res_user *user,
 	}
 
 	while (user->num_pre_alloc_hres < MAX_PRE_ALLOC) {
-		hres = kmalloc(sizeof(*hres), GFP_KERNEL);
+		hres = kmem_cache_alloc(hres_cache, GFP_KERNEL);
 		if (!hres)
 			return -ENOMEM;
 
@@ -598,7 +606,7 @@ void scribe_resource_exit_user(struct scribe_res_user *user)
 	list_for_each_entry_safe(hres, htmp,
 				 &user->pre_alloc_hres, handle.node) {
 		list_del(&hres->handle.node);
-		kfree(hres);
+		kmem_cache_free(hres_cache, hres);
 	}
 
 	list_for_each_entry_safe(lockr, ltmp,
@@ -1150,7 +1158,7 @@ static void free_resource_handle(struct scribe_handle *handle)
 {
 	struct scribe_resource_handle *hres;
 	hres = container_of(handle, struct scribe_resource_handle, handle);
-	kfree(hres);
+	kmem_cache_free(hres_cache, hres);
 }
 
 struct get_new_arg {

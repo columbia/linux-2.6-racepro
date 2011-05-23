@@ -36,11 +36,13 @@ struct scribe_resource {
 	int id;
 	int type;
 
+	/* The write part is on a different cache line */
+
 	/*
 	 * @first_read_serial is used during the recording to save the first
 	 * serial number of read accesses.
 	 */
-	unsigned long first_read_serial;
+	unsigned long first_read_serial  ____cacheline_aligned_in_smp;
 
 	/*
 	 * An atomic type is needed here because the replay doesn't take any
