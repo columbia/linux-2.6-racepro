@@ -169,12 +169,9 @@ static void context_idle(struct scribe_context *ctx,
 		scribe_free_backtrace(backtrace);
 	}
 
-	if (IS_ERR_OR_NULL(reason)) {
+	if (IS_ERR_OR_NULL(reason))
 		ctx->last_error = ctx->idle_event->error = PTR_ERR(reason);
-		WARN(reason, "scribe: Context going idle with error=%ld\n",
-		     PTR_ERR(reason));
-	} else {
-		WARN(1, "scribe: Replay diverged\n");
+	else {
 		ctx->last_error = ctx->idle_event->error = -EDIVERGE;
 		scribe_queue_event_stream(&ctx->notifications, reason);
 	}
