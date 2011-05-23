@@ -2896,6 +2896,7 @@ retry:
 		rcu_read_unlock();
 		scribe_unlock_pid_discard(iter.tgid);
 		iter.tgid += 1;
+		iter.task = NULL;
 		goto retry;
 	}
 	get_task_struct(iter.task);
@@ -2944,6 +2945,7 @@ static struct tgid_iter scribe_next_tgid_replay(struct scribe_ps *scribe,
 		rcu_read_unlock();
 		scribe_unlock_pid_discard(iter.tgid);
 		iter.tgid += 1;
+		iter.task = NULL;
 		return iter;
 	}
 	get_task_struct(iter.task);
