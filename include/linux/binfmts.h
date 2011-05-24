@@ -57,6 +57,9 @@ struct linux_binprm{
 	unsigned interp_flags;
 	unsigned interp_data;
 	unsigned long loader, exec;
+#ifdef CONFIG_SCRIBE
+	pid_t locked_pid;
+#endif
 };
 
 #define BINPRM_FLAGS_ENFORCE_NONDUMP_BIT 0
