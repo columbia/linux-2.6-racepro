@@ -213,6 +213,33 @@ static inline int use_spinlock(struct scribe_resource *res)
 	return res->type & SCRIBE_RES_SPINLOCK;
 }
 
+#ifdef CONFIG_LOCKDEP
+struct lock_desc {
+	struct lock_class_key key;
+	const char *name;
+};
+
+static struct lock_desc lock_desc[SCRIBE_RES_NUM_TYPES] = {
+#define LOCK_DESC(name_) [name_] = { .name = #name_ }
+	LOCK_DESC(SCRIBE_RES_TYPE_INODE),
+	LOCK_DESC(SCRIBE_RES_TYPE_FILE),
+	LOCK_DESC(SCRIBE_RES_TYPE_FILES_STRUCT),
+	LOCK_DESC(SCRIBE_RES_TYPE_PID),
+	LOCK_DESC(SCRIBE_RES_TYPE_FUTEX),
+	LOCK_DESC(SCRIBE_RES_TYPE_IPC),
+	LOCK_DESC(SCRIBE_RES_TYPE_MMAP),
+	LOCK_DESC(SCRIBE_RES_TYPE_PPID)
+};
+
+#define set_lock_class(lock, type) do {					\
+	struct lock_desc *ld = &lock_desc[type & SCRIBE_RES_TYPE_MASK];	\
+	lockdep_set_class_and_name(lock, &ld->key, ld->name);		\
+} while (0)
+
+#else
+#define set_lock_class(lock, type) do { } while (0)
+#endif
+
 void scribe_init_resource(struct scribe_resource *res, int type)
 {
 	res->ctx = NULL;
@@ -222,10 +249,13 @@ void scribe_init_resource(struct scribe_resource *res, int type)
 	res->first_read_serial = -1;
 	atomic_set(&res->serial, 0);
 
-	if (use_spinlock(res))
+	if (use_spinlock(res)) {
 		spin_lock_init(&res->lock.spinlock);
-	else
+		set_lock_class(&res->lock.spinlock, type);
+	} else {
 		init_rwsem(&res->lock.semaphore);
+		set_lock_class(&res->lock.semaphore, type);
+	}
 
 	init_waitqueue_head(&res->wait);
 }
@@ -681,22 +711,6 @@ static bool is_locking_necessary(struct scribe_ps *scribe,
 	return false;
 }
 
-#ifdef CONFIG_DEBUG_LOCK_ALLOC
-static int get_lockdep_subclass(int type, int nested)
-{
-	/* MAX_LOCKDEP_SUBCLASSES is small, trying not to overflow it */
-	type &= SCRIBE_RES_TYPE_MASK;
-	if (nested)
-		type += SCRIBE_RES_NUM_TYPES;
-	return type;
-}
-#else
-static inline int get_lockdep_subclass(int type, int nested)
-{
-	return 0;
-}
-#endif
-
 static size_t get_lock_region_desc(struct scribe_ps *scribe,
 				   char *buffer, size_t size,
 				   struct scribe_lock_region *lock_region)
@@ -743,30 +757,28 @@ static int __do_lock_record(struct scribe_ps *scribe,
 			    struct scribe_resource *res,
 			    int do_write, int do_intr, int nested)
 {
-	int class;
 	int ret;
-
-	class = get_lockdep_subclass(res->type, nested);
+	nested = !!nested;
 
 	if (use_spinlock(res)) {
-		spin_lock_nested(&res->lock.spinlock, class);
+		spin_lock_nested(&res->lock.spinlock, nested);
 		return 0;
 	}
 
 	if (!do_intr) {
 		if (do_write)
-			down_write_nested(&res->lock.semaphore, class);
+			down_write_nested(&res->lock.semaphore, nested);
 		else
-			down_read_nested(&res->lock.semaphore, class);
+			down_read_nested(&res->lock.semaphore, nested);
 		return 0;
 	}
 
 	if (do_write)
 		ret = wait_event_interruptible_exclusive(res->wait,
-		  down_write_trylock_nested(&res->lock.semaphore, class));
+		  down_write_trylock_nested(&res->lock.semaphore, nested));
 	else
 		ret = wait_event_interruptible(res->wait,
-		  down_read_trylock_nested(&res->lock.semaphore, class));
+		  down_read_trylock_nested(&res->lock.semaphore, nested));
 
 	return ret;
 }
