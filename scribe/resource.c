@@ -236,6 +236,13 @@ static struct lock_desc lock_desc[SCRIBE_RES_NUM_TYPES] = {
 	lockdep_set_class_and_name(lock, &ld->key, ld->name);		\
 } while (0)
 
+bool is_scribe_resource_key(struct lock_class_key *key)
+{
+	char *ptr = (char *)key;
+	char *base = (char *)&lock_desc;
+	return base <= ptr && ptr < (base + sizeof(lock_desc));
+}
+
 #else
 #define set_lock_class(lock, type) do { } while (0)
 #endif

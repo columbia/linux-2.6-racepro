@@ -63,6 +63,10 @@ void scribe_reset_resource(struct scribe_resource *res);
 struct scribe_container;
 void scribe_reset_resource_container(struct scribe_container *container);
 
+#ifdef CONFIG_LOCKDEP
+bool is_scribe_resource_key(struct lock_class_key *key);
+#endif
+
 #endif /* __KERNEL__ */
 
 /*
