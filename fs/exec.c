@@ -1140,15 +1140,44 @@ EXPORT_SYMBOL(setup_new_exec);
  */
 int prepare_bprm_creds(struct linux_binprm *bprm)
 {
+	struct scribe_ps *scribe = current->scribe;
+	pid_t pid = task_pid_vnr(current);
+	int ret;
+
+	if (scribe_resource_prepare()) {
+		scribe_kill(current->scribe->ctx, -ENOMEM);
+		return -ENOMEM;
+	}
+
+	if (is_scribed(scribe)) {
+		bprm->locked_pid = pid;
+
+		scribe_need_syscall_ret(scribe);
+		if (is_replaying(scribe) && scribe->orig_ret < 0)
+			bprm->locked_pid = 0;
+	}
+
+	if (bprm->locked_pid)
+		scribe_lock_pid_read(bprm->locked_pid);
+
+	ret = -ERESTARTNOINTR;
 	if (mutex_lock_interruptible(&current->cred_guard_mutex))
-		return -ERESTARTNOINTR;
+		goto out;
 
 	bprm->cred = prepare_exec_creds();
 	if (likely(bprm->cred))
 		return 0;
 
 	mutex_unlock(&current->cred_guard_mutex);
-	return -ENOMEM;
+	ret = -ENOMEM;
+	/* fall through */
+
+out:
+	if (bprm->locked_pid) {
+		scribe_unlock_pid_discard(bprm->locked_pid);
+		bprm->locked_pid = 0;
+	}
+	return ret;
 }
 
 void free_bprm(struct linux_binprm *bprm)
@@ -1156,6 +1185,8 @@ void free_bprm(struct linux_binprm *bprm)
 	free_arg_pages(bprm);
 	if (bprm->cred) {
 		mutex_unlock(&current->cred_guard_mutex);
+		if (bprm->locked_pid)
+			scribe_unlock_pid_discard(bprm->locked_pid);
 		abort_creds(bprm->cred);
 	}
 	kfree(bprm);
@@ -1177,6 +1208,11 @@ void install_exec_creds(struct linux_binprm *bprm)
 	 */
 	security_bprm_committed_creds(bprm);
 	mutex_unlock(&current->cred_guard_mutex);
+
+	if (bprm->locked_pid) {
+		scribe_unlock_pid(bprm->locked_pid);
+		bprm->locked_pid = 0;
+	}
 }
 EXPORT_SYMBOL(install_exec_creds);
 

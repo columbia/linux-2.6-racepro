@@ -201,10 +201,52 @@ struct scribe_resource_handle {
 	struct scribe_resource res;
 };
 
+static struct kmem_cache *hres_cache;
+
+void __init scribe_res_init_caches(void)
+{
+	hres_cache = KMEM_CACHE(scribe_resource_handle,
+				SLAB_HWCACHE_ALIGN | SLAB_PANIC);
+}
+
 static inline int use_spinlock(struct scribe_resource *res)
 {
 	return res->type & SCRIBE_RES_SPINLOCK;
 }
+
+#ifdef CONFIG_LOCKDEP
+struct lock_desc {
+	struct lock_class_key key;
+	const char *name;
+};
+
+static struct lock_desc lock_desc[SCRIBE_RES_NUM_TYPES] = {
+#define LOCK_DESC(name_) [name_] = { .name = #name_ }
+	LOCK_DESC(SCRIBE_RES_TYPE_INODE),
+	LOCK_DESC(SCRIBE_RES_TYPE_FILE),
+	LOCK_DESC(SCRIBE_RES_TYPE_FILES_STRUCT),
+	LOCK_DESC(SCRIBE_RES_TYPE_PID),
+	LOCK_DESC(SCRIBE_RES_TYPE_FUTEX),
+	LOCK_DESC(SCRIBE_RES_TYPE_IPC),
+	LOCK_DESC(SCRIBE_RES_TYPE_MMAP),
+	LOCK_DESC(SCRIBE_RES_TYPE_PPID)
+};
+
+#define set_lock_class(lock, type) do {					\
+	struct lock_desc *ld = &lock_desc[type & SCRIBE_RES_TYPE_MASK];	\
+	lockdep_set_class_and_name(lock, &ld->key, ld->name);		\
+} while (0)
+
+bool is_scribe_resource_key(struct lock_class_key *key)
+{
+	char *ptr = (char *)key;
+	char *base = (char *)&lock_desc;
+	return base <= ptr && ptr < (base + sizeof(lock_desc));
+}
+
+#else
+#define set_lock_class(lock, type) do { } while (0)
+#endif
 
 void scribe_init_resource(struct scribe_resource *res, int type)
 {
@@ -215,10 +257,13 @@ void scribe_init_resource(struct scribe_resource *res, int type)
 	res->first_read_serial = -1;
 	atomic_set(&res->serial, 0);
 
-	if (use_spinlock(res))
+	if (use_spinlock(res)) {
 		spin_lock_init(&res->lock.spinlock);
-	else
+		set_lock_class(&res->lock.spinlock, type);
+	} else {
 		init_rwsem(&res->lock.semaphore);
+		set_lock_class(&res->lock.semaphore, type);
+	}
 
 	init_waitqueue_head(&res->wait);
 }
@@ -534,7 +579,7 @@ int scribe_resource_pre_alloc(struct scribe_res_user *user,
 	}
 
 	while (user->num_pre_alloc_hres < MAX_PRE_ALLOC) {
-		hres = kmalloc(sizeof(*hres), GFP_KERNEL);
+		hres = kmem_cache_alloc(hres_cache, GFP_KERNEL);
 		if (!hres)
 			return -ENOMEM;
 
@@ -599,7 +644,7 @@ void scribe_resource_exit_user(struct scribe_res_user *user)
 	list_for_each_entry_safe(hres, htmp,
 				 &user->pre_alloc_hres, handle.node) {
 		list_del(&hres->handle.node);
-		kfree(hres);
+		kmem_cache_free(hres_cache, hres);
 	}
 
 	list_for_each_entry_safe(lockr, ltmp,
@@ -780,30 +825,28 @@ static int __do_lock_record(struct scribe_ps *scribe,
 			    struct scribe_resource *res,
 			    int do_write, int do_intr, int nested)
 {
-	int class;
 	int ret;
-
-	class = get_lockdep_subclass(res->type, nested);
+	nested = !!nested;
 
 	if (use_spinlock(res)) {
-		spin_lock_nested(&res->lock.spinlock, class);
+		spin_lock_nested(&res->lock.spinlock, nested);
 		return 0;
 	}
 
 	if (!do_intr) {
 		if (do_write)
-			down_write_nested(&res->lock.semaphore, class);
+			down_write_nested(&res->lock.semaphore, nested);
 		else
-			down_read_nested(&res->lock.semaphore, class);
+			down_read_nested(&res->lock.semaphore, nested);
 		return 0;
 	}
 
 	if (do_write)
 		ret = wait_event_interruptible_exclusive(res->wait,
-		  down_write_trylock_nested(&res->lock.semaphore, class));
+		  down_write_trylock_nested(&res->lock.semaphore, nested));
 	else
 		ret = wait_event_interruptible(res->wait,
-		  down_read_trylock_nested(&res->lock.semaphore, class));
+		  down_read_trylock_nested(&res->lock.semaphore, nested));
 
 	return ret;
 }
@@ -1195,7 +1238,7 @@ static void free_resource_handle(struct scribe_handle *handle)
 {
 	struct scribe_resource_handle *hres;
 	hres = container_of(handle, struct scribe_resource_handle, handle);
-	kfree(hres);
+	kmem_cache_free(hres_cache, hres);
 }
 
 struct get_new_arg {

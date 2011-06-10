@@ -23,15 +23,25 @@ static struct scribe_handle *__get_handle(struct scribe_container *container,
 	return NULL;
 }
 
-struct scribe_handle *get_scribe_handle(struct scribe_container *container,
-					struct scribe_context *ctx,
-					struct scribe_handle_ctor *ctor)
+struct scribe_handle *find_scribe_handle(struct scribe_container *container,
+					 struct scribe_context *ctx)
 {
 	struct scribe_handle *handle;
 
 	rcu_read_lock();
 	handle = __get_handle(container, ctx);
 	rcu_read_unlock();
+
+	return handle;
+}
+
+struct scribe_handle *get_scribe_handle(struct scribe_container *container,
+					struct scribe_context *ctx,
+					struct scribe_handle_ctor *ctor)
+{
+	struct scribe_handle *handle;
+
+	handle = find_scribe_handle(container, ctx);
 	if (handle)
 		return handle;
 
@@ -69,21 +79,4 @@ void remove_scribe_handle(struct scribe_handle *handle)
 	list_del_rcu(&handle->node);
 	spin_unlock_bh(&container->lock);
 	call_rcu(&handle->rcu, free_rcu_handle);
-}
-
-struct scribe_handle *find_scribe_handle(struct scribe_container *container,
-					 struct scribe_context *ctx)
-{
-	struct scribe_handle *handle;
-
-	rcu_read_lock();
-	list_for_each_entry_rcu(handle, &container->handles, node) {
-		if (handle->ctx == ctx) {
-			rcu_read_unlock();
-			return handle;
-		}
-	}
-	rcu_read_unlock();
-
-	return NULL;
 }

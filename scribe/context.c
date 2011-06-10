@@ -52,12 +52,9 @@ struct scribe_context *scribe_alloc_context(void)
 	if (!ctx->bmark)
 		goto err_resources;
 
-	spin_lock_init(&ctx->mem_hash_lock);
-	ctx->mem_hash = scribe_alloc_mem_hash();
-	if (!ctx->mem_hash)
+	ctx->mm_ctx = scribe_alloc_mm_context();
+	if (!ctx->mm_ctx)
 		goto err_bmark;
-	spin_lock_init(&ctx->mem_list_lock);
-	INIT_LIST_HEAD(&ctx->mem_list);
 
 	return ctx;
 
@@ -91,7 +88,7 @@ void scribe_exit_context(struct scribe_context *ctx)
 	wait_for_ctx_empty(ctx);
 
 	scribe_free_all_events(&ctx->notifications);
-	scribe_free_mem_hash(ctx->mem_hash);
+	scribe_free_mm_context(ctx->mm_ctx);
 	scribe_free_resources(ctx->resources);
 	scribe_bookmark_free(ctx->bmark);
 
@@ -172,12 +169,9 @@ static void context_idle(struct scribe_context *ctx,
 		scribe_free_backtrace(backtrace);
 	}
 
-	if (IS_ERR_OR_NULL(reason)) {
+	if (IS_ERR_OR_NULL(reason))
 		ctx->last_error = ctx->idle_event->error = PTR_ERR(reason);
-		WARN(reason, "scribe: Context going idle with error=%ld\n",
-		     PTR_ERR(reason));
-	} else {
-		WARN(1, "scribe: Replay diverged\n");
+	else {
 		ctx->last_error = ctx->idle_event->error = -EDIVERGE;
 		scribe_queue_event_stream(&ctx->notifications, reason);
 	}

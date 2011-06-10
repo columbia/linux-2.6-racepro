@@ -2871,12 +2871,20 @@ static struct tgid_iter scribe_next_tgid_record(struct scribe_ps *scribe,
 	scribe_create_insert_point(&ip, &scribe->queue->stream);
 
 retry:
+	/*
+	 * We need to call resource_prepare() at each pass to refill the
+	 * pid -> res mapping cache.
+	 */
+	if (scribe_resource_prepare()) {
+		scribe_kill(scribe->ctx, -ENOMEM);
+		goto out_err;
+	}
+
 	rcu_read_lock();
 	pid = find_ge_pid(iter.tgid, ns);
 	if (!pid) {
 		rcu_read_unlock();
-		iter.task = NULL;
-		goto out;
+		goto out_err;
 	}
 	iter.tgid = pid_nr_ns(pid, ns);
 	rcu_read_unlock();
@@ -2888,6 +2896,7 @@ retry:
 		rcu_read_unlock();
 		scribe_unlock_pid_discard(iter.tgid);
 		iter.tgid += 1;
+		iter.task = NULL;
 		goto retry;
 	}
 	get_task_struct(iter.task);
@@ -2898,8 +2907,10 @@ retry:
 
 out:
 	scribe_commit_insert_point(&ip);
-
 	return iter;
+out_err:
+	iter.task = NULL;
+	goto out;
 }
 
 static struct tgid_iter scribe_next_tgid_replay(struct scribe_ps *scribe,
@@ -2907,6 +2918,11 @@ static struct tgid_iter scribe_next_tgid_replay(struct scribe_ps *scribe,
 						struct tgid_iter iter)
 {
 	union scribe_event_data_union event;
+
+	if (scribe_resource_prepare()) {
+		scribe_kill(scribe->ctx, -ENOMEM);
+		return iter;
+	}
 
 	event.generic = scribe_peek_event(scribe->queue, SCRIBE_WAIT);
 	if (IS_ERR(event.generic))
@@ -2929,6 +2945,7 @@ static struct tgid_iter scribe_next_tgid_replay(struct scribe_ps *scribe,
 		rcu_read_unlock();
 		scribe_unlock_pid_discard(iter.tgid);
 		iter.tgid += 1;
+		iter.task = NULL;
 		return iter;
 	}
 	get_task_struct(iter.task);
@@ -2946,11 +2963,6 @@ static struct tgid_iter scribe_next_tgid(struct scribe_ps *scribe,
 	if (iter.task) {
 		put_task_struct(iter.task);
 		iter.task = NULL;
-	}
-
-	if (scribe_resource_prepare()) {
-		scribe_kill(scribe->ctx, -ENOMEM);
-		return iter;
 	}
 
 	/* We need info because we need to distinguish the data type */
@@ -3001,9 +3013,8 @@ retry:
 	}
 	rcu_read_unlock();
 
-	if (is_ps_recording(current) && pid) {
+	if (is_ps_recording(current) && pid)
 		scribe_value(&iter.tgid);
-	}
 
 	return iter;
 }

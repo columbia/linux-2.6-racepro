@@ -10,6 +10,8 @@
 #include <linux/scribe.h>
 #include <linux/sched.h>
 
+#include <linux/rcupdate.h>
+#include <linux/rculist.h>
 #include <linux/hash.h>
 #include <linux/mm.h>
 #include <linux/hugetlb.h>
@@ -21,23 +23,6 @@
 #include <asm/tlb.h>
 
 /* TODO heavy reformatting and documentation needed */
-
-#if 0
-#define CONFIG_SCRIBE_MEM_DBG
-#define MEM_DEBUG(scribe, msg, args... ) do {		\
-	printk(KERN_DEBUG "[%04d] " msg "\n",		\
-			scribe->p->pid, ##args);	\
-} while(0)
-#else
-#define MEM_DEBUG(...) do {} while (0)
-#endif
-
-#if 0
-#define XMEM_DEBUG MEM_DEBUG
-#else
-#define XMEM_DEBUG(...) do {} while (0)
-#endif
-
 
 /* We don't want to have the ref counter in the scribe_page struct
  * since it may not even exist (the scribe_page structs are allocated on demand).
@@ -63,8 +48,8 @@ struct scribe_obj_ref {
 	struct list_head	mm_list;
 };
 
-#define SCRIBE_MEM_HASH_BITS	14
-#define SCRIBE_MEM_HASH_SIZE	(1 << SCRIBE_MEM_HASH_BITS)
+#define SCRIBE_PAGE_HASH_BITS	14
+#define SCRIBE_PAGE_HASH_SIZE	(1 << SCRIBE_PAGE_HASH_BITS)
 
 
 /* SHOULD NOT BE BIGGER THAN 31 */
@@ -109,8 +94,8 @@ struct scribe_page_key {
 #define READ_THEN_WRITE_MAX_THRESHOLD 100
 
 struct scribe_page {
-	struct hlist_node		node;	/* hmap node */
-	struct scribe_page_key		key;	/* hmap key */
+	struct hlist_node		node;	/* hash node */
+	struct scribe_page_key		key;	/* hash key */
 
 	/* the owner of the page, if any */
 	spinlock_t			owners_lock;
@@ -133,6 +118,20 @@ struct scribe_page {
 	/* The serial number is incremented when a task takes ownership */
 	atomic_t			serial;
 	wait_queue_head_t		serial_wait;
+
+	struct rcu_head rcu;
+};
+
+struct page_hash_bucket {
+	spinlock_t lock;
+	struct hlist_head pages;
+};
+
+struct scribe_mm_context {
+	spinlock_t		obj_refs_lock;
+	struct list_head	obj_refs;
+
+	struct page_hash_bucket buckets[SCRIBE_PAGE_HASH_SIZE];
 };
 
 struct scribe_mm {
@@ -146,7 +145,7 @@ struct scribe_mm {
 	 * mm_struct->pgd table (the real one) but with non present pte's on
 	 * shared pages to be able to fault on them.
 	 */
-	pgd_t		*own_pgd;
+	pgd_t			*own_pgd;
 
 	int is_alone;
 
@@ -159,6 +158,13 @@ struct scribe_mm {
 
 	int disable_sync_sleep;
 };
+
+static struct kmem_cache *page_cache;
+
+void __init scribe_mem_init_caches(void)
+{
+	page_cache = KMEM_CACHE(scribe_page, SLAB_HWCACHE_ALIGN | SLAB_PANIC);
+}
 
 /* lock order:
  *	page->owners_lock
@@ -191,63 +197,16 @@ pgd_t *scribe_get_pgd(struct mm_struct *next, struct task_struct *tsk)
     Owner list management
 ********************************************************/
 
-#ifdef CONFIG_SCRIBE_MEM_DBG
-
-static void print_page(struct scribe_ps *scribe, const char *msg, struct scribe_page *page)
-{
-	struct scribe_ownership *os;
-	wait_queue_t *curr;
-
-	int i = 0;
-	char buf[500];
-	char rw_buf[16] = "";
-
-	assert_spin_locked(&page->owners_lock);
-	sprintf(rw_buf, "dbl_rw=%d", page->read_then_write);
-
-	i = snprintf(buf+i, sizeof(buf)-i, "page=%p(%p,%p) s=%d %s %s -- Owners: ",
-		      page, page->key.object, (void*)page->key.offset,
-		      atomic_read(&page->serial),
-		      page->write_access ? "w" : "r",
-		      rw_buf);
-
-	list_for_each_entry(os, &page->owners, node) {
-		i += snprintf(buf+i, sizeof(buf)-i, "[%d%s] ",
-			os->owner->p->pid,
-			list_empty(&os->req_node) ? "" : " Share");
-	}
-
-	i += snprintf(buf+i, sizeof(buf)-i, "-- Sem: (%dr %dw %dt) ",
-		      page->read_waiters, page->write_waiters, page->ownership_token);
-
-	spin_lock(&page->ownership_wait.lock);
-	list_for_each_entry(curr, &page->ownership_wait.task_list, task_list) {
-		i += snprintf(buf+i, sizeof(buf)-i, "[%d %s] ",
-			       ((struct task_struct *)curr->private)->pid,
-			       curr->flags == WQ_FLAG_EXCLUSIVE ? "w" : "r");
-	}
-	spin_unlock(&page->ownership_wait.lock);
-	MEM_DEBUG(scribe, "%15s -- %s", msg, buf);
-}
-static inline void
-print_page_no_lock(struct scribe_ps *scribe, const char *msg, struct scribe_page *page)
-{
-	spin_lock(&page->owners_lock);
-	print_page(scribe, msg, page);
-	spin_unlock(&page->owners_lock);
-}
-#else
-static inline void
-print_page(struct scribe_ps *scribe, const char *msg, struct scribe_page *page) { }
-static inline void
-print_page_no_lock(struct scribe_ps *scribe, const char *msg, struct scribe_page *page) { }
-#endif
-
-static inline struct scribe_ownership *
-__alloc_ownership_struct(struct scribe_page *page)
+static struct scribe_ownership *__alloc_ownership_struct(
+						struct scribe_page *page)
 {
 	struct scribe_ownership *os;
 	unsigned int index;
+
+	/*
+	 * A few ownerships struct are pre-allocated to get better
+	 * performances.
+	 */
 
 	index = ffz(page->owners_static_usage);
 	if (index < SCRIBE_OWNERS_ARRAY_SIZE) {
@@ -255,7 +214,6 @@ __alloc_ownership_struct(struct scribe_page *page)
 		return &page->owners_static[index];
 	}
 
-	/* ho ... we have to allocate */
 	spin_unlock(&page->owners_lock);
 	os = kmalloc(sizeof(*os), GFP_KERNEL);
 	spin_lock(&page->owners_lock);
@@ -263,7 +221,7 @@ __alloc_ownership_struct(struct scribe_page *page)
 	return os;
 }
 
-static inline void __free_ownership_struct(struct scribe_ownership *os)
+static void __free_ownership_struct(struct scribe_ownership *os)
 {
 	struct scribe_page *page = os->page;
 	unsigned int index;
@@ -275,8 +233,8 @@ static inline void __free_ownership_struct(struct scribe_ownership *os)
 		kfree(os);
 }
 
-static inline struct scribe_ownership *
-find_ownership(struct scribe_page *page, struct scribe_ps *owner)
+static struct scribe_ownership *find_ownership(struct scribe_page *page,
+					       struct scribe_ps *owner)
 {
 	struct scribe_ownership *os;
 
@@ -288,19 +246,21 @@ find_ownership(struct scribe_page *page, struct scribe_ps *owner)
 	return NULL;
 }
 
-static int is_owned_by(struct scribe_page *page, struct scribe_ps *owner)
+static inline bool is_owned_by(struct scribe_page *page,
+			       struct scribe_ps *owner)
 {
-	return (int)find_ownership(page, owner);
+	return (bool)find_ownership(page, owner);
 }
 
-/* warning: add_page_ownership release the lock if a kmalloc is needed */
-static struct scribe_ownership *
-add_page_ownership(struct scribe_page *page, struct scribe_ps *owner,
-		   unsigned long virt_address)
+static struct scribe_ownership *add_page_ownership(struct scribe_page *page,
+						   struct scribe_ps *owner,
+						   unsigned long virt_address)
 {
-	struct scribe_ownership *os = NULL;
+	/* XXX add_page_ownership release the lock owners_lock */
 
-#ifdef CONFIG_SCRIBE_MEM_DBG
+	struct scribe_ownership *os;
+
+#ifdef CONFIG_DEBUG_KERNEL
 	assert_spin_locked(&page->owners_lock);
 	BUG_ON(is_owned_by(page, owner));
 #endif
@@ -317,38 +277,31 @@ add_page_ownership(struct scribe_page *page, struct scribe_ps *owner,
 	do_gettimeofday(&os->timestamp);
 	INIT_LIST_HEAD(&os->req_node);
 
-	print_page(owner, "add owner", page);
-
 	return os;
 }
 
 static void rm_page_ownership(struct scribe_ownership *os)
 {
-#ifdef CONFIG_SCRIBE_MEM_DBG
+#ifdef CONFIG_DEBUG_KERNEL
 	struct scribe_page *page = os->page;
-	struct scribe_ps *owner = os->owner;
 	assert_spin_locked(&page->owners_lock);
 	BUG_ON(!list_empty(&os->req_node));
 #endif
 
 	list_del(&os->node);
 	__free_ownership_struct(os);
-
-#ifdef CONFIG_SCRIBE_MEM_DBG
-	print_page(owner, "rm owner", page);
-#endif
 }
 
 /********************************************************
     Object referencing (mm_struct and inodes)
 *********************************************************/
 
-static inline struct scribe_obj_ref *
-__find_obj_ref(struct scribe_context *ctx, void *object)
+static struct scribe_obj_ref * __find_obj_ref(struct scribe_mm_context *mm_ctx,
+					      void *object)
 {
 	struct scribe_obj_ref *ref;
 
-	list_for_each_entry(ref, &ctx->mem_list, node) {
+	list_for_each_entry(ref, &mm_ctx->obj_refs, node) {
 		if (ref->object == object)
 			return ref;
 	}
@@ -356,34 +309,35 @@ __find_obj_ref(struct scribe_context *ctx, void *object)
 	return NULL;
 }
 
-static struct scribe_obj_ref *
-find_obj_ref(struct scribe_context *ctx, void *object)
+static struct scribe_obj_ref *find_obj_ref(struct scribe_mm_context *mm_ctx,
+					   void *object)
 {
 	struct scribe_obj_ref *ref;
 
-	spin_lock(&ctx->mem_list_lock);
-	ref = __find_obj_ref(ctx, object);
-	spin_unlock(&ctx->mem_list_lock);
+	spin_lock(&mm_ctx->obj_refs_lock);
+	ref = __find_obj_ref(mm_ctx, object);
+	spin_unlock(&mm_ctx->obj_refs_lock);
 
 	return ref;
 }
 
-static struct scribe_obj_ref *get_obj_ref(struct scribe_context *ctx, void *object)
+static struct scribe_obj_ref *get_obj_ref(struct scribe_mm_context *mm_ctx,
+					  void *object)
 {
 	struct scribe_obj_ref *ref, *ref_alloc;
 
-	spin_lock(&ctx->mem_list_lock);
-	ref = __find_obj_ref(ctx, object);
+	spin_lock(&mm_ctx->obj_refs_lock);
+	ref = __find_obj_ref(mm_ctx, object);
 	if (!ref) {
-		spin_unlock(&ctx->mem_list_lock);
+		spin_unlock(&mm_ctx->obj_refs_lock);
 		ref_alloc = (struct scribe_obj_ref *)
 				kmalloc(sizeof(*ref), GFP_KERNEL);
 		if (!ref_alloc)
 			return ERR_PTR(-ENOMEM);
-		spin_lock(&ctx->mem_list_lock);
+		spin_lock(&mm_ctx->obj_refs_lock);
 
 		/* raced ? */
-		ref = __find_obj_ref(ctx, object);
+		ref = __find_obj_ref(mm_ctx, object);
 		if (ref)
 			kfree(ref_alloc);
 		else {
@@ -391,90 +345,70 @@ static struct scribe_obj_ref *get_obj_ref(struct scribe_context *ctx, void *obje
 			ref->object = object;
 			atomic_set(&ref->counter, 0);
 			INIT_LIST_HEAD(&ref->mm_list);
-			list_add(&ref->node, &ctx->mem_list);
+			list_add(&ref->node, &mm_ctx->obj_refs);
 		}
 	}
 
 	atomic_inc(&ref->counter);
-	spin_unlock(&ctx->mem_list_lock);
-
-	XMEM_DEBUG(current->scribe, "get_obj_ref(), object=%p, cnt=%d",
-		    object, atomic_read(&ref->counter));
+	spin_unlock(&mm_ctx->obj_refs_lock);
 	return ref;
 }
 
-#define OFFSET_ALL	-1
-static void scribe_remove_page(struct scribe_context *ctx, struct scribe_page_key *key);
+static void remove_pages_of(struct scribe_mm_context *mm_ctx, void *key_object);
 
-/* put_obj_ref will remove the conresponding scribe_pages if the reference
- * hits 0
- */
-static void put_obj_ref(struct scribe_context *ctx, struct scribe_obj_ref *ref)
-{
-	XMEM_DEBUG(current->scribe, "put_obj_ref(), object=%p, cnt=%d",
-		    ref->object, atomic_read(&ref->counter)-1);
-
-	if (atomic_dec_and_lock(&ref->counter, &ctx->mem_list_lock)) {
-		struct scribe_page_key key;
-
-		list_del(&ref->node);
-		spin_unlock(&ctx->mem_list_lock);
-
-		key.object = ref->object;
-		key.offset = OFFSET_ALL;
-
-		kfree(ref);
-
-		/* the object is not used anymore, let's clean the hash table */
-		scribe_remove_page(ctx, &key);
-	}
-}
-
-static inline void put_obj(struct scribe_context *ctx, void *object)
+static void put_obj_ref(struct scribe_mm_context *mm_ctx, void *object)
 {
 	struct scribe_obj_ref *ref;
 
-	ref = find_obj_ref(ctx, object);
-	BUG_ON(!ref);
-	put_obj_ref(ctx, ref);
+	ref = find_obj_ref(mm_ctx, object);
+
+	if (atomic_dec_and_lock(&ref->counter, &mm_ctx->obj_refs_lock)) {
+		list_del(&ref->node);
+		spin_unlock(&mm_ctx->obj_refs_lock);
+
+		remove_pages_of(mm_ctx, ref->object);
+		kfree(ref);
+	}
 }
 
-static inline int num_obj_ref(struct scribe_obj_ref *ref) {
-	if (!ref)
-		return 0;
-	return atomic_read(&ref->counter);
-}
-
-static int get_all_objects(struct scribe_context *ctx, struct mm_struct *mm)
+static int get_all_objects(struct scribe_mm_context *mm_ctx,
+			   struct mm_struct *mm)
 {
 	struct scribe_obj_ref *ref;
 	struct vm_area_struct *vma;
 
 	for (vma = mm->mmap; vma; vma = vma->vm_next) {
-		if (vma->vm_flags & VM_SHARED) {
-			ref = get_obj_ref(ctx, vma->vm_file->f_dentry->d_inode);
-			if (IS_ERR(ref)) {
-				WARN_ON(1); /* FIXME do the proper cleaning */
-				return PTR_ERR(ref);
-			}
+		if (!(vma->vm_flags & VM_SHARED))
+			continue;
+
+		ref = get_obj_ref(mm_ctx, vma->vm_file->f_dentry->d_inode);
+		if (IS_ERR(ref)) {
+			WARN_ON(1); /* FIXME do the proper cleaning */
+			return PTR_ERR(ref);
 		}
 	}
 
 	return 0;
 }
 
-static void put_all_objects(struct scribe_context *ctx, struct mm_struct *mm)
+static void put_all_objects(struct scribe_mm_context *mm_ctx,
+			    struct mm_struct *mm)
 {
 	struct vm_area_struct *vma;
 
 	for (vma = mm->mmap; vma; vma = vma->vm_next) {
 		if (vma->vm_flags & VM_SHARED)
-			put_obj(ctx, vma->vm_file->f_dentry->d_inode);
+			put_obj_ref(mm_ctx, vma->vm_file->f_dentry->d_inode);
 	}
 }
 
-static inline int get_scribe_cnt(struct mm_struct *mm)
+static int get_scribe_cnt(struct mm_struct *mm)
 {
+	/*
+	 * FIXME what's up with this lock ... ? It doesn't seem to be
+	 * synchronizing anything
+	 */
+
 	int ret;
 	spin_lock(&mm->scribe_lock);
 	ret = mm->scribe_cnt;
@@ -482,7 +416,7 @@ static inline int get_scribe_cnt(struct mm_struct *mm)
 	return ret;
 }
 
-static int is_sharing_mm(struct mm_struct *mm)
+static inline bool is_sharing_mm(struct mm_struct *mm)
 {
 	return get_scribe_cnt(mm) > 1;
 }
@@ -502,23 +436,23 @@ static int __rm_shadow_mm(struct scribe_mm *scribe_mm, struct mm_struct *mm)
 
 static void rm_shadow_mm(struct scribe_mm *scribe_mm, struct mm_struct *mm)
 {
-	struct scribe_page_key key;
+	struct scribe_mm_context *mm_ctx;
 	int cnt;
 
 	cnt = __rm_shadow_mm(scribe_mm, mm);
 	if (!cnt) {
+		mm_ctx = scribe_mm->scribe->ctx->mm_ctx;
 		down_read(&mm->mmap_sem);
-		put_all_objects(scribe_mm->scribe->ctx, mm);
+		put_all_objects(mm_ctx, mm);
 		up_read(&mm->mmap_sem);
 
-		key.object = mm;
-		key.offset = OFFSET_ALL;
-		scribe_remove_page(scribe_mm->scribe->ctx, &key);
+		remove_pages_of(mm_ctx, mm);
 	}
 }
 
 static int add_shadow_mm(struct scribe_mm *scribe_mm, struct mm_struct *mm)
 {
+	struct scribe_mm_context *mm_ctx;
 	int cnt, ret = 0;
 
 	down_write(&mm->mmap_sem);
@@ -530,7 +464,8 @@ static int add_shadow_mm(struct scribe_mm *scribe_mm, struct mm_struct *mm)
 	wake_up(&mm->scribe_wait);
 
 	if (!cnt) {
-		ret = get_all_objects(scribe_mm->scribe->ctx, mm);
+		mm_ctx = scribe_mm->scribe->ctx->mm_ctx;
+		ret = get_all_objects(mm_ctx, mm);
 		if (ret < 0)
 			__rm_shadow_mm(scribe_mm, mm);
 	}
@@ -543,48 +478,57 @@ static int add_shadow_mm(struct scribe_mm *scribe_mm, struct mm_struct *mm)
     scribe_page manipulation
 *********************************************************/
 
-struct hlist_head *scribe_alloc_mem_hash(void)
+static void init_page_hash_bucket(struct page_hash_bucket *hb)
 {
-	struct hlist_head *hash;
+	spin_lock_init(&hb->lock);
+	INIT_HLIST_HEAD(&hb->pages);
+}
+
+struct scribe_mm_context *scribe_alloc_mm_context(void)
+{
+	struct scribe_mm_context *mm_ctx;
 	int i;
 
-	hash = kmalloc(SCRIBE_MEM_HASH_SIZE * sizeof(*hash), GFP_KERNEL);
-	if (!hash)
+	mm_ctx = kmalloc(sizeof(*mm_ctx), GFP_KERNEL);
+	if (!mm_ctx)
 		return NULL;
 
-	for (i = 0; i < SCRIBE_MEM_HASH_SIZE; i++)
-		INIT_HLIST_HEAD(&hash[i]);
+	spin_lock_init(&mm_ctx->obj_refs_lock);
+	INIT_LIST_HEAD(&mm_ctx->obj_refs);
 
-	return hash;
+	for (i = 0; i < SCRIBE_PAGE_HASH_SIZE; i++)
+		init_page_hash_bucket(&mm_ctx->buckets[i]);
+
+	return mm_ctx;
 }
 
-void scribe_free_mem_hash(struct hlist_head *hash)
+void scribe_free_mm_context(struct scribe_mm_context *mm_ctx)
 {
+#ifdef CONFIG_DEBUG_KERNEL
+	struct page_hash_bucket *hb;
 	int i;
-	for (i = 0; i < SCRIBE_MEM_HASH_SIZE; i++) {
-		while (!hlist_empty(&hash[i])) {
-			struct scribe_page *page;
-			page = hlist_entry(hash[i].first,
-					    struct scribe_page, node);
 
-			printk("warning, freeing mem page %p(%p, %p)\n",
-			       page, page->key.object, (void*)page->key.offset);
-
-			hlist_del(&page->node);
-			kfree(page);
-		}
+	for (i = 0; i < SCRIBE_PAGE_HASH_SIZE; i++) {
+		hb = &mm_ctx->buckets[i];
+		WARN_ON(!hlist_empty(&hb->pages));
 	}
-	kfree(hash);
+#endif
+
+	kfree(mm_ctx);
 }
 
-static inline unsigned long mem_hashfn(struct scribe_page_key *key)
+static struct page_hash_bucket *get_page_hash_bucket(
+					struct scribe_mm_context *mm_ctx,
+					struct scribe_page_key *key)
 {
-	unsigned long val;
+	unsigned long hash;
 
-	val = (unsigned long)(key->object) << 3;
-	val ^= key->offset;
-	val ^= key->offset << 16;
-	return hash_long(val, SCRIBE_MEM_HASH_BITS);
+	hash = (unsigned long)(key->object) << 3;
+	hash ^= key->offset;
+	hash ^= key->offset << 16;
+	hash = hash_long(hash, SCRIBE_PAGE_HASH_BITS);
+
+	return &mm_ctx->buckets[hash];
 }
 
 static inline int equal_page_keys(struct scribe_page_key *key1,
@@ -593,79 +537,55 @@ static inline int equal_page_keys(struct scribe_page_key *key1,
 	return key1->offset == key2->offset && key1->object == key2->object;
 }
 
-static struct scribe_page *__find_scribe_page(struct scribe_context *ctx,
+static struct scribe_page *__find_scribe_page(struct page_hash_bucket *hb,
 					      struct scribe_page_key *key)
 {
-	struct scribe_page	*page;
-	struct hlist_node	*node;
+	struct scribe_page *page;
+	struct hlist_node *node;
 
-	hlist_for_each_entry(page, node, &ctx->mem_hash[mem_hashfn(key)], node) {
+	hlist_for_each_entry_rcu(page, node, &hb->pages, node) {
 		if (equal_page_keys(&page->key, key))
 			return page;
 	}
 	return NULL;
 }
 
-static inline struct scribe_page *find_scribe_page(struct scribe_context *ctx,
-						   struct scribe_page_key *key)
+static struct scribe_page *get_scribe_page(struct scribe_mm_context *mm_ctx,
+					   struct scribe_page_key *key)
 {
+	struct page_hash_bucket *hb = get_page_hash_bucket(mm_ctx, key);
 	struct scribe_page *page;
+	struct scribe_page *page_alloc;
 
-	spin_lock(&ctx->mem_hash_lock);
-	page = __find_scribe_page(ctx, key);
-	spin_unlock(&ctx->mem_hash_lock);
-
-	return page;
-}
-
-static struct scribe_page *get_scribe_page(struct scribe_context *ctx,
-					    struct scribe_page_key *key)
-{
-	struct scribe_page	*page;
-	struct scribe_page	*page_alloc;
-
-	page = find_scribe_page(ctx, key);
+	rcu_read_lock();
+	page = __find_scribe_page(hb, key);
+	rcu_read_unlock();
 	if (page)
 		return page;
 
 	/* not found ... allocating */
-	page_alloc = kmalloc(sizeof(*page), GFP_KERNEL);
+	page_alloc = kmem_cache_zalloc(page_cache, GFP_KERNEL);
 	if (!page_alloc)
 		return ERR_PTR(-ENOMEM);
 
 	page_alloc->key = *key;
 	spin_lock_init(&page_alloc->owners_lock);
-
-	page_alloc->owners_static_usage = 0;
 	INIT_LIST_HEAD(&page_alloc->owners);
-
-	page_alloc->read_waiters = 0;
-	page_alloc->write_waiters = 0;
-	page_alloc->write_access = 0;
-
-	page_alloc->read_then_write = 0;
-
-	page_alloc->ownership_token = 0;
 	init_waitqueue_head(&page_alloc->ownership_wait);
-
-	atomic_set(&page_alloc->serial, 0);
 	init_waitqueue_head(&page_alloc->serial_wait);
 
 	/* raced ? */
-	spin_lock(&ctx->mem_hash_lock);
-	page = __find_scribe_page(ctx, key);
-	if (page) {
-		spin_unlock(&ctx->mem_hash_lock);
-		kfree(page_alloc);
+	spin_lock(&hb->lock);
+	page = __find_scribe_page(hb, key);
+	if (unlikely(page)) {
+		spin_unlock(&hb->lock);
+		kmem_cache_free(page_cache, page_alloc);
 		return page;
 	}
 
 	page = page_alloc;
-	XMEM_DEBUG(current->scribe, "new page page %p(%p, %p)",
-		   page, key->object, (void*)key->offset);
-
-	hlist_add_head(&page->node, &ctx->mem_hash[mem_hashfn(key)]);
-	spin_unlock(&ctx->mem_hash_lock);
+	hlist_add_head_rcu(&page->node, &hb->pages);
+	spin_unlock(&hb->lock);
 
 	return page;
 }
@@ -673,19 +593,19 @@ static struct scribe_page *get_scribe_page(struct scribe_context *ctx,
 static void scribe_make_page_public(struct scribe_ownership *os,
 				    int write_access);
 static void __scribe_page_release_ownership(struct scribe_ps *scribe,
-					     void *key_object)
+					    void *key_object)
 {
-	struct hlist_node	*node;
-	struct scribe_page	*page;
-	struct scribe_context 	*ctx;
+	struct scribe_mm_context *mm_ctx = scribe->ctx->mm_ctx;
+	struct page_hash_bucket *hb;
+	struct hlist_node *node;
+	struct scribe_page *page;
 	struct scribe_ownership *os;
 	int i;
 
-	ctx = scribe->ctx;
-
-	spin_lock(&ctx->mem_hash_lock);
-	for (i = 0; i < SCRIBE_MEM_HASH_SIZE; i++) {
-		hlist_for_each_entry(page, node, &ctx->mem_hash[i], node) {
+	rcu_read_lock();
+	for (i = 0; i < SCRIBE_PAGE_HASH_SIZE; i++) {
+		hb = &mm_ctx->buckets[i];
+		hlist_for_each_entry_rcu(page, node, &hb->pages, node) {
 			if (page->key.object != key_object)
 				continue;
 
@@ -702,7 +622,7 @@ static void __scribe_page_release_ownership(struct scribe_ps *scribe,
 			spin_unlock(&page->owners_lock);
 		}
 	}
-	spin_unlock(&ctx->mem_hash_lock);
+	rcu_read_unlock();
 }
 
 #define ALL_PAGES 0
@@ -729,82 +649,65 @@ static void scribe_page_release_ownership(struct scribe_ps *scribe,
 	}
 }
 
-/* scribe_remove_page() is called when a shmem is unmapped or when a
- * mm_struct goes away. It is also used when unmap_page_range() is called.
- * It basically remove tracking of a page (serial number would be reset).
- * Note: If key->offset is OFFSET_ALL, only key->object is considered.
- */
-static void scribe_remove_page(struct scribe_context *ctx,
-				struct scribe_page_key *key)
+static void free_rcu_page(struct rcu_head *rcu)
 {
-	struct scribe_page	*page;
-	struct hlist_node	*node, *safe;
+	struct scribe_page *page;
+	page = container_of(rcu, struct scribe_page, rcu);
+	kmem_cache_free(page_cache, page);
+}
+
+/* remove_pages_of() is called when a shmem is unmapped or when a
+ * mm_struct goes away.
+ * It basically remove tracking of a page (serial number would be reset).
+ */
+static void remove_pages_of(struct scribe_mm_context *mm_ctx, void *key_object)
+{
+	struct page_hash_bucket *hb;
+	struct scribe_page *page;
+	struct hlist_node *node, *tmp;
 	int i;
 
-	if (key->offset != OFFSET_ALL) {
-		page = find_scribe_page(ctx, key);
-		if (!page)
-			return;
+	for (i = 0; i < SCRIBE_PAGE_HASH_SIZE; i++) {
+		hb = &mm_ctx->buckets[i];
+		spin_lock(&hb->lock);
+		hlist_for_each_entry_safe(page, node, tmp, &hb->pages, node) {
+			if (page->key.object != key_object)
+				continue;
 
-		spin_lock(&ctx->mem_hash_lock);
-		hlist_del(&page->node);
-		spin_unlock(&ctx->mem_hash_lock);
-
-		XMEM_DEBUG(current->scribe, "page free %p (%p, %p)", page, key->object,
-			   (void*)key->offset);
-		kfree(page);
-		return;
-	}
-
-	/* in this part, we want to destroy all page that have the same
-	 * page->key.object as key->object. Let's iterate
-	 */
-	XMEM_DEBUG(current->scribe, "removing all page with key->object==%p", key->object);
-	spin_lock(&ctx->mem_hash_lock);
-	for (i = 0; i < SCRIBE_MEM_HASH_SIZE; i++) {
-		hlist_for_each_entry_safe(page, node, safe, &ctx->mem_hash[i], node) {
-			if (page->key.object == key->object) {
-				hlist_del(&page->node);
-
-				XMEM_DEBUG(current->scribe, "page free %p (%p, %p)", page,
-					   key->object, (void*)key->offset);
-				kfree(page);
-			}
+			hlist_del_rcu(&page->node);
+			call_rcu(&page->rcu, free_rcu_page);
 		}
+		spin_unlock(&hb->lock);
 	}
-	spin_unlock(&ctx->mem_hash_lock);
 }
 
-static inline struct scribe_page_key get_page_key(struct vm_area_struct *vma,
-						   unsigned long address)
+static void get_page_key(struct vm_area_struct *vma, unsigned long address,
+			 struct scribe_page_key *key)
 {
-	struct scribe_page_key key;
 
 	if (vma->vm_flags & VM_SHARED) {
-		key.object = vma->vm_file->f_dentry->d_inode;
-		key.offset = (address - vma->vm_start) >> PAGE_SHIFT;
-		key.offset += vma->vm_pgoff;
+		key->object = vma->vm_file->f_dentry->d_inode;
+		key->offset = (address - vma->vm_start) >> PAGE_SHIFT;
+		key->offset += vma->vm_pgoff;
+	} else {
+		key->object = vma->vm_mm;
+		key->offset = address & PAGE_MASK;
 	}
-	else {
-		key.object = vma->vm_mm;
-		key.offset = address & PAGE_MASK;
-	}
-	return key;
 }
 
-static int inline page_access_ok(struct scribe_ps *scribe, struct scribe_page *page,
-				 int write_access)
+static bool inline page_access_ok(struct scribe_ps *scribe,
+				  struct scribe_page *page, int write_access)
 {
 	if (!is_owned_by(page, scribe))
-		return 0;
+		return false;
 
 	if (!write_access)
-		return 1;
+		return true;
 
 	if (page->write_access)
-		return 1;
+		return true;
 
-	return 0;
+	return false;
 }
 
 static int page_down_trylock(struct scribe_page *page, int write_access)
@@ -1173,7 +1076,6 @@ static inline int increment_serial(struct scribe_page *page)
 
 	/* we want the value before the incrementation */
 	ret = atomic_inc_return(&page->serial) - 1;
-	print_page(current->scribe, "inc serial", page);
 	if (waitqueue_active(&page->serial_wait))
 		wake_up(&page->serial_wait);
 
@@ -1194,10 +1096,6 @@ static void scribe_make_page_public(struct scribe_ownership *os,
 
 	virt_address = os->virt_address;
 
-	MEM_DEBUG(scribe, "going public %p(%p, %p) -- virt_addr = %p",
-		  page, page->key.object, (void*)page->key.offset,
-		  (void*)virt_address);
-
 	increment_serial(page);
 
 	if (write_access) {
@@ -1207,7 +1105,6 @@ static void scribe_make_page_public(struct scribe_ownership *os,
 			page_up(page, page->write_access);
 	}
 	else {
-		MEM_DEBUG(scribe, "downgrade_write :)");
 		if (is_recording(current->scribe))
 			page_downgrade_write(page);
 		else
@@ -1258,14 +1155,7 @@ static int scribe_make_page_owned_log(struct scribe_ps *scribe,
 	int ret;
 	int serial;
 
-#ifdef CONFIG_SCRIBE_MEM_DBG
-	/* To make print_page() happy */
-	spin_lock(&page->owners_lock);
-#endif
 	serial = increment_serial(page);
-#ifdef CONFIG_SCRIBE_MEM_DBG
-	spin_unlock(&page->owners_lock);
-#endif
 	if (should_scribe_mem_extra(scribe)) {
 		if (write_access)
 			ret = scribe_queue_new_event(scribe->queue,
@@ -1346,7 +1236,6 @@ retry:
 
 		page = os->page;
 		spin_unlock(&scribe->mm->req_lock);
-		print_page_no_lock(scribe, "serve shrd req", page);
 
 		if (!public_event) {
 			public_event = scribe_alloc_event(SCRIBE_EVENT_MEM_PUBLIC_READ);
@@ -1360,7 +1249,6 @@ retry:
 		spin_lock(&scribe->mm->req_lock);
 
 		if (!is_owned_by(page, scribe) || list_empty(&os->req_node)) {
-			print_page(scribe, "shared req cancelled", page);
 			spin_unlock(&page->owners_lock);
 			goto retry;
 		}
@@ -1486,8 +1374,6 @@ void scribe_mem_sync_point(struct scribe_ps *scribe, int mode)
 	if (!should_handle_mm(scribe))
 		return;
 
-	MEM_DEBUG(scribe, "mem sync point(%s)", get_sync_mode_str(mode));
-
 	if (mode & MEM_SYNC_IN) {
 		might_sleep();
 		if (mode & MEM_SYNC_SLEEP)
@@ -1548,12 +1434,8 @@ void scribe_mem_schedule_in(struct scribe_ps *scribe)
 	if (scribe->mm->disable_sync_sleep)
 		return;
 
-	if (!scribe->mm->weak_owner) {
-		if (scribe->p->state == TASK_INTERRUPTIBLE &&
-		    !(preempt_count() & PREEMPT_ACTIVE))
-			MEM_DEBUG(scribe, "warning: sleeping while not in a sync point");
+	if (!scribe->mm->weak_owner)
 		return;
-	}
 
 	scribe_mem_sync_point(scribe, MEM_SYNC_IN | MEM_SYNC_SLEEP);
 }
@@ -1605,13 +1487,11 @@ static int scribe_handle_public_event(struct scribe_ps *scribe,
 
 	vma = find_vma(mm, page_addr);
 	if (!vma) {
-		MEM_DEBUG(scribe, "warning: find_vma() failed in "
-			  "scribe_handle_public_event()");
 		up_read(&mm->mmap_sem);
 		return -EINVAL;
 	}
-	page_key = get_page_key(vma, page_addr);
-	page = get_scribe_page(scribe->ctx, &page_key);
+	get_page_key(vma, page_addr, &page_key);
+	page = get_scribe_page(scribe->ctx->mm_ctx, &page_key);
 	if (IS_ERR(page)) {
 		up_read(&mm->mmap_sem);
 		return -ENOMEM;
@@ -1657,8 +1537,6 @@ static inline int is_vma_scribed(struct scribe_ps *scribe, struct vm_area_struct
 /* Returns 1 if we went alone, 0 if not, -ENOMEM if the allocation failed */
 static int check_for_aloneness(struct scribe_ps *scribe)
 {
-	struct scribe_page_key key;
-
 	if (is_sharing_mm(scribe->p->mm))
 		return 0;
 
@@ -1669,9 +1547,7 @@ static int check_for_aloneness(struct scribe_ps *scribe)
 	scribe->mm->is_alone = 1;
 
 	scribe_page_release_ownership(scribe, ONLY_ANONYMOUS_PAGES);
-	key.object = scribe->p->mm;
-	key.offset = OFFSET_ALL;
-	scribe_remove_page(scribe->ctx, &key);
+	remove_pages_of(scribe->ctx->mm_ctx, scribe->p->mm);
 
 	if (scribe_queue_new_event(scribe->queue,
 				   SCRIBE_EVENT_MEM_ALONE))
@@ -1698,9 +1574,6 @@ static inline int is_ownership_stealable(struct scribe_ps *scribe,
 
 	if (has_ownership_expired(os, now))
 		return 1;
-
-	MEM_DEBUG(scribe, "page not expired yet: %ld usec",
-		  now->tv_usec - os->timestamp.tv_usec);
 
 	return 0;
 }
@@ -1729,15 +1602,9 @@ retry:
 		owner = os->owner;
 
 		spin_lock(&owner->mm->req_lock);
-		MEM_DEBUG(scribe, "os=%p, page=%p, owner=%d", os, os->page,
-			  owner->p->pid);
 
 		if (is_ownership_stealable(scribe, os, &now) &&
 		    --num_event >= 0) {
-			MEM_DEBUG(scribe,
-				  "silently dropping ownership (owner=%d)",
-				  owner->p->pid);
-
 			if (!list_empty(&os->req_node))
 				list_del_init(&os->req_node);
 
@@ -1747,12 +1614,8 @@ retry:
 			 * If num_event is going negative, it will mean that
 			 * some allocation is needed
 			 */
-		} else if (list_empty(&os->req_node)) {
-			MEM_DEBUG(scribe,
-				  "adding shared request (owner=%d, wo=%d)",
-				  owner->p->pid, owner->mm->weak_owner);
+		} else if (list_empty(&os->req_node))
 			list_add(&os->req_node, &owner->mm->shared_req);
-		}
 		spin_unlock(&owner->mm->req_lock);
 	}
 
@@ -1760,7 +1623,6 @@ out:
 	if (num_event < 0) {
 		spin_unlock(&page->owners_lock);
 		num_event = min(-num_event, MAX_EVENT_ALLOC_NUM);
-		MEM_DEBUG(scribe, "allocating %d public events", num_event);
 		for (i = 0; i < num_event; i++) {
 			event[i] = scribe_alloc_event(
 					SCRIBE_EVENT_MEM_PUBLIC_READ);
@@ -1792,7 +1654,6 @@ static void read_write_accounting(struct scribe_page *page, struct scribe_ps *sc
 		if (os->start_serial + 1 == atomic_read(&page->serial)) {
 			/* We are faulting again on the same page */
 			if (++page->read_then_write >= READ_THEN_WRITE_MIN_THRESHOLD) {
-				print_page(scribe, "force write", page);
 				page->read_then_write = -READ_THEN_WRITE_MAX_THRESHOLD;
 			}
 		}
@@ -1800,8 +1661,7 @@ static void read_write_accounting(struct scribe_page *page, struct scribe_ps *sc
 			page->read_then_write  = 0;
 	}
 	else {
-		if (++page->read_then_write == 0)
-			print_page(scribe, "force write undone", page);
+		page->read_then_write++;
 
 		/* force write_access ! */
 		*write_access = 1;
@@ -1817,7 +1677,6 @@ static int scribe_page_access_record(struct scribe_ps *scribe,
 	int ret;
 
 	spin_lock(&page->owners_lock);
-	print_page(scribe, "entering", page);
 
 	if (page_access_ok(scribe, page, write_access)) {
 		spin_unlock(&page->owners_lock);
@@ -1848,9 +1707,7 @@ static int scribe_page_access_record(struct scribe_ps *scribe,
 
 	up_read(&mm->mmap_sem);
 
-	print_page_no_lock(scribe, "getting", page);
 	page_down(page, write_access);
-	print_page_no_lock(scribe, "got", page);
 
 	scribe_mem_sync_point(scribe, MEM_SYNC_OUT);
 	down_read(&mm->mmap_sem);
@@ -1886,7 +1743,6 @@ static int scribe_page_access_record(struct scribe_ps *scribe,
 		spin_unlock(&scribe->mm->req_lock);
 	}
 
-	print_page(scribe, "done", page);
 	spin_unlock(&page->owners_lock);
 
 	return scribe_make_page_owned_log(scribe, page, address, write_access);
@@ -1898,10 +1754,8 @@ static int serial_match(struct scribe_ps *scribe,
 	if (atomic_read(&page->serial) >= serial)
 		return 1;
 
-	if (is_scribe_context_dead(scribe->ctx)) {
-		/* scribe_kill() has been triggered, we need to leave */
+	if (is_scribe_context_dead(scribe->ctx))
 		return 1;
-	}
 
 	return 0;
 }
@@ -1954,7 +1808,6 @@ static int scribe_page_access_replay(struct scribe_ps *scribe,
 		struct scribe_page *page, unsigned long address,
 		int write_access)
 {
-	struct scribe_page_key key;
 	struct scribe_event *event;
 	unsigned long page_addr;
 	int rw_flag;
@@ -1991,10 +1844,6 @@ static int scribe_page_access_replay(struct scribe_ps *scribe,
 				       .write_access = write_access);
 		}
 
-		if (atomic_read(&page->serial) < serial)
-			/* need to wait ! */
-			MEM_DEBUG(scribe, "waiting on page %p (%d vs %d)",
-				page, atomic_read(&page->serial), serial);
 		wait_event(page->serial_wait,
 			   serial_match(scribe, page, serial));
 		down_read(&mm->mmap_sem);
@@ -2008,16 +1857,12 @@ static int scribe_page_access_replay(struct scribe_ps *scribe,
 	if (event->type == SCRIBE_EVENT_MEM_ALONE) {
 		scribe_free_event(event);
 
-		MEM_DEBUG(scribe, "waiting for threads to die");
 		wait_event(mm->scribe_wait, !is_sharing_mm(scribe->p->mm));
-		MEM_DEBUG(scribe, "threads are dead :)");
 		scribe->mm->is_alone = 1;
 
 		down_read(&mm->mmap_sem);
 		scribe_page_release_ownership(scribe, ONLY_ANONYMOUS_PAGES);
-		key.object = mm;
-		key.offset = OFFSET_ALL;
-		scribe_remove_page(scribe->ctx, &key);
+		remove_pages_of(scribe->ctx->mm_ctx, mm);
 		return -EAGAIN;
 	}
 
@@ -2035,9 +1880,6 @@ static inline int scribe_page_access(struct scribe_ps *scribe,
 		int write_access)
 {
 	int ret;
-	MEM_DEBUG(scribe, "accessing page=%p address=%p %s",
-		  (void*)page->key.offset, (void*)address,
-		   write_access ? "write" : "read");
 
 	if (is_recording(scribe))
 		ret = scribe_page_access_record(scribe, mm, vma, page,
@@ -2073,10 +1915,8 @@ static int own_pte_alloc_map(struct scribe_ps *scribe, struct mm_struct *mm,
 	if (!own_pmd)
 		return -ENOMEM;
 	own_pte = pte_alloc_map(mm, own_pmd, address);
-	if (!own_pte) {
-		MEM_DEBUG(scribe, "own_pte_alloc_map() failed");
+	if (!own_pte)
 		return -ENOMEM;
-	}
 	*pown_pte = own_pte;
 	*pown_pmd = own_pmd;
 	return 0;
@@ -2107,26 +1947,22 @@ int do_scribe_page(struct scribe_ps *scribe, struct mm_struct *mm,
 
 retry:
 	if (!is_vma_scribed(scribe, vma)) {
-		XMEM_DEBUG(scribe, "page not scribed");
 		page = NULL;
 		goto set_pte;
 	}
 
-	page_key = get_page_key(vma, address);
-	page = get_scribe_page(scribe->ctx, &page_key);
+	get_page_key(vma, address, &page_key);
+	page = get_scribe_page(scribe->ctx->mm_ctx, &page_key);
 	if (IS_ERR(page))
 		return VM_FAULT_OOM;
 
 	ret = scribe_page_access(scribe, mm, vma, page, address,
 				 flags & FAULT_FLAG_WRITE);
 	if (ret) {
-		if (ret == -EAGAIN) {
-			MEM_DEBUG(scribe, "retrying (are we alone ?)");
+		if (ret == -EAGAIN)
 			goto retry;
-		}
 		if (ret == -ENOMEM)
 			return VM_FAULT_OOM;
-		MEM_DEBUG(scribe, "something went bad (%d)", ret);
 		page = NULL;
 	}
 
@@ -2134,15 +1970,6 @@ set_pte:
 	/* pte and own_pte are both protected with the same spinlock. */
 	pte = pte_offset_map_lock(mm, pmd, address, &ptl);
 	own_pte = pte_offset_map_nested2(own_pmd, address);
-
-	XMEM_DEBUG(scribe, "do_scribe_page() %s (real=%s%s own=%s%s) addr = %p, vpage = %p (%p)",
-		(flags & FAULT_FLAG_WRITE) ? "w" : "r",
-		pte_write(*pte) ? "w" : "",
-		pte_present(*pte) ? "p" : "",
-		pte_write(*own_pte) ? "w" : "",
-		pte_present(*own_pte) ? "p" : "",
-		(void*)address, (void*)(address & PAGE_MASK),
-		page);
 
 	entry = *pte;
 	if (flags & FAULT_FLAG_WRITE) {
@@ -2184,7 +2011,7 @@ void scribe_add_vma(struct vm_area_struct *vma)
 	 */
 
 	object = vma->vm_file->f_dentry->d_inode;
-	ref = get_obj_ref(scribe->ctx, object);
+	ref = get_obj_ref(scribe->ctx->mm_ctx, object);
 
 	WARN(IS_ERR(ref), "Cannot get_obj_ref()\n");
 }
@@ -2197,8 +2024,10 @@ void scribe_remove_vma(struct vm_area_struct *vma)
 	if (!should_handle_mm(scribe))
 		return;
 
-	if (vma->vm_flags & VM_SHARED)
-		put_obj(scribe->ctx, vma->vm_file->f_dentry->d_inode);
+	if (vma->vm_flags & VM_SHARED) {
+		put_obj_ref(scribe->ctx->mm_ctx,
+			    vma->vm_file->f_dentry->d_inode);
+	}
 
 	/*
 	 * We don't want to remove any pages. It may suck some memory, but

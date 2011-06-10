@@ -44,6 +44,7 @@
 #include <linux/stringify.h>
 #include <linux/bitops.h>
 #include <linux/gfp.h>
+#include <linux/scribe_resource.h>
 
 #include <asm/sections.h>
 
@@ -1553,6 +1554,61 @@ print_deadlock_bug(struct task_struct *curr, struct held_lock *prev,
 	return 0;
 }
 
+#ifdef CONFIG_SCRIBE
+static int
+print_scribe_deadlock_bug(struct task_struct *curr, struct held_lock *prev,
+			  struct held_lock *next)
+{
+	if (!debug_locks_off_graph_unlock() || debug_locks_silent)
+		return 0;
+
+	printk("\n===========================================\n");
+	printk(  "[ INFO: possible replay deadlock detected ]\n");
+	print_kernel_version();
+	printk(  "-------------------------------------------\n");
+	printk("%s/%d is trying to acquire resource:\n",
+		curr->comm, task_pid_nr(curr));
+	print_lock(next);
+	printk("\nbut task is already holding lock:\n");
+	print_lock(prev);
+
+	printk("\nother info that might help us debug this:\n");
+	lockdep_print_held_locks(curr);
+
+	printk("\nstack backtrace:\n");
+	dump_stack();
+
+	return 0;
+}
+
+static int
+check_scribe_deadlock(struct task_struct *curr, struct held_lock *next,
+		      struct lockdep_map *next_instance, int read)
+{
+	struct held_lock *first;
+
+	if (curr->lockdep_depth == 0)
+		return 1;
+
+	if (!is_scribe_resource_key(next_instance->key))
+		return 1;
+
+	first = &curr->held_locks[0];
+
+	if (!is_scribe_resource_key(first->instance->key))
+		return print_scribe_deadlock_bug(curr, first, next);
+	return 1;
+}
+#else
+static int
+check_scribe_deadlock(struct task_struct *curr, struct held_lock *next,
+		      struct lockdep_map *next_instance, int read)
+{
+	return 1;
+}
+
+#endif
+
 /*
  * Check whether we are holding such a class already.
  *
@@ -1567,8 +1623,13 @@ check_deadlock(struct task_struct *curr, struct held_lock *next,
 {
 	struct held_lock *prev;
 	struct held_lock *nest = NULL;
+	int ret;
 	int i;
 
+	ret = check_scribe_deadlock(curr, next, next_instance, read);
+	if (!ret)
+		return 0;
+	
 	for (i = 0; i < curr->lockdep_depth; i++) {
 		prev = curr->held_locks + i;
 
