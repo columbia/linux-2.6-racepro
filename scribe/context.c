@@ -10,6 +10,7 @@
 #include <linux/sched.h>
 #include <linux/seq_file.h>
 #include <linux/jiffies.h>
+#include <linux/nsproxy.h>
 #include <linux/scribe.h>
 
 struct scribe_context *scribe_alloc_context(void)
@@ -29,6 +30,8 @@ struct scribe_context *scribe_alloc_context(void)
 	init_waitqueue_head(&ctx->tasks_wait);
 	ctx->max_num_tasks = 0;
 	ctx->num_tasks = 0;
+	ctx->init_nsproxy = NULL;
+	ctx->monitor_nsproxy = NULL;
 
 	spin_lock_init(&ctx->queues_lock);
 	INIT_LIST_HEAD(&ctx->queues);
@@ -95,6 +98,40 @@ void scribe_exit_context(struct scribe_context *ctx)
 	scribe_put_context(ctx);
 }
 
+static void setup_init_nsproxy(struct scribe_context *ctx,
+			       struct scribe_ps *scribe)
+{
+	assert_spin_locked(&ctx->tasks_lock);
+
+	if (!ctx->init_nsproxy) {
+		ctx->init_nsproxy = scribe->p->nsproxy;
+		get_nsproxy(ctx->init_nsproxy);
+	}
+}
+
+static void setup_monitor_nsproxy(struct scribe_context *ctx)
+{
+	assert_spin_locked(&ctx->tasks_lock);
+
+	if (!ctx->monitor_nsproxy) {
+		ctx->monitor_nsproxy = current->nsproxy;
+		get_nsproxy(ctx->monitor_nsproxy);
+	}
+}
+
+static void clear_nsproxies(struct scribe_context *ctx)
+{
+	if (ctx->init_nsproxy) {
+		put_nsproxy(ctx->init_nsproxy);
+		ctx->init_nsproxy = NULL;
+	}
+
+	if (ctx->monitor_nsproxy) {
+		put_nsproxy(ctx->monitor_nsproxy);
+		ctx->monitor_nsproxy = NULL;
+	}
+}
+
 static int context_start(struct scribe_context *ctx, unsigned long flags,
 			 struct scribe_event_context_idle *idle_event,
 			 struct scribe_event_diverge *diverge_event,
@@ -128,6 +165,8 @@ static int context_start(struct scribe_context *ctx, unsigned long flags,
 
 	atomic_set(&ctx->signal_cookie, 0);
 
+	setup_monitor_nsproxy(ctx);
+
 	return 0;
 }
 
@@ -138,6 +177,8 @@ static int context_start(struct scribe_context *ctx, unsigned long flags,
  * - NULL: everything went well.
  * - an error (IS_ERR(reason) == 1): something bad happened, such as -ENODATA.
  * - a diverge event: a specific diverge error happened.
+ *
+ * XXX It temporarly releases tasks_lock
  */
 static void context_idle(struct scribe_context *ctx,
 			 struct scribe_event *reason)
@@ -183,6 +224,10 @@ static void context_idle(struct scribe_context *ctx,
 		scribe_free_event(ctx->diverge_event);
 		ctx->diverge_event = NULL;
 	}
+
+	spin_unlock(&ctx->tasks_lock);
+	clear_nsproxies(ctx);
+	spin_lock(&ctx->tasks_lock);
 }
 
 static int event_diverge_max_size_type(void)
@@ -419,6 +464,20 @@ static inline void tasks_accounting(struct scribe_context *ctx, int delta)
 		ctx->max_num_tasks = ctx->num_tasks;
 }
 
+static void notify_attach(struct scribe_context *ctx, struct scribe_ps *scribe)
+{
+	pid_t real_pid, scribe_pid;
+
+	real_pid = task_pid_nr_ns(scribe->p, ctx->monitor_nsproxy->pid_ns);
+	scribe_pid = task_pid_nr_ns(scribe->p, ctx->init_nsproxy->pid_ns);
+
+	/* XXX We fail silently */
+	(void)scribe_queue_new_event_stream(&ctx->notifications,
+					    SCRIBE_EVENT_ON_ATTACH,
+					    .real_pid = real_pid,
+					    .scribe_pid = scribe_pid);
+}
+
 /*
  * scribe_attach() and scribe_detach() must only be called when
  * current == scribe->p, or when scribe->p is sleeping (and thus not accessing
@@ -478,6 +537,7 @@ void scribe_attach(struct scribe_ps *scribe)
 
 	list_add_tail(&scribe->node, &ctx->tasks);
 	tasks_accounting(ctx, +1);
+	setup_init_nsproxy(ctx, scribe);
 
 	/* ctx->flags must be read within the critical region */
 	scribe->flags |= (ctx->flags & SCRIBE_RECORD) ? SCRIBE_PS_RECORD : 0;
@@ -526,6 +586,8 @@ void scribe_attach(struct scribe_ps *scribe)
 	scribe_attach_arch(scribe);
 
 	BUG_ON(scribe_mem_init_st(scribe));
+
+	notify_attach(ctx, scribe);
 }
 
 void __scribe_detach(struct scribe_ps *scribe)

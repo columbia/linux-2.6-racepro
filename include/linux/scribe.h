@@ -142,7 +142,7 @@ extern void scribe_queue_events_stream(struct scribe_stream *stream,
  *			       SCRIBE_EVENT_SYSCALL,
  *			       .nr = 1, .ret = 2);
  */
-#define scribe_queue_new_event(queue, _type, ...)			\
+#define scribe_queue_new_event_stream(stream, _type, ...)		\
 ({									\
 	struct##_type *__new_event;					\
 	int __ret = 0;							\
@@ -153,10 +153,13 @@ extern void scribe_queue_events_stream(struct scribe_stream *stream,
 	else {								\
 		*__new_event = (struct##_type)				\
 			{.h = {.type = _type},  __VA_ARGS__};		\
-		scribe_queue_event(queue, __new_event);			\
+		scribe_queue_event_stream(stream, __new_event);		\
 	}								\
 	__ret;								\
 })
+
+#define scribe_queue_new_event(queue, _type, ...) \
+	scribe_queue_new_event_stream(&queue->stream, _type, __VA_ARGS__)
 
 #define SCRIBE_NO_WAIT			0
 #define SCRIBE_WAIT			1
@@ -307,6 +310,8 @@ struct scribe_context {
 	wait_queue_head_t tasks_wait;
 	int max_num_tasks;
 	int num_tasks;
+	struct nsproxy *init_nsproxy;
+	struct nsproxy *monitor_nsproxy;
 
 	int queues_sealed;
 	spinlock_t queues_lock;
