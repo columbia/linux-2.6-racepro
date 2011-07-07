@@ -860,6 +860,9 @@ out_mknod_drop_write:
 	spin_lock(&unix_table_lock);
 
 	if (!sunaddr->sun_path[0]) {
+		WARN(is_ps_scribed(current),
+		     "Unix abstract addresses are not synchronized\n");
+
 		err = -EADDRINUSE;
 		if (__unix_find_socket_byname(net, sunaddr, addr_len,
 					      sk->sk_type, hash)) {
@@ -872,7 +875,6 @@ out_mknod_drop_write:
 		list = &unix_socket_table[dentry->d_inode->i_ino & (UNIX_HASH_SIZE-1)];
 		u->dentry = nd.path.dentry;
 		u->mnt    = nd.path.mnt;
-		scribe_unlock(locked_inode);
 	}
 
 	err = 0;
@@ -882,6 +884,8 @@ out_mknod_drop_write:
 
 out_unlock:
 	spin_unlock(&unix_table_lock);
+	if (locked_inode)
+		scribe_unlock(locked_inode);
 out_up:
 	mutex_unlock(&u->readlock);
 out:
@@ -891,7 +895,7 @@ out_mknod_dput:
 	dput(dentry);
 out_mknod_unlock:
 	mutex_unlock(&nd.path.dentry->d_inode->i_mutex);
-	scribe_unlock(nd.path.dentry->d_inode);
+	scribe_unlock(locked_inode);
 	path_put(&nd.path);
 out_mknod_parent:
 	if (err == -EEXIST)
