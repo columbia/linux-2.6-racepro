@@ -2785,9 +2785,11 @@ void proc_flush_task(struct task_struct *task)
 		pid_ns_release_proc(upid->ns);
 }
 
-static struct dentry *proc_pid_instantiate(struct inode *dir,
-					   struct dentry * dentry,
-					   struct task_struct *task, const void *ptr)
+static struct dentry *__proc_pid_instantiate(struct inode *dir,
+					     struct dentry * dentry,
+					     struct task_struct *task,
+					     const void *ptr,
+					     bool unlock_inode)
 {
 	struct dentry *error = ERR_PTR(-ENOENT);
 	struct inode *inode;
@@ -2808,18 +2810,30 @@ static struct dentry *proc_pid_instantiate(struct inode *dir,
 
 	d_add(dentry, inode);
 	/* Close the race of the process dying before we return the dentry */
+	if (unlock_inode)
+		mutex_unlock(&dir->i_mutex);
 	if (pid_revalidate(dentry, NULL))
 		error = NULL;
+	if (unlock_inode)
+		mutex_lock(&dir->i_mutex);
 out:
 	return error;
 }
 
+static struct dentry *proc_pid_instantiate(struct inode *dir,
+					   struct dentry * dentry,
+					   struct task_struct *task, const void *ptr)
+{
+	return __proc_pid_instantiate(dir, dentry, task, ptr, false);
+}
+
 struct dentry *proc_pid_lookup(struct inode *dir, struct dentry * dentry, struct nameidata *nd)
 {
-	struct dentry *result;
+	struct dentry *result, *raced_dentry;
 	struct task_struct *task;
 	unsigned tgid;
 	struct pid_namespace *ns;
+	bool scribed = is_ps_scribed(current);
 
 	result = proc_base_lookup(dir, dentry);
 	if (!IS_ERR(result) || PTR_ERR(result) != -ENOENT)
@@ -2829,24 +2843,77 @@ struct dentry *proc_pid_lookup(struct inode *dir, struct dentry * dentry, struct
 	if (tgid == ~0U)
 		goto out;
 
-	result = ERR_PTR(-ENOMEM);
-	if (scribe_resource_prepare())
-		goto out;
-
 	ns = dentry->d_sb->s_fs_info;
 
-	scribe_lock_pid_read(tgid);
-	rcu_read_lock();
-	task = find_task_by_pid_ns(tgid, ns);
-	if (task)
-		get_task_struct(task);
-	rcu_read_unlock();
-	scribe_unlock_pid(tgid);
+	if (scribed) {
+		/*
+		 * There is a lock dependency that we want to avoid:
+		 * SCRIBE_RES_TYPE_PID
+		 *   p->cred_guard_mutex
+		 *     SCRIBE_RES_TYPE_INODE
+		 *       sb->s_type->i_mutex_key
+		 *
+		 * So we unlock it here, but it opens a race with another
+		 * process in do_lookup(), so we have to check if we raced
+		 * against it
+		 */
+		mutex_unlock(&dir->i_mutex);
 
-	if (!task)
-		goto out;
+		if (scribe_resource_prepare()) {
+			mutex_lock(&dir->i_mutex);
+			result = ERR_PTR(-ENOMEM);
+			goto out;
+		}
 
-	result = proc_pid_instantiate(dir, dentry, task, NULL);
+		scribe_lock_pid_read(tgid);
+		rcu_read_lock();
+		task = find_task_by_pid_ns(tgid, ns);
+		if (task)
+			get_task_struct(task);
+		rcu_read_unlock();
+		scribe_unlock_pid(tgid);
+
+		mutex_lock(&dir->i_mutex);
+
+		if (!task)
+			goto out;
+
+		raced_dentry = d_lookup(dentry->d_parent, &dentry->d_name);
+		if (raced_dentry) {
+			result = raced_dentry;
+			/*
+			 * Revalidation is needed because:
+			 * 1) A lookup always generates 2 PID lock events.
+			 * 2) We don't hold the mutex and pid_revalidate()
+			 * might still be pending for the other process, and
+			 * we don't want to return a dentry that is not
+			 * validated.
+			 */
+			mutex_unlock(&dir->i_mutex);
+			if (!pid_revalidate(raced_dentry, NULL)) {
+				dput(raced_dentry);
+				result = ERR_PTR(-ENOENT);
+			}
+			mutex_lock(&dir->i_mutex);
+			goto out_put;
+		}
+	} else { /* not-scribed */
+		rcu_read_lock();
+		task = find_task_by_pid_ns(tgid, ns);
+		if (task)
+			get_task_struct(task);
+		rcu_read_unlock();
+
+		if (!task)
+			goto out;
+	}
+
+	/*
+	 * when scribed == true, the inode mutex will be dropped during
+	 * pid_revalidate, so we avoid a potential deadlock.
+	 */
+	result = __proc_pid_instantiate(dir, dentry, task, NULL, scribed);
+out_put:
 	put_task_struct(task);
 out:
 	return result;
