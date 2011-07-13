@@ -2057,8 +2057,9 @@ static const struct inode_operations proc_fdinfo_inode_operations = {
 };
 
 
-static struct dentry *proc_pident_instantiate(struct inode *dir,
-	struct dentry *dentry, struct task_struct *task, const void *ptr)
+static struct dentry *__proc_pident_instantiate(struct inode *dir,
+	struct dentry *dentry, struct task_struct *task, const void *ptr,
+	bool unlock_inode)
 {
 	const struct pid_entry *p = ptr;
 	struct inode *inode;
@@ -2081,10 +2082,45 @@ static struct dentry *proc_pident_instantiate(struct inode *dir,
 	dentry->d_op = &pid_dentry_operations;
 	d_add(dentry, inode);
 	/* Close the race of the process dying before we return the dentry */
+	if (unlock_inode)
+		mutex_unlock(&dir->i_mutex);
 	if (pid_revalidate(dentry, NULL))
 		error = NULL;
+	if (unlock_inode)
+		mutex_lock(&dir->i_mutex);
 out:
 	return error;
+}
+
+static struct dentry *proc_pident_instantiate(struct inode *dir,
+	struct dentry *dentry, struct task_struct *task, const void *ptr)
+{
+	return proc_pident_instantiate(dir, dentry, task, ptr);
+}
+
+
+static struct dentry *proc_check_pid_lookup_race(struct inode *dir,
+						 struct dentry *dentry)
+{
+	dentry = d_lookup(dentry->d_parent, &dentry->d_name);
+	if (!dentry)
+		return NULL;
+
+	/*
+	 * Revalidation is needed because:
+	 * 1) A lookup always generates 2 PID lock events.
+	 * 2) We don't hold the mutex when pid_revalidate() is called
+	 * once the dentry is added (during proc_pid_instantiate),
+	 * so there is a race that validation is still in process with the
+	 * raced process.
+	 */
+	mutex_unlock(&dir->i_mutex);
+	if (!pid_revalidate(dentry, NULL)) {
+		dput(dentry);
+		dentry = ERR_PTR(-ENOENT);
+	}
+	mutex_lock(&dir->i_mutex);
+	return dentry;
 }
 
 static struct dentry *proc_pident_lookup(struct inode *dir, 
@@ -2093,13 +2129,30 @@ static struct dentry *proc_pident_lookup(struct inode *dir,
 					 unsigned int nents)
 {
 	struct dentry *error;
-	struct task_struct *task = get_proc_task(dir);
+	struct task_struct *task;
 	const struct pid_entry *p, *last;
+	bool scribed = is_ps_scribed(current);
 
 	error = ERR_PTR(-ENOENT);
 
+	/* Scribe: See logic comments in proc_pid_lookup */
+
+	if (scribed)
+		mutex_unlock(&dir->i_mutex);
+
+	task = get_proc_task(dir);
+
+	if (scribed)
+		mutex_lock(&dir->i_mutex);
+
 	if (!task)
 		goto out_no_task;
+
+	if (scribed) {
+		error = proc_check_pid_lookup_race(dir, dentry);
+		if (error)
+			goto out;
+	}
 
 	/*
 	 * Yes, it does not scale. And it should not. Don't add
@@ -2115,7 +2168,7 @@ static struct dentry *proc_pident_lookup(struct inode *dir,
 	if (p > last)
 		goto out;
 
-	error = proc_pident_instantiate(dir, dentry, task, p);
+	error = __proc_pident_instantiate(dir, dentry, task, p, scribed);
 out:
 	put_task_struct(task);
 out_no_task:
@@ -2829,7 +2882,7 @@ static struct dentry *proc_pid_instantiate(struct inode *dir,
 
 struct dentry *proc_pid_lookup(struct inode *dir, struct dentry * dentry, struct nameidata *nd)
 {
-	struct dentry *result, *raced_dentry;
+	struct dentry *result;
 	struct task_struct *task;
 	unsigned tgid;
 	struct pid_namespace *ns;
@@ -2845,72 +2898,56 @@ struct dentry *proc_pid_lookup(struct inode *dir, struct dentry * dentry, struct
 
 	ns = dentry->d_sb->s_fs_info;
 
+	if (scribe_resource_prepare()) {
+		result = ERR_PTR(-ENOMEM);
+		goto out;
+	}
+
+	/*
+	 * Scribe only:
+	 * There is a lock dependency that we want to avoid:
+	 * SCRIBE_RES_TYPE_PID
+	 *   p->cred_guard_mutex
+	 *     SCRIBE_RES_TYPE_INODE
+	 *       sb->s_type->i_mutex_key
+	 *
+	 * So we unlock it here, but it opens a race with another
+	 * process in do_lookup(), so we have to check if we raced
+	 * against it
+	 */
+
+	if (scribed) {
+		mutex_unlock(&dir->i_mutex);
+		scribe_lock_pid_read(tgid);
+	}
+
+	rcu_read_lock();
+	task = find_task_by_pid_ns(tgid, ns);
+	if (task)
+		get_task_struct(task);
+	rcu_read_unlock();
+
+	if (scribed) {
+		scribe_unlock_pid(tgid);
+		mutex_lock(&dir->i_mutex);
+	}
+
+	if (!task)
+		goto out;
+
 	if (scribed) {
 		/*
-		 * There is a lock dependency that we want to avoid:
-		 * SCRIBE_RES_TYPE_PID
-		 *   p->cred_guard_mutex
-		 *     SCRIBE_RES_TYPE_INODE
-		 *       sb->s_type->i_mutex_key
-		 *
-		 * So we unlock it here, but it opens a race with another
-		 * process in do_lookup(), so we have to check if we raced
-		 * against it
+		 * We dropped the mutex lock, we need to check for a dentry
+		 * race.
 		 */
-		mutex_unlock(&dir->i_mutex);
-
-		if (scribe_resource_prepare()) {
-			mutex_lock(&dir->i_mutex);
-			result = ERR_PTR(-ENOMEM);
-			goto out;
-		}
-
-		scribe_lock_pid_read(tgid);
-		rcu_read_lock();
-		task = find_task_by_pid_ns(tgid, ns);
-		if (task)
-			get_task_struct(task);
-		rcu_read_unlock();
-		scribe_unlock_pid(tgid);
-
-		mutex_lock(&dir->i_mutex);
-
-		if (!task)
-			goto out;
-
-		raced_dentry = d_lookup(dentry->d_parent, &dentry->d_name);
-		if (raced_dentry) {
-			result = raced_dentry;
-			/*
-			 * Revalidation is needed because:
-			 * 1) A lookup always generates 2 PID lock events.
-			 * 2) We don't hold the mutex and pid_revalidate()
-			 * might still be pending for the other process, and
-			 * we don't want to return a dentry that is not
-			 * validated.
-			 */
-			mutex_unlock(&dir->i_mutex);
-			if (!pid_revalidate(raced_dentry, NULL)) {
-				dput(raced_dentry);
-				result = ERR_PTR(-ENOENT);
-			}
-			mutex_lock(&dir->i_mutex);
+		result = proc_check_pid_lookup_race(dir, dentry);
+		if (result)
 			goto out_put;
-		}
-	} else { /* not-scribed */
-		rcu_read_lock();
-		task = find_task_by_pid_ns(tgid, ns);
-		if (task)
-			get_task_struct(task);
-		rcu_read_unlock();
-
-		if (!task)
-			goto out;
 	}
 
 	/*
 	 * when scribed == true, the inode mutex will be dropped during
-	 * pid_revalidate, so we avoid a potential deadlock.
+	 * pid_revalidate, so we avoid another potential deadlock.
 	 */
 	result = __proc_pid_instantiate(dir, dentry, task, NULL, scribed);
 out_put:
