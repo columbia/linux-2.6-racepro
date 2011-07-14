@@ -1274,7 +1274,8 @@ void scribe_unlock_err(void *object, int err)
 	struct scribe_lock_region *lock_region;
 	struct file *file;
 
-	might_sleep();
+	if (is_replaying(scribe))
+		might_sleep();
 
 	if (!should_handle_resources(scribe))
 		return;
