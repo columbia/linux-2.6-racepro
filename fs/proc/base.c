@@ -1648,6 +1648,8 @@ static const struct dentry_operations pid_dentry_operations =
 
 typedef struct dentry *instantiate_t(struct inode *, struct dentry *,
 				struct task_struct *, const void *);
+typedef struct dentry *__instantiate_t(struct inode *, struct dentry *,
+				struct task_struct *, const void *, bool);
 
 /*
  * Fill a directory entry.
@@ -1816,8 +1818,10 @@ static const struct dentry_operations tid_fd_dentry_operations =
 	.d_delete	= pid_delete_dentry,
 };
 
-static struct dentry *proc_fd_instantiate(struct inode *dir,
-	struct dentry *dentry, struct task_struct *task, const void *ptr)
+static struct dentry *__proc_fd_instantiate(struct inode *dir,
+	struct dentry *dentry, struct task_struct *task, const void *ptr,
+	bool unlock_inode)
+
 {
 	unsigned fd = *(const unsigned *)ptr;
 	struct file *file;
@@ -1857,8 +1861,12 @@ static struct dentry *proc_fd_instantiate(struct inode *dir,
 	dentry->d_op = &tid_fd_dentry_operations;
 	d_add(dentry, inode);
 	/* Close the race of the process dying before we return the dentry */
+	if (unlock_inode)
+		mutex_unlock(&dir->i_mutex);
 	if (tid_fd_revalidate(dentry, NULL))
 		error = NULL;
+	if (unlock_inode)
+		mutex_lock(&dir->i_mutex);
 
  out:
 	return error;
@@ -1870,20 +1878,66 @@ out_iput:
 	goto out;
 }
 
+static struct dentry *proc_fd_instantiate(struct inode *dir,
+	struct dentry *dentry, struct task_struct *task, const void *ptr)
+{
+	return __proc_fd_instantiate(dir, dentry, task, ptr, false);
+}
+
+typedef int (*revalidate_t)(struct dentry *dentry, struct nameidata *nd);
+
+static struct dentry *proc_check_lookup_race(struct inode *dir, struct dentry *dentry,
+					     revalidate_t revalidate)
+{
+	dentry = d_lookup(dentry->d_parent, &dentry->d_name);
+	if (!dentry)
+		return NULL;
+
+	/*
+	 * Revalidation is needed because:
+	 * 1) A lookup always generates 2 PID lock events.
+	 * 2) We don't hold the mutex when pid_revalidate() is called
+	 * once the dentry is added (during proc_pid_instantiate),
+	 * so there is a race that validation is still in process with the
+	 * raced process.
+	 */
+	mutex_unlock(&dir->i_mutex);
+	if (!revalidate(dentry, NULL)) {
+		dput(dentry);
+		dentry = ERR_PTR(-ENOENT);
+	}
+	mutex_lock(&dir->i_mutex);
+	return dentry;
+}
+
 static struct dentry *proc_lookupfd_common(struct inode *dir,
 					   struct dentry *dentry,
-					   instantiate_t instantiate)
+					   __instantiate_t instantiate,
+					   revalidate_t revalidate)
 {
-	struct task_struct *task = get_proc_task(dir);
+	struct task_struct *task;
 	unsigned fd = name_to_int(dentry);
 	struct dentry *result = ERR_PTR(-ENOENT);
+	bool scribed = is_ps_scribed(current);
+
+	if (scribed)
+		mutex_unlock(&dir->i_mutex);
+	task = get_proc_task(dir);
+	if (scribed)
+		mutex_lock(&dir->i_mutex);
 
 	if (!task)
 		goto out_no_task;
 	if (fd == ~0U)
 		goto out;
 
-	result = instantiate(dir, dentry, task, &fd);
+	if (scribed) {
+		result = proc_check_lookup_race(dir, dentry, revalidate);
+		if (result)
+			goto out;
+	}
+
+	result = instantiate(dir, dentry, task, &fd, scribed);
 out:
 	put_task_struct(task);
 out_no_task:
@@ -1952,7 +2006,8 @@ out_no_task:
 static struct dentry *proc_lookupfd(struct inode *dir, struct dentry *dentry,
 				    struct nameidata *nd)
 {
-	return proc_lookupfd_common(dir, dentry, proc_fd_instantiate);
+	return proc_lookupfd_common(dir, dentry, __proc_fd_instantiate,
+				    tid_fd_revalidate);
 }
 
 static int proc_readfd(struct file *filp, void *dirent, filldir_t filldir)
@@ -2005,8 +2060,9 @@ static const struct inode_operations proc_fd_inode_operations = {
 	.setattr	= proc_setattr,
 };
 
-static struct dentry *proc_fdinfo_instantiate(struct inode *dir,
-	struct dentry *dentry, struct task_struct *task, const void *ptr)
+static struct dentry *__proc_fdinfo_instantiate(struct inode *dir,
+	struct dentry *dentry, struct task_struct *task, const void *ptr,
+	bool unlock_inode)
 {
 	unsigned fd = *(unsigned *)ptr;
  	struct inode *inode;
@@ -2023,18 +2079,28 @@ static struct dentry *proc_fdinfo_instantiate(struct inode *dir,
 	dentry->d_op = &tid_fd_dentry_operations;
 	d_add(dentry, inode);
 	/* Close the race of the process dying before we return the dentry */
+	if (unlock_inode)
+		mutex_unlock(&dir->i_mutex);
 	if (tid_fd_revalidate(dentry, NULL))
 		error = NULL;
+	if (unlock_inode)
+		mutex_lock(&dir->i_mutex);
 
  out:
 	return error;
+}
+static struct dentry *proc_fdinfo_instantiate(struct inode *dir,
+	struct dentry *dentry, struct task_struct *task, const void *ptr)
+{
+	return proc_fdinfo_instantiate(dir, dentry, task, ptr);
 }
 
 static struct dentry *proc_lookupfdinfo(struct inode *dir,
 					struct dentry *dentry,
 					struct nameidata *nd)
 {
-	return proc_lookupfd_common(dir, dentry, proc_fdinfo_instantiate);
+	return proc_lookupfd_common(dir, dentry, __proc_fdinfo_instantiate,
+				    tid_fd_revalidate);
 }
 
 static int proc_readfdinfo(struct file *filp, void *dirent, filldir_t filldir)
@@ -2098,31 +2164,6 @@ static struct dentry *proc_pident_instantiate(struct inode *dir,
 	return proc_pident_instantiate(dir, dentry, task, ptr);
 }
 
-
-static struct dentry *proc_check_pid_lookup_race(struct inode *dir,
-						 struct dentry *dentry)
-{
-	dentry = d_lookup(dentry->d_parent, &dentry->d_name);
-	if (!dentry)
-		return NULL;
-
-	/*
-	 * Revalidation is needed because:
-	 * 1) A lookup always generates 2 PID lock events.
-	 * 2) We don't hold the mutex when pid_revalidate() is called
-	 * once the dentry is added (during proc_pid_instantiate),
-	 * so there is a race that validation is still in process with the
-	 * raced process.
-	 */
-	mutex_unlock(&dir->i_mutex);
-	if (!pid_revalidate(dentry, NULL)) {
-		dput(dentry);
-		dentry = ERR_PTR(-ENOENT);
-	}
-	mutex_lock(&dir->i_mutex);
-	return dentry;
-}
-
 static struct dentry *proc_pident_lookup(struct inode *dir, 
 					 struct dentry *dentry,
 					 const struct pid_entry *ents,
@@ -2149,7 +2190,7 @@ static struct dentry *proc_pident_lookup(struct inode *dir,
 		goto out_no_task;
 
 	if (scribed) {
-		error = proc_check_pid_lookup_race(dir, dentry);
+		error = proc_check_lookup_race(dir, dentry, pid_revalidate);
 		if (error)
 			goto out;
 	}
@@ -2940,7 +2981,7 @@ struct dentry *proc_pid_lookup(struct inode *dir, struct dentry * dentry, struct
 		 * We dropped the mutex lock, we need to check for a dentry
 		 * race.
 		 */
-		result = proc_check_pid_lookup_race(dir, dentry);
+		result = proc_check_lookup_race(dir, dentry, pid_revalidate);
 		if (result)
 			goto out_put;
 	}
