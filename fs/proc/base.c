@@ -1648,6 +1648,8 @@ static const struct dentry_operations pid_dentry_operations =
 
 typedef struct dentry *instantiate_t(struct inode *, struct dentry *,
 				struct task_struct *, const void *);
+typedef struct dentry *__instantiate_t(struct inode *, struct dentry *,
+				struct task_struct *, const void *, bool);
 
 /*
  * Fill a directory entry.
@@ -1816,8 +1818,10 @@ static const struct dentry_operations tid_fd_dentry_operations =
 	.d_delete	= pid_delete_dentry,
 };
 
-static struct dentry *proc_fd_instantiate(struct inode *dir,
-	struct dentry *dentry, struct task_struct *task, const void *ptr)
+static struct dentry *__proc_fd_instantiate(struct inode *dir,
+	struct dentry *dentry, struct task_struct *task, const void *ptr,
+	bool unlock_inode)
+
 {
 	unsigned fd = *(const unsigned *)ptr;
 	struct file *file;
@@ -1857,8 +1861,12 @@ static struct dentry *proc_fd_instantiate(struct inode *dir,
 	dentry->d_op = &tid_fd_dentry_operations;
 	d_add(dentry, inode);
 	/* Close the race of the process dying before we return the dentry */
+	if (unlock_inode)
+		mutex_unlock(&dir->i_mutex);
 	if (tid_fd_revalidate(dentry, NULL))
 		error = NULL;
+	if (unlock_inode)
+		mutex_lock(&dir->i_mutex);
 
  out:
 	return error;
@@ -1870,20 +1878,66 @@ out_iput:
 	goto out;
 }
 
+static struct dentry *proc_fd_instantiate(struct inode *dir,
+	struct dentry *dentry, struct task_struct *task, const void *ptr)
+{
+	return __proc_fd_instantiate(dir, dentry, task, ptr, false);
+}
+
+typedef int (*revalidate_t)(struct dentry *dentry, struct nameidata *nd);
+
+static struct dentry *proc_check_lookup_race(struct inode *dir, struct dentry *dentry,
+					     revalidate_t revalidate)
+{
+	dentry = d_lookup(dentry->d_parent, &dentry->d_name);
+	if (!dentry)
+		return NULL;
+
+	/*
+	 * Revalidation is needed because:
+	 * 1) A lookup always generates 2 PID lock events.
+	 * 2) We don't hold the mutex when pid_revalidate() is called
+	 * once the dentry is added (during proc_pid_instantiate),
+	 * so there is a race that validation is still in process with the
+	 * raced process.
+	 */
+	mutex_unlock(&dir->i_mutex);
+	if (!revalidate(dentry, NULL)) {
+		dput(dentry);
+		dentry = ERR_PTR(-ENOENT);
+	}
+	mutex_lock(&dir->i_mutex);
+	return dentry;
+}
+
 static struct dentry *proc_lookupfd_common(struct inode *dir,
 					   struct dentry *dentry,
-					   instantiate_t instantiate)
+					   __instantiate_t instantiate,
+					   revalidate_t revalidate)
 {
-	struct task_struct *task = get_proc_task(dir);
+	struct task_struct *task;
 	unsigned fd = name_to_int(dentry);
 	struct dentry *result = ERR_PTR(-ENOENT);
+	bool scribed = is_ps_scribed(current);
+
+	if (scribed)
+		mutex_unlock(&dir->i_mutex);
+	task = get_proc_task(dir);
+	if (scribed)
+		mutex_lock(&dir->i_mutex);
 
 	if (!task)
 		goto out_no_task;
 	if (fd == ~0U)
 		goto out;
 
-	result = instantiate(dir, dentry, task, &fd);
+	if (scribed) {
+		result = proc_check_lookup_race(dir, dentry, revalidate);
+		if (result)
+			goto out;
+	}
+
+	result = instantiate(dir, dentry, task, &fd, scribed);
 out:
 	put_task_struct(task);
 out_no_task:
@@ -1952,7 +2006,8 @@ out_no_task:
 static struct dentry *proc_lookupfd(struct inode *dir, struct dentry *dentry,
 				    struct nameidata *nd)
 {
-	return proc_lookupfd_common(dir, dentry, proc_fd_instantiate);
+	return proc_lookupfd_common(dir, dentry, __proc_fd_instantiate,
+				    tid_fd_revalidate);
 }
 
 static int proc_readfd(struct file *filp, void *dirent, filldir_t filldir)
@@ -2005,8 +2060,9 @@ static const struct inode_operations proc_fd_inode_operations = {
 	.setattr	= proc_setattr,
 };
 
-static struct dentry *proc_fdinfo_instantiate(struct inode *dir,
-	struct dentry *dentry, struct task_struct *task, const void *ptr)
+static struct dentry *__proc_fdinfo_instantiate(struct inode *dir,
+	struct dentry *dentry, struct task_struct *task, const void *ptr,
+	bool unlock_inode)
 {
 	unsigned fd = *(unsigned *)ptr;
  	struct inode *inode;
@@ -2023,18 +2079,28 @@ static struct dentry *proc_fdinfo_instantiate(struct inode *dir,
 	dentry->d_op = &tid_fd_dentry_operations;
 	d_add(dentry, inode);
 	/* Close the race of the process dying before we return the dentry */
+	if (unlock_inode)
+		mutex_unlock(&dir->i_mutex);
 	if (tid_fd_revalidate(dentry, NULL))
 		error = NULL;
+	if (unlock_inode)
+		mutex_lock(&dir->i_mutex);
 
  out:
 	return error;
+}
+static struct dentry *proc_fdinfo_instantiate(struct inode *dir,
+	struct dentry *dentry, struct task_struct *task, const void *ptr)
+{
+	return proc_fdinfo_instantiate(dir, dentry, task, ptr);
 }
 
 static struct dentry *proc_lookupfdinfo(struct inode *dir,
 					struct dentry *dentry,
 					struct nameidata *nd)
 {
-	return proc_lookupfd_common(dir, dentry, proc_fdinfo_instantiate);
+	return proc_lookupfd_common(dir, dentry, __proc_fdinfo_instantiate,
+				    tid_fd_revalidate);
 }
 
 static int proc_readfdinfo(struct file *filp, void *dirent, filldir_t filldir)
@@ -2057,8 +2123,9 @@ static const struct inode_operations proc_fdinfo_inode_operations = {
 };
 
 
-static struct dentry *proc_pident_instantiate(struct inode *dir,
-	struct dentry *dentry, struct task_struct *task, const void *ptr)
+static struct dentry *__proc_pident_instantiate(struct inode *dir,
+	struct dentry *dentry, struct task_struct *task, const void *ptr,
+	bool unlock_inode)
 {
 	const struct pid_entry *p = ptr;
 	struct inode *inode;
@@ -2081,10 +2148,20 @@ static struct dentry *proc_pident_instantiate(struct inode *dir,
 	dentry->d_op = &pid_dentry_operations;
 	d_add(dentry, inode);
 	/* Close the race of the process dying before we return the dentry */
+	if (unlock_inode)
+		mutex_unlock(&dir->i_mutex);
 	if (pid_revalidate(dentry, NULL))
 		error = NULL;
+	if (unlock_inode)
+		mutex_lock(&dir->i_mutex);
 out:
 	return error;
+}
+
+static struct dentry *proc_pident_instantiate(struct inode *dir,
+	struct dentry *dentry, struct task_struct *task, const void *ptr)
+{
+	return proc_pident_instantiate(dir, dentry, task, ptr);
 }
 
 static struct dentry *proc_pident_lookup(struct inode *dir, 
@@ -2093,13 +2170,30 @@ static struct dentry *proc_pident_lookup(struct inode *dir,
 					 unsigned int nents)
 {
 	struct dentry *error;
-	struct task_struct *task = get_proc_task(dir);
+	struct task_struct *task;
 	const struct pid_entry *p, *last;
+	bool scribed = is_ps_scribed(current);
 
 	error = ERR_PTR(-ENOENT);
 
+	/* Scribe: See logic comments in proc_pid_lookup */
+
+	if (scribed)
+		mutex_unlock(&dir->i_mutex);
+
+	task = get_proc_task(dir);
+
+	if (scribed)
+		mutex_lock(&dir->i_mutex);
+
 	if (!task)
 		goto out_no_task;
+
+	if (scribed) {
+		error = proc_check_lookup_race(dir, dentry, pid_revalidate);
+		if (error)
+			goto out;
+	}
 
 	/*
 	 * Yes, it does not scale. And it should not. Don't add
@@ -2115,7 +2209,7 @@ static struct dentry *proc_pident_lookup(struct inode *dir,
 	if (p > last)
 		goto out;
 
-	error = proc_pident_instantiate(dir, dentry, task, p);
+	error = __proc_pident_instantiate(dir, dentry, task, p, scribed);
 out:
 	put_task_struct(task);
 out_no_task:
@@ -2785,9 +2879,11 @@ void proc_flush_task(struct task_struct *task)
 		pid_ns_release_proc(upid->ns);
 }
 
-static struct dentry *proc_pid_instantiate(struct inode *dir,
-					   struct dentry * dentry,
-					   struct task_struct *task, const void *ptr)
+static struct dentry *__proc_pid_instantiate(struct inode *dir,
+					     struct dentry * dentry,
+					     struct task_struct *task,
+					     const void *ptr,
+					     bool unlock_inode)
 {
 	struct dentry *error = ERR_PTR(-ENOENT);
 	struct inode *inode;
@@ -2808,10 +2904,21 @@ static struct dentry *proc_pid_instantiate(struct inode *dir,
 
 	d_add(dentry, inode);
 	/* Close the race of the process dying before we return the dentry */
+	if (unlock_inode)
+		mutex_unlock(&dir->i_mutex);
 	if (pid_revalidate(dentry, NULL))
 		error = NULL;
+	if (unlock_inode)
+		mutex_lock(&dir->i_mutex);
 out:
 	return error;
+}
+
+static struct dentry *proc_pid_instantiate(struct inode *dir,
+					   struct dentry * dentry,
+					   struct task_struct *task, const void *ptr)
+{
+	return __proc_pid_instantiate(dir, dentry, task, ptr, false);
 }
 
 struct dentry *proc_pid_lookup(struct inode *dir, struct dentry * dentry, struct nameidata *nd)
@@ -2820,6 +2927,7 @@ struct dentry *proc_pid_lookup(struct inode *dir, struct dentry * dentry, struct
 	struct task_struct *task;
 	unsigned tgid;
 	struct pid_namespace *ns;
+	bool scribed = is_ps_scribed(current);
 
 	result = proc_base_lookup(dir, dentry);
 	if (!IS_ERR(result) || PTR_ERR(result) != -ENOENT)
@@ -2829,24 +2937,64 @@ struct dentry *proc_pid_lookup(struct inode *dir, struct dentry * dentry, struct
 	if (tgid == ~0U)
 		goto out;
 
-	result = ERR_PTR(-ENOMEM);
-	if (scribe_resource_prepare())
-		goto out;
+	if (tgid <= 1)
+		scribed = false;
 
 	ns = dentry->d_sb->s_fs_info;
 
-	scribe_lock_pid_read(tgid);
+	if (scribe_resource_prepare()) {
+		result = ERR_PTR(-ENOMEM);
+		goto out;
+	}
+
+	/*
+	 * Scribe only:
+	 * There is a lock dependency that we want to avoid:
+	 * SCRIBE_RES_TYPE_PID
+	 *   p->cred_guard_mutex
+	 *     SCRIBE_RES_TYPE_INODE
+	 *       sb->s_type->i_mutex_key
+	 *
+	 * So we unlock it here, but it opens a race with another
+	 * process in do_lookup(), so we have to check if we raced
+	 * against it
+	 */
+
+	if (scribed) {
+		mutex_unlock(&dir->i_mutex);
+		scribe_lock_pid_read(tgid);
+	}
+
 	rcu_read_lock();
 	task = find_task_by_pid_ns(tgid, ns);
 	if (task)
 		get_task_struct(task);
 	rcu_read_unlock();
-	scribe_unlock_pid(tgid);
+
+	if (scribed) {
+		scribe_unlock_pid(tgid);
+		mutex_lock(&dir->i_mutex);
+	}
 
 	if (!task)
 		goto out;
 
-	result = proc_pid_instantiate(dir, dentry, task, NULL);
+	if (scribed) {
+		/*
+		 * We dropped the mutex lock, we need to check for a dentry
+		 * race.
+		 */
+		result = proc_check_lookup_race(dir, dentry, pid_revalidate);
+		if (result)
+			goto out_put;
+	}
+
+	/*
+	 * when scribed == true, the inode mutex will be dropped during
+	 * pid_revalidate, so we avoid another potential deadlock.
+	 */
+	result = __proc_pid_instantiate(dir, dentry, task, NULL, scribed);
+out_put:
 	put_task_struct(task);
 out:
 	return result;
@@ -3034,9 +3182,13 @@ static int proc_pid_fill_cache(struct file *filp, void *dirent, filldir_t filldi
 int proc_pid_readdir(struct file * filp, void * dirent, filldir_t filldir)
 {
 	unsigned int nr = filp->f_pos - FIRST_PROCESS_ENTRY;
-	struct task_struct *reaper = get_proc_task(filp->f_path.dentry->d_inode);
+	struct task_struct *reaper;
 	struct tgid_iter iter;
 	struct pid_namespace *ns;
+	bool scribed = is_ps_scribed(current);
+	struct inode *dir = filp->f_path.dentry->d_inode;
+
+	reaper = get_proc_task(dir);
 
 	if (!reaper)
 		goto out_no_task;
@@ -3047,6 +3199,15 @@ int proc_pid_readdir(struct file * filp, void * dirent, filldir_t filldir)
 			goto out;
 	}
 
+	/*
+	 * We unlock the directory mutex to avoid potential deadlock.
+	 * It should be okey because:
+	 * - The /proc is not going away since we have a reference on it
+	 * - The content of the directory is dynamic anyways
+	 */
+	if (scribed)
+		mutex_unlock(&dir->i_mutex);
+
 	ns = filp->f_dentry->d_sb->s_fs_info;
 	iter.task = NULL;
 	iter.tgid = filp->f_pos - TGID_OFFSET;
@@ -3056,10 +3217,13 @@ int proc_pid_readdir(struct file * filp, void * dirent, filldir_t filldir)
 		filp->f_pos = iter.tgid + TGID_OFFSET;
 		if (proc_pid_fill_cache(filp, dirent, filldir, iter) < 0) {
 			put_task_struct(iter.task);
-			goto out;
+			goto out_unlock;
 		}
 	}
 	filp->f_pos = PID_MAX_LIMIT + TGID_OFFSET;
+out_unlock:
+	if (scribed)
+		mutex_lock(&dir->i_mutex);
 out:
 	put_task_struct(reaper);
 out_no_task:

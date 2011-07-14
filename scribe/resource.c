@@ -1186,7 +1186,7 @@ static int __lock_object(struct scribe_ps *scribe,
 {
 	struct scribe_res_user *user;
 	struct scribe_lock_region *lock_region;
-	int ret;
+	int ret = 0;
 
 	/* First we need to check if the resource is tracked */
 	track_resource(scribe->ctx, res);
@@ -1198,7 +1198,9 @@ static int __lock_object(struct scribe_ps *scribe,
 	lock_region->object = object;
 	lock_region->flags = flags;
 
-	ret = do_lock(scribe, lock_region);
+	if (!(flags & SCRIBE_NO_LOCK))
+		ret = do_lock(scribe, lock_region);
+
 	if (ret)
 		free_lock_region(lock_region);
 	else
@@ -1349,6 +1351,11 @@ void scribe_unlock_err(void *object, int err)
 		scribe_unlock_err(file_inode(file), err);
 	}
 
+	if (lock_region->flags & SCRIBE_NO_LOCK) {
+		list_add(&lock_region->node, &user->pre_alloc_regions);
+		return;
+	}
+
 	if (likely(!IS_ERR_VALUE(err))) {
 		do_unlock(scribe, lock_region);
 		free_lock_region(lock_region);
@@ -1422,24 +1429,23 @@ static inline int inode_need_explicit_locking(struct file *file,
 	if (S_ISFIFO(mode) || S_ISSOCK(mode))
 		return true;
 
-	/*
-	 * For /proc, we don't need to synchronize the inode because they are
-	 * all fake anyways. We save the data read from any files in /proc
-	 * (see is_deterministic() in fs/read_write.c).
-	 */
-	if (inode->i_sb->s_magic == PROC_SUPER_MAGIC)
-		return true;
-
 	return false;
 }
 
 static int __lock_inode(struct scribe_ps *scribe,
 			struct inode *inode, int flags)
 {
+	/*
+	 * For /proc, we don't need to synchronize the inode because they are
+	 * all fake anyways. We save the data read from any files in /proc
+	 * (see is_deterministic() in fs/read_write.c).
+	 */
+	if (inode->i_sb->s_magic == PROC_SUPER_MAGIC)
+		flags |= SCRIBE_NO_LOCK;
+
 	return __lock_object_handle(scribe, inode,
 				    &inode->i_scribe_resource,
-				    SCRIBE_RES_TYPE_INODE,
-				    flags);
+				    SCRIBE_RES_TYPE_INODE, flags);
 }
 
 static int lock_file(struct file *file, int flags)
