@@ -3138,9 +3138,13 @@ static int proc_pid_fill_cache(struct file *filp, void *dirent, filldir_t filldi
 int proc_pid_readdir(struct file * filp, void * dirent, filldir_t filldir)
 {
 	unsigned int nr = filp->f_pos - FIRST_PROCESS_ENTRY;
-	struct task_struct *reaper = get_proc_task(filp->f_path.dentry->d_inode);
+	struct task_struct *reaper;
 	struct tgid_iter iter;
 	struct pid_namespace *ns;
+	bool scribed = is_ps_scribed(current);
+	struct inode *dir = filp->f_path.dentry->d_inode;
+
+	reaper = get_proc_task(dir);
 
 	if (!reaper)
 		goto out_no_task;
@@ -3151,6 +3155,15 @@ int proc_pid_readdir(struct file * filp, void * dirent, filldir_t filldir)
 			goto out;
 	}
 
+	/*
+	 * We unlock the directory mutex to avoid potential deadlock.
+	 * It should be okey because:
+	 * - The /proc is not going away since we have a reference on it
+	 * - The content of the directory is dynamic anyways
+	 */
+	if (scribed)
+		mutex_unlock(&dir->i_mutex);
+
 	ns = filp->f_dentry->d_sb->s_fs_info;
 	iter.task = NULL;
 	iter.tgid = filp->f_pos - TGID_OFFSET;
@@ -3160,10 +3173,13 @@ int proc_pid_readdir(struct file * filp, void * dirent, filldir_t filldir)
 		filp->f_pos = iter.tgid + TGID_OFFSET;
 		if (proc_pid_fill_cache(filp, dirent, filldir, iter) < 0) {
 			put_task_struct(iter.task);
-			goto out;
+			goto out_unlock;
 		}
 	}
 	filp->f_pos = PID_MAX_LIMIT + TGID_OFFSET;
+out_unlock:
+	if (scribed)
+		mutex_lock(&dir->i_mutex);
 out:
 	put_task_struct(reaper);
 out_no_task:
