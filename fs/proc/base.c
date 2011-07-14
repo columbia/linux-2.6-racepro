@@ -2937,6 +2937,9 @@ struct dentry *proc_pid_lookup(struct inode *dir, struct dentry * dentry, struct
 	if (tgid == ~0U)
 		goto out;
 
+	if (tgid <= 1)
+		scribed = false;
+
 	ns = dentry->d_sb->s_fs_info;
 
 	if (scribe_resource_prepare()) {
