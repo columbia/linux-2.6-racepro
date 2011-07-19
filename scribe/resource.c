@@ -379,7 +379,8 @@ static void track_resource(struct scribe_context *ctx,
 			acquire_res(ctx, res, &lock_dropped);
 
 	}
-	BUG_ON(!lock_dropped);
+	if (unlikely(!lock_dropped))
+		spin_unlock_bh(&resources->lock);
 }
 
 static void __scribe_reset_resource(struct scribe_resource *res,
