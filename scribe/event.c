@@ -402,16 +402,17 @@ struct scribe_event *scribe_dequeue_event(struct scribe_queue *queue, int wait)
 {
 	struct scribe_event *event;
 	struct scribe_context *ctx = queue->ctx;
+	unsigned long flags;
 
 	event = __scribe_peek_event(&queue->stream, wait, 1);
 	if (IS_ERR(event))
 		return event;
 
 	if (ctx->backtrace) {
-		spin_lock(&ctx->backtrace_lock);
+		spin_lock_irqsave(&ctx->backtrace_lock, flags);
 		if (ctx->backtrace)
 			scribe_backtrace_add(ctx->backtrace, event);
-		spin_unlock(&ctx->backtrace_lock);
+		spin_unlock_irqrestore(&ctx->backtrace_lock, flags);
 	}
 
 	queue->last_event_offset = event->log_offset;

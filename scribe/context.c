@@ -185,6 +185,7 @@ static void context_idle(struct scribe_context *ctx,
 {
 	struct scribe_backtrace *backtrace;
 	struct scribe_queue *queue;
+	unsigned long flags;
 
 	assert_spin_locked(&ctx->tasks_lock);
 
@@ -198,10 +199,10 @@ static void context_idle(struct scribe_context *ctx,
 
 	ctx->flags &= ~SCRIBE_STATE_MASK;
 
-	spin_lock(&ctx->backtrace_lock);
+	spin_lock_irqsave(&ctx->backtrace_lock, flags);
 	backtrace = ctx->backtrace;
 	ctx->backtrace = NULL;
-	spin_unlock(&ctx->backtrace_lock);
+	spin_unlock_irqrestore(&ctx->backtrace_lock, flags);
 
 	if (backtrace) {
 		/* We don't dump the backtrace if everything went well */
