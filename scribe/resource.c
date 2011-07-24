@@ -919,16 +919,17 @@ static int do_lock_replay(struct scribe_ps *scribe,
 static int do_lock(struct scribe_ps *scribe,
 		   struct scribe_lock_region *lock_region)
 {
+	int ret = 0;
 	struct scribe_resource *res = lock_region->res;
 	might_sleep();
 
 	if (!is_locking_necessary(scribe, res))
-		return 0;
+		goto no_lock;
 
 	if (unlikely(is_detaching(scribe))) {
 		if (lock_region->flags & SCRIBE_INTERRUPTIBLE)
-			return -EINTR;
-		return 0;
+			ret = -EINTR;
+		goto no_lock;
 	}
 
 	BUG_ON(!(lock_region->flags & (SCRIBE_READ|SCRIBE_WRITE)));
@@ -937,6 +938,10 @@ static int do_lock(struct scribe_ps *scribe,
 		return do_lock_record(scribe, lock_region, res);
 	else
 		return do_lock_replay(scribe, lock_region, res);
+
+no_lock:
+	lock_region->flags |= SCRIBE_NO_LOCK;
+	return ret;
 }
 
 static void do_lock_downgrade_record(struct scribe_ps *scribe,
@@ -955,9 +960,6 @@ static void do_lock_downgrade(struct scribe_ps *scribe,
 			      struct scribe_lock_region *lock_region)
 {
 	struct scribe_resource *res = lock_region->res;
-
-	if (!is_locking_necessary(scribe, res))
-		return;
 
 	if (unlikely(is_detaching(scribe)))
 		return;
@@ -1083,9 +1085,6 @@ static void do_unlock(struct scribe_ps *scribe,
 {
 	struct scribe_resource *res = lock_region->res;
 
-	if (!is_locking_necessary(scribe, res))
-		return;
-
 	if (unlikely(is_detaching(scribe)))
 		return;
 
@@ -1103,9 +1102,6 @@ static void do_unlock_discard(struct scribe_ps *scribe,
 			      struct scribe_lock_region *lock_region)
 {
 	struct scribe_resource *res = lock_region->res;
-
-	if (!is_locking_necessary(scribe, res))
-		return;
 
 	if (unlikely(is_detaching(scribe)))
 		return;
@@ -1138,7 +1134,7 @@ static int __lock_object(struct scribe_ps *scribe,
 	lock_region->object = object;
 	lock_region->flags = flags;
 
-	if (!(flags & SCRIBE_NO_LOCK))
+	if (!(lock_region->flags & SCRIBE_NO_LOCK))
 		ret = do_lock(scribe, lock_region);
 
 	if (ret)
@@ -1274,6 +1270,7 @@ void scribe_unlock_err(void *object, int err)
 	struct scribe_res_user *user;
 	struct scribe_lock_region *lock_region;
 	struct file *file;
+	int put_region_back = 0;
 
 	if (is_replaying(scribe))
 		might_sleep();
@@ -1292,17 +1289,19 @@ void scribe_unlock_err(void *object, int err)
 		scribe_unlock_err(file_inode(file), err);
 	}
 
-	if (lock_region->flags & SCRIBE_NO_LOCK) {
-		list_add(&lock_region->node, &user->pre_alloc_regions);
-		return;
+	if (unlikely(IS_ERR_VALUE(err))) {
+		if (!(lock_region->flags & SCRIBE_NO_LOCK))
+			do_unlock_discard(scribe, lock_region);
+		put_region_back = 1;
 	}
 
-	if (likely(!IS_ERR_VALUE(err))) {
+	put_region_back |= (lock_region->flags & SCRIBE_NO_LOCK);
+	if (put_region_back) {
+		list_add(&lock_region->node, &user->pre_alloc_regions);
+		user->num_pre_alloc_regions++;
+	} else {
 		do_unlock(scribe, lock_region);
 		free_lock_region(lock_region);
-	} else {
-		do_unlock_discard(scribe, lock_region);
-		list_add(&lock_region->node, &user->pre_alloc_regions);
 	}
 }
 
@@ -1329,7 +1328,8 @@ void scribe_downgrade(void *object)
 	lock_region = find_locked_region(user, object);
 	BUG_ON(!lock_region);
 
-	do_lock_downgrade(scribe, lock_region);
+	if (!(lock_region->flags & SCRIBE_NO_LOCK))
+		do_lock_downgrade(scribe, lock_region);
 }
 
 void scribe_assert_locked(void *object)
@@ -1430,6 +1430,7 @@ static int lock_file(struct file *file, int flags)
 		do_unlock_discard(scribe, lock_region);
 		/* Put back int the pre alloc regions, lock was discarded */
 		list_add(&lock_region->node, &user->pre_alloc_regions);
+		user->num_pre_alloc_regions++;
 	}
 
 	return intr;
