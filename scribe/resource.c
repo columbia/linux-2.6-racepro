@@ -720,22 +720,6 @@ static bool is_locking_necessary(struct scribe_ps *scribe,
 	return false;
 }
 
-#ifdef CONFIG_DEBUG_LOCK_ALLOC
-static int get_lockdep_subclass(int type, int nested)
-{
-	/* MAX_LOCKDEP_SUBCLASSES is small, trying not to overflow it */
-	type &= SCRIBE_RES_TYPE_MASK;
-	if (nested)
-		type += SCRIBE_RES_NUM_TYPES;
-	return type;
-}
-#else
-static inline int get_lockdep_subclass(int type, int nested)
-{
-	return 0;
-}
-#endif
-
 static size_t get_path_desc(struct scribe_ps *scribe,
 			    struct file *file, char *buffer, size_t size)
 {
