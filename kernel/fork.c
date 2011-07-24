@@ -1424,16 +1424,8 @@ static struct task_struct *copy_process(unsigned long long clone_flags,
 	scribe_unlock_pid(pid->numbers[pid->level].nr);
 
 #ifdef CONFIG_SCRIBE
-	if (p->scribe) {
+	if (p->scribe)
 		scribe_attach(p->scribe);
-
-		/*
-		 * ret_from_fork will get executed, we want to be ready for
-		 * user accesses.
-		 */
-		if (is_scribed(p->scribe))
-			__scribe_allow_uaccess(p->scribe);
-	}
 #endif /* CONFIG_SCRIBE */
 
 	proc_fork_connector(p);
