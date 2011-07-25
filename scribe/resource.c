@@ -979,7 +979,6 @@ static int do_lock(struct scribe_ps *scribe,
 {
 	int ret = 0;
 	struct scribe_resource *res = lock_region->res;
-	might_sleep();
 
 	if (!is_locking_necessary(scribe, res))
 		goto no_lock;
@@ -1152,8 +1151,6 @@ static void do_unlock(struct scribe_ps *scribe,
 		do_unlock_record(scribe, lock_region, res);
 	else
 		do_unlock_replay(scribe, lock_region, res);
-
-	might_sleep();
 }
 
 static void do_unlock_discard(struct scribe_ps *scribe,
@@ -1329,9 +1326,6 @@ void scribe_unlock_err(void *object, int err)
 	struct scribe_lock_region *lock_region;
 	struct file *file;
 	int put_region_back = 0;
-
-	if (is_replaying(scribe))
-		might_sleep();
 
 	if (!should_handle_resources(scribe))
 		return;
