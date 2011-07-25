@@ -374,6 +374,51 @@ static void unix_sock_destructor(struct sock *sk)
 #endif
 }
 
+static void __scribe_lock_sock_addr(struct unix_sock *u,
+			    void (*inode_lock_fn)(struct inode *),
+			    void (*sunaddr_lock_fn)(struct sockaddr_un *, int))
+{
+	if (!u->addr)
+		return;
+
+	if (u->addr->name->sun_path[0])
+		inode_lock_fn(u->dentry->d_inode);
+	else
+		sunaddr_lock_fn(u->addr->name, u->addr->len);
+}
+
+static inline void scribe_lock_sock_addr_read(struct unix_sock *u)
+{
+	__scribe_lock_sock_addr(u, scribe_lock_inode_read,
+				scribe_lock_sunaddr_read);
+}
+
+static inline void scribe_lock_sock_addr_write(struct unix_sock *u)
+{
+	__scribe_lock_sock_addr(u, scribe_lock_inode_write,
+				scribe_lock_sunaddr_write);
+}
+static void __scribe_unlock_sock_addr(struct unix_sock *u, int err)
+{
+	if (!u->addr)
+		return;
+
+	if (u->addr->name->sun_path[0])
+		scribe_unlock_err(u->dentry->d_inode, err);
+	else
+		scribe_unlock_err(u->addr->name, err);
+}
+
+static void scribe_unlock_sock_addr(struct unix_sock *u)
+{
+	__scribe_unlock_sock_addr(u, 0);
+}
+
+static void scribe_unlock_sock_addr_discard(struct unix_sock *u)
+{
+	__scribe_unlock_sock_addr(u, -EAGAIN);
+}
+
 static int unix_release_sock(struct sock *sk, int embrion)
 {
 	struct unix_sock *u = unix_sk(sk);
@@ -382,6 +427,11 @@ static int unix_release_sock(struct sock *sk, int embrion)
 	struct sock *skpair;
 	struct sk_buff *skb;
 	int state;
+
+	if (scribe_resource_prepare())
+		return -ENOMEM;
+
+	scribe_lock_sock_addr_write(u);
 
 	unix_remove_socket(sk);
 
@@ -396,6 +446,8 @@ static int unix_release_sock(struct sock *sk, int embrion)
 	state = sk->sk_state;
 	sk->sk_state = TCP_CLOSE;
 	unix_state_unlock(sk);
+
+	scribe_unlock_sock_addr(u);
 
 	wake_up_interruptible_all(&u->peer_wait);
 
@@ -463,6 +515,12 @@ static int unix_listen(struct socket *sock, int backlog)
 	err = -EINVAL;
 	if (!u->addr)
 		goto out;	/* No listens on an unbound socket */
+
+	err = -ENOMEM;
+	if (scribe_resource_prepare())
+		goto out;
+
+	scribe_lock_sock_addr_write(u);
 	unix_state_lock(sk);
 	if (sk->sk_state != TCP_CLOSE && sk->sk_state != TCP_LISTEN)
 		goto out_unlock;
@@ -477,6 +535,7 @@ static int unix_listen(struct socket *sock, int backlog)
 
 out_unlock:
 	unix_state_unlock(sk);
+	scribe_unlock_sock_addr(u);
 out:
 	return err;
 }
@@ -724,6 +783,11 @@ static struct sock *unix_find_other(struct net *net,
 	struct path path;
 	int err = 0;
 
+	if (scribe_resource_prepare()) {
+		err = -ENOMEM;
+		goto fail;
+	}
+
 	if (sunname->sun_path[0]) {
 		struct inode *inode;
 		err = kern_path(sunname->sun_path, LOOKUP_FOLLOW, &path);
@@ -737,7 +801,9 @@ static struct sock *unix_find_other(struct net *net,
 		err = -ECONNREFUSED;
 		if (!S_ISSOCK(inode->i_mode))
 			goto put_fail;
+		scribe_lock_inode_read(inode);
 		u = unix_find_socket_byinode(net, inode);
+		scribe_unlock(inode);
 		if (!u)
 			goto put_fail;
 
@@ -753,7 +819,9 @@ static struct sock *unix_find_other(struct net *net,
 		}
 	} else {
 		err = -ECONNREFUSED;
+		scribe_lock_sunaddr_read(sunname, len);
 		u = unix_find_socket_byname(net, sunname, len, type, hash);
+		scribe_unlock(sunname);
 		if (u) {
 			struct dentry *dentry;
 			dentry = unix_sk(u)->dentry;
@@ -811,6 +879,9 @@ static int unix_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 	if (!addr)
 		goto out_up;
 
+	if (scribe_resource_prepare())
+		goto out_up;
+
 	memcpy(addr->name, sunaddr, addr_len);
 	addr->len = addr_len;
 	addr->hash = hash ^ sk->sk_type;
@@ -855,13 +926,14 @@ out_mknod_drop_write:
 		nd.path.dentry = dentry;
 
 		addr->hash = UNIX_HASH_SIZE;
-	}
 
-	spin_lock(&unix_table_lock);
-
-	if (!sunaddr->sun_path[0]) {
-		WARN(is_ps_scribed(current),
-		     "Unix abstract addresses are not synchronized\n");
+		spin_lock(&unix_table_lock);
+		list = &unix_socket_table[dentry->d_inode->i_ino & (UNIX_HASH_SIZE-1)];
+		u->dentry = nd.path.dentry;
+		u->mnt    = nd.path.mnt;
+	} else {
+		scribe_lock_sunaddr_write(sunaddr, addr_len);
+		spin_lock(&unix_table_lock);
 
 		err = -EADDRINUSE;
 		if (__unix_find_socket_byname(net, sunaddr, addr_len,
@@ -871,10 +943,6 @@ out_mknod_drop_write:
 		}
 
 		list = &unix_socket_table[addr->hash];
-	} else {
-		list = &unix_socket_table[dentry->d_inode->i_ino & (UNIX_HASH_SIZE-1)];
-		u->dentry = nd.path.dentry;
-		u->mnt    = nd.path.mnt;
 	}
 
 	err = 0;
@@ -886,6 +954,8 @@ out_unlock:
 	spin_unlock(&unix_table_lock);
 	if (locked_inode)
 		scribe_unlock(locked_inode);
+	if (!sunaddr->sun_path[0])
+		scribe_unlock(sunaddr);
 out_up:
 	mutex_unlock(&u->readlock);
 out:
@@ -1034,7 +1104,6 @@ static int unix_stream_connect(struct socket *sock, struct sockaddr *uaddr,
 	struct sock *newsk = NULL;
 	struct sock *other = NULL;
 	struct sk_buff *skb = NULL;
-	struct inode *other_inode;
 	unsigned hash;
 	int st;
 	int err;
@@ -1074,15 +1143,22 @@ restart:
 	if (!other)
 		goto out;
 
+	if (scribe_resource_prepare()) {
+		sock_put(other);
+		err = -ENOMEM;
+		goto out;
+	}
+
+	otheru = unix_sk(other);
+
 	/* Latch state of peer */
-	other_inode = other->sk_socket->file->f_path.dentry->d_inode;
-	scribe_lock_inode_write(other_inode);
+	scribe_lock_sock_addr_read(otheru);
 	unix_state_lock(other);
 
 	/* Apparently VFS overslept socket death. Retry. */
 	if (sock_flag(other, SOCK_DEAD)) {
 		unix_state_unlock(other);
-		scribe_unlock_discard(other_inode);
+		scribe_unlock_sock_addr_discard(otheru);
 		sock_put(other);
 		goto restart;
 	}
@@ -1102,11 +1178,11 @@ restart:
 
 		err = sock_intr_errno(timeo);
 		if (signal_pending(current)) {
-			scribe_unlock(other_inode);
+			scribe_unlock_sock_addr(otheru);
 			goto out;
 		}
 
-		scribe_unlock_discard(other_inode);
+		scribe_unlock_sock_addr_discard(otheru);
 		sock_put(other);
 		goto restart;
 	}
@@ -1142,7 +1218,7 @@ restart:
 	if (sk->sk_state != st) {
 		unix_state_unlock(sk);
 		unix_state_unlock(other);
-		scribe_unlock_discard(other_inode);
+		scribe_unlock_sock_addr_discard(otheru);
 		sock_put(other);
 		goto restart;
 	}
@@ -1192,15 +1268,15 @@ restart:
 	__skb_queue_tail(&other->sk_receive_queue, skb);
 	spin_unlock(&other->sk_receive_queue.lock);
 	unix_state_unlock(other);
+	scribe_unlock_sock_addr(otheru);
 	other->sk_data_ready(other, 0);
-	scribe_unlock(other_inode);
 	sock_put(other);
 	return 0;
 
 out_unlock:
 	if (other) {
 		unix_state_unlock(other);
-		scribe_unlock(other_inode);
+		scribe_unlock_sock_addr(otheru);
 	}
 
 out:
@@ -1249,6 +1325,17 @@ static int unix_accept(struct socket *sock, struct socket *newsock, int flags)
 	err = -EINVAL;
 	if (sk->sk_state != TCP_LISTEN)
 		goto out;
+
+	/*
+	 * Scribe: We don't need to synchronize here because:
+	 * - We will operate in blocking mode during replay if the syscall
+	 *   succeeded during the record
+	 * - The datagrams from connect will always arrive in the same order,
+	 *   meaning the order of connection between two clients will always
+	 *   be the same since we do synchronization in unix_stream_connect
+	 * - On the server side, multiple calls to accept() will be serialized
+	 *   since we are locking the file pointer.
+	 */
 
 	/* If socket state is TCP_LISTEN it cannot change (for now...),
 	 * so that no locks are necessary.
@@ -1928,17 +2015,20 @@ out:
 static int unix_shutdown(struct socket *sock, int mode)
 {
 	struct sock *sk = sock->sk;
+	struct unix_sock *u = unix_sk(sk);
 	struct sock *other;
 
 	mode = (mode+1)&(RCV_SHUTDOWN|SEND_SHUTDOWN);
 
 	if (mode) {
+		scribe_lock_sock_addr_write(u);
 		unix_state_lock(sk);
 		sk->sk_shutdown |= mode;
 		other = unix_peer(sk);
 		if (other)
 			sock_hold(other);
 		unix_state_unlock(sk);
+		scribe_unlock_sock_addr(u);
 		sk->sk_state_change(sk);
 
 		if (other &&
