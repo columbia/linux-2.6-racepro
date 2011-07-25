@@ -412,6 +412,21 @@ void scribe_exit_syscall(struct pt_regs *regs)
 		scribe_kill(scribe->ctx, -EINVAL);
 }
 
+void scribe_ret_from_fork(struct pt_regs *regs)
+{
+	struct scribe_ps *scribe = current->scribe;
+
+	if (!is_scribed(scribe))
+		return;
+
+	scribe_bookmark_point(SCRIBE_BOOKMARK_POST_SYSCALL);
+
+	if (scribe_maybe_detach(scribe))
+		return;
+
+	__scribe_allow_uaccess(scribe);
+}
+
 SYSCALL_DEFINE0(get_scribe_flags)
 {
 	struct scribe_ps *scribe = current->scribe;

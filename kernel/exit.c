@@ -1031,6 +1031,7 @@ static void scribe_do_exit(struct task_struct *p, long code)
 	 * properly (it's going to be sys_exit_group()).
 	 */
 	scribe_commit_syscall(scribe, task_pt_regs(p), code);
+	scribe_bookmark_point(SCRIBE_BOOKMARK_POST_SYSCALL);
 
 	scribe_bookmark_point(SCRIBE_BOOKMARK_POST_SYSCALL);
 

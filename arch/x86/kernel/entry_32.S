@@ -330,6 +330,8 @@ ENTRY(ret_from_fork)
 	CFI_ADJUST_CFA_OFFSET 4
 	popfl
 	CFI_ADJUST_CFA_OFFSET -4
+	movl %esp,%eax
+	call scribe_ret_from_fork
 	jmp syscall_exit
 	CFI_ENDPROC
 END(ret_from_fork)

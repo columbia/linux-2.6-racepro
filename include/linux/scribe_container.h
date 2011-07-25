@@ -39,18 +39,16 @@ struct scribe_container {
 	 */
 };
 
-struct scribe_handle_ctor {
-	struct scribe_handle* (*get_new) (void *);
-	void *arg;
-	void (*free) (struct scribe_handle *);
-};
-
 struct scribe_handle {
-	struct list_head node;
-	struct scribe_container *container;
+	union {
+		struct list_head node;
+		void (*free) (struct scribe_handle *);
+	} nf;
+	union {
+		struct scribe_container *container;
+		struct rcu_head rcu;
+	} cr;
 	struct scribe_context *ctx;
-	struct rcu_head rcu;
-	void (*free) (struct scribe_handle *);
 };
 
 static inline void scribe_init_container(struct scribe_container *container)
@@ -66,9 +64,12 @@ static inline void scribe_exit_container(struct scribe_container *container)
 
 extern struct scribe_handle *get_scribe_handle(
 		struct scribe_container *container,
-		struct scribe_context *ctx, struct scribe_handle_ctor *ctor);
+		struct scribe_context *ctx,
+		struct scribe_handle* (*get_new) (void *),
+		void *arg);
 
-extern void remove_scribe_handle(struct scribe_handle *handle);
+extern void remove_scribe_handle(struct scribe_handle *handle,
+				 void (*free) (struct scribe_handle *));
 
 extern struct scribe_handle *find_scribe_handle(
 					struct scribe_container *container,

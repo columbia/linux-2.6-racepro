@@ -409,14 +409,16 @@ extern int scribe_bookmark_resume(struct scribe_bookmark *bmark);
 /* Resources */
 
 struct scribe_res_user {
-	struct hlist_head pre_alloc_idres;
-	int num_pre_alloc_idres;
+	struct hlist_head pre_alloc_mres;
+	int num_pre_alloc_mres;
 
 	struct list_head pre_alloc_hres;
 	int num_pre_alloc_hres;
 
 	struct list_head pre_alloc_regions;
 	int num_pre_alloc_regions;
+
+	struct sunaddr *pre_alloc_sunaddr;
 
 	struct list_head locked_regions;
 };
@@ -484,6 +486,10 @@ extern void scribe_lock_mmap_write(struct mm_struct *mm);
 
 extern void scribe_lock_ppid_ptr_read(struct task_struct *p);
 extern void scribe_lock_ppid_ptr_write(struct task_struct *p);
+
+struct sockaddr_un;
+extern void scribe_lock_sunaddr_read(struct sockaddr_un *sunaddr, int addr_len);
+extern void scribe_lock_sunaddr_write(struct sockaddr_un *sunaddr, int addr_len);
 
 extern void scribe_unlock(void *object);
 extern void scribe_unlock_discard(void *object);
@@ -798,6 +804,7 @@ extern void scribe_enter_syscall(struct pt_regs *regs);
 extern void scribe_commit_syscall(struct scribe_ps *scribe,
 				  struct pt_regs *regs, long ret_value);
 extern void scribe_exit_syscall(struct pt_regs *regs);
+extern void scribe_ret_from_fork(struct pt_regs *regs);
 extern int is_kernel_copy(void);
 
 /* Memory */

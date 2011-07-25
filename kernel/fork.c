@@ -291,8 +291,7 @@ static struct task_struct *dup_task_struct(struct task_struct *orig)
 	tsk->splice_pipe = NULL;
 #ifdef CONFIG_SCRIBE
 	tsk->scribe = NULL;
-	scribe_init_resource(&tsk->scribe_ppid_ptr_res,
-			     SCRIBE_RES_TYPE_PPID | SCRIBE_RES_SPINLOCK);
+	scribe_init_resource(&tsk->scribe_ppid_ptr_res, SCRIBE_RES_TYPE_PPID);
 #endif
 
 	account_kernel_stack(ti, 1);
@@ -1424,16 +1423,8 @@ static struct task_struct *copy_process(unsigned long long clone_flags,
 	scribe_unlock_pid(pid->numbers[pid->level].nr);
 
 #ifdef CONFIG_SCRIBE
-	if (p->scribe) {
+	if (p->scribe)
 		scribe_attach(p->scribe);
-
-		/*
-		 * ret_from_fork will get executed, we want to be ready for
-		 * user accesses.
-		 */
-		if (is_scribed(p->scribe))
-			__scribe_allow_uaccess(p->scribe);
-	}
 #endif /* CONFIG_SCRIBE */
 
 	proc_fork_connector(p);
