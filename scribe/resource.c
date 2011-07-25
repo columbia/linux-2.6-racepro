@@ -60,8 +60,142 @@ static inline int should_handle_resources(struct scribe_ps *scribe)
 	return should_scribe_resources(scribe);
 }
 
-#define SCRIBE_ID_RES_HASH_BITS	10
-#define SCRIBE_ID_RES_HASH_SIZE	(1 << SCRIBE_ID_RES_HASH_BITS)
+/* Generic key -> res map */
+struct scribe_res_map {
+	spinlock_t lock;
+	struct scribe_res_map_ops *ops;
+	struct hlist_head hash[];
+};
+
+struct scribe_res_map_ops {
+	int res_type;
+	char hash_bits;
+	unsigned long (*hash_fn) (struct scribe_res_map *map, void *key);
+	bool (*cmp_keys) (void *key1, void *key2);
+	void (*free_key) (void *key);
+};
+
+struct scribe_mapped_res {
+	struct scribe_res_map *map;
+	struct hlist_node node;
+	void *key;
+	struct scribe_resource res;
+	struct rcu_head rcu;
+};
+
+static inline int res_map_hash_size(struct scribe_res_map_ops *ops)
+{
+	return 1 << ops->hash_bits;
+}
+
+static struct scribe_res_map *alloc_res_map(struct scribe_res_map_ops *ops)
+{
+	struct scribe_res_map *map;
+	int hash_size = res_map_hash_size(ops);
+	int i;
+
+	map = kmalloc(sizeof(*map) + hash_size*sizeof(*map->hash), GFP_KERNEL);
+	if (!map)
+		return NULL;
+
+	spin_lock_init(&map->lock);
+	map->ops = ops;
+	for (i = 0; i < hash_size; i++)
+		INIT_HLIST_HEAD(&map->hash[i]);
+
+	return map;
+}
+
+static void free_res_map(struct scribe_res_map *map)
+{
+	kfree(map);
+}
+
+static struct scribe_mapped_res *get_pre_alloc_mres(
+						struct scribe_res_user *user);
+
+static struct scribe_mapped_res *__find_mapped_res(
+	struct scribe_res_map_ops *ops, struct hlist_head *head, void *key)
+{
+	struct scribe_mapped_res *mres;
+	struct hlist_node *node;
+
+	hlist_for_each_entry_rcu(mres, node, head, node) {
+		if (ops->cmp_keys(mres->key, key))
+			return mres;
+	}
+	return NULL;
+}
+
+/*
+ * XXX get_mapped_res() must be followed by __lock_object() to add the
+ * resource into the tracked resources (and thus allowing it to be removed)
+ */
+static struct scribe_mapped_res *get_mapped_res(struct scribe_res_map *map,
+						struct scribe_res_user *user,
+						void *key)
+{
+	struct scribe_res_map_ops *ops = map->ops;
+	struct scribe_mapped_res *mres;
+	struct hlist_head *head;
+
+	head = &map->hash[ops->hash_fn(map, key)];
+
+	rcu_read_lock();
+	mres = __find_mapped_res(ops, head, key);
+	rcu_read_unlock();
+
+	if (mres)
+		return mres;
+
+	spin_lock_bh(&map->lock);
+	mres = __find_mapped_res(ops, head, key);
+	if (unlikely(mres)) {
+		spin_unlock(&map->lock);
+		return mres;
+	}
+
+	mres = get_pre_alloc_mres(user);
+	mres->map = map;
+	mres->key = key;
+	scribe_init_resource(&mres->res, ops->res_type);
+
+	hlist_add_head_rcu(&mres->node, head);
+	spin_unlock_bh(&map->lock);
+
+	return mres;
+}
+
+static void free_rcu_mapped_res(struct rcu_head *rcu)
+{
+	struct scribe_mapped_res *mres;
+	mres = container_of(rcu, struct scribe_mapped_res, rcu);
+	if (mres->map->ops->free_key)
+		mres->map->ops->free_key(mres->key);
+	kfree(mres);
+}
+
+static void remove_mapped_res(struct scribe_mapped_res *mres)
+{
+	struct scribe_res_map *map = mres->map;
+
+	spin_lock_bh(&map->lock);
+	hlist_del_rcu(&mres->node);
+	spin_unlock_bh(&map->lock);
+	call_rcu(&mres->rcu, free_rcu_mapped_res);
+}
+
+/* Generic helpers */
+
+static unsigned long hash_fn_int(struct scribe_res_map *map, void *key)
+{
+	return hash_long((int)key, map->ops->hash_bits);
+}
+
+static bool cmp_keys_int(void *key1, void *key2)
+{
+	return key1 == key2;
+}
 
 /*
  * On demand mapping @id -> @resource. The resources are persistent.
@@ -69,101 +203,15 @@ static inline int should_handle_resources(struct scribe_ps *scribe)
  * e.g. we want to map a pid to a resource, but that resource may have a
  * totally different id.
  */
-struct scribe_res_map {
-	spinlock_t lock;
-	int res_type;
-	struct hlist_head hash[SCRIBE_ID_RES_HASH_SIZE];
+
+#define PID_RES_HASH_BITS	10
+
+struct scribe_res_map_ops pid_map_ops = {
+	.res_type = SCRIBE_RES_TYPE_PID,
+	.hash_bits = PID_RES_HASH_BITS,
+	.hash_fn = hash_fn_int,
+	.cmp_keys = cmp_keys_int,
 };
-
-struct scribe_idres {
-	struct scribe_res_map *map;
-	int id;
-	struct hlist_node node;
-	struct scribe_resource res;
-	struct rcu_head rcu;
-};
-
-static void scribe_init_res_map(struct scribe_res_map *map, int res_type)
-{
-	int i;
-	spin_lock_init(&map->lock);
-	map->res_type = res_type;
-	for (i = 0; i < SCRIBE_ID_RES_HASH_SIZE; i++)
-		INIT_HLIST_HEAD(&map->hash[i]);
-}
-
-static inline unsigned long idres_hashfn(int id)
-{
-	return hash_long(id, SCRIBE_ID_RES_HASH_BITS);
-}
-
-static struct scribe_idres *__find_idres(struct hlist_head *head, int id)
-{
-	struct scribe_idres *idres;
-	struct hlist_node *node;
-
-	hlist_for_each_entry_rcu(idres, node, head, node) {
-		if (idres->id == id)
-			return idres;
-	}
-	return NULL;
-}
-
-static struct scribe_idres *get_pre_alloc_idres(struct scribe_res_user *user);
-
-/*
- * XXX get_mapped_res() must be followed by __lock_object() to add the
- * resource into the tracked resources (and thus allowing it to be removed)
- */
-static struct scribe_idres *get_mapped_res(struct scribe_res_map *map, int id,
-					   struct scribe_res_user *user)
-{
-	struct scribe_idres *idres;
-	struct hlist_head *head;
-
-	head = &map->hash[idres_hashfn(id)];
-
-	rcu_read_lock();
-	idres = __find_idres(head, id);
-	rcu_read_unlock();
-
-	if (idres)
-		return idres;
-
-	spin_lock_bh(&map->lock);
-	idres = __find_idres(head, id);
-	if (unlikely(idres)) {
-		spin_unlock(&map->lock);
-		return idres;
-	}
-
-	idres = get_pre_alloc_idres(user);
-	idres->map = map;
-	idres->id = id;
-	scribe_init_resource(&idres->res, map->res_type);
-
-	hlist_add_head_rcu(&idres->node, head);
-	spin_unlock_bh(&map->lock);
-
-	return idres;
-}
-
-static void free_rcu_idres(struct rcu_head *rcu)
-{
-	struct scribe_idres *idres;
-	idres = container_of(rcu, struct scribe_idres, rcu);
-	kfree(idres);
-}
-
-static void remove_idres(struct scribe_idres *idres)
-{
-	struct scribe_res_map *map = idres->map;
-
-	spin_lock_bh(&map->lock);
-	hlist_del_rcu(&idres->node);
-	spin_unlock_bh(&map->lock);
-	call_rcu(&idres->rcu, free_rcu_idres);
-}
 
 struct scribe_resources {
 	/*
@@ -174,8 +222,9 @@ struct scribe_resources {
 	int next_id;
 	struct list_head tracked;
 
-	struct scribe_res_map pid_map;
+	struct scribe_res_map *pid_map;
 };
+
 
 struct scribe_resources *scribe_alloc_resources(void)
 {
@@ -189,7 +238,11 @@ struct scribe_resources *scribe_alloc_resources(void)
 	resources->next_id = 0;
 	INIT_LIST_HEAD(&resources->tracked);
 
-	scribe_init_res_map(&resources->pid_map, SCRIBE_RES_TYPE_PID);
+	resources->pid_map = alloc_res_map(&pid_map_ops);
+	if (!resources->pid_map) {
+		kfree(resources);
+		return NULL;
+	}
 
 	return resources;
 }
@@ -290,11 +343,11 @@ static void release_res(struct scribe_resource *res, bool *lock_dropped)
 	atomic_set(&res->serial, 0);
 }
 
-static void release_idres(struct scribe_resource *res, bool *lock_dropped)
+static void release_mres(struct scribe_resource *res, bool *lock_dropped)
 {
-	struct scribe_idres *idres;
-	idres = container_of(res, struct scribe_idres, res);
-	remove_idres(idres);
+	struct scribe_mapped_res *mres;
+	mres = container_of(res, struct scribe_mapped_res, res);
+	remove_mapped_res(mres);
 	release_res(res, lock_dropped);
 }
 
@@ -302,8 +355,8 @@ static void release_hres(struct scribe_resource *res, bool *lock_dropped)
 {
 	struct scribe_resource_handle *hres;
 	hres = container_of(res, struct scribe_resource_handle, res);
-	remove_scribe_handle(&hres->handle);
 	release_res(res, lock_dropped);
+	remove_scribe_handle(&hres->handle);
 }
 
 static struct inode *__get_inode_from_res(struct scribe_resource *res)
@@ -354,7 +407,7 @@ static struct resource_ops_struct resource_ops[SCRIBE_RES_NUM_TYPES] =
 	[SCRIBE_RES_TYPE_INODE] = { .acquire = acquire_res_inode,
 				    .release = release_res_inode },
 	[SCRIBE_RES_TYPE_FILE]  = { .release = release_hres },
-	[SCRIBE_RES_TYPE_PID]   = { .release = release_idres },
+	[SCRIBE_RES_TYPE_PID]   = { .release = release_mres },
 	[SCRIBE_RES_TYPE_FUTEX] = { .release = release_hres },
 };
 
@@ -468,6 +521,8 @@ void scribe_free_resources(struct scribe_resources *resources)
 	 * all potential processes that could call scribe_reset_resource() and
 	 * scribe_reset_resource_container() are gone.
 	 */
+
+	free_res_map(resources->pid_map);
 	kfree(resources);
 }
 
@@ -546,8 +601,8 @@ static void free_lock_region(struct scribe_lock_region *lock_region)
 
 void scribe_resource_init_user(struct scribe_res_user *user)
 {
-	INIT_HLIST_HEAD(&user->pre_alloc_idres);
-	user->num_pre_alloc_idres = 0;
+	INIT_HLIST_HEAD(&user->pre_alloc_mres);
+	user->num_pre_alloc_mres = 0;
 	INIT_LIST_HEAD(&user->pre_alloc_hres);
 	user->num_pre_alloc_hres = 0;
 	INIT_LIST_HEAD(&user->pre_alloc_regions);
@@ -565,17 +620,17 @@ void scribe_resource_init_user(struct scribe_res_user *user)
 int scribe_resource_pre_alloc(struct scribe_res_user *user,
 			      int doing_recording, int res_extra)
 {
-	struct scribe_idres *idres;
 	struct scribe_lock_region *lock_region;
+	struct scribe_mapped_res *mres;
 	struct scribe_resource_handle *hres;
 
-	while (user->num_pre_alloc_idres < MAX_PRE_ALLOC) {
-		idres = kmalloc(sizeof(*idres), GFP_KERNEL);
-		if (!idres)
+	while (user->num_pre_alloc_mres < MAX_PRE_ALLOC) {
+		mres = kmalloc(sizeof(*mres), GFP_KERNEL);
+		if (!mres)
 			return -ENOMEM;
 
-		hlist_add_head(&idres->node, &user->pre_alloc_idres);
-		user->num_pre_alloc_idres++;
+		hlist_add_head(&mres->node, &user->pre_alloc_mres);
+		user->num_pre_alloc_mres++;
 	}
 
 	while (user->num_pre_alloc_hres < MAX_PRE_ALLOC) {
@@ -628,17 +683,17 @@ void scribe_assert_no_locked_region(struct scribe_res_user *user)
 
 void scribe_resource_exit_user(struct scribe_res_user *user)
 {
-	struct scribe_idres *idres;
+	struct scribe_mapped_res *mres;
 	struct hlist_node *tmp1, *tmp2;
 	struct scribe_lock_region *lockr, *ltmp;
 	struct scribe_resource_handle *hres, *htmp;
 
 	scribe_assert_no_locked_region(user);
 
-	hlist_for_each_entry_safe(idres, tmp1, tmp2,
-				 &user->pre_alloc_idres, node) {
-		hlist_del(&idres->node);
-		kfree(idres);
+	hlist_for_each_entry_safe(mres, tmp1, tmp2,
+				 &user->pre_alloc_mres, node) {
+		hlist_del(&mres->node);
+		kfree(mres);
 	}
 
 	list_for_each_entry_safe(hres, htmp,
@@ -654,15 +709,15 @@ void scribe_resource_exit_user(struct scribe_res_user *user)
 	}
 }
 
-static struct scribe_idres *get_pre_alloc_idres(struct scribe_res_user *user)
+static struct scribe_mapped_res *get_pre_alloc_mres(struct scribe_res_user *user)
 {
-	struct scribe_idres *idres;
-	BUG_ON(hlist_empty(&user->pre_alloc_idres));
-	idres = hlist_entry(user->pre_alloc_idres.first,
-			    struct scribe_idres, node);
-	hlist_del(&idres->node);
-	user->num_pre_alloc_idres--;
-	return idres;
+	struct scribe_mapped_res *mres;
+	BUG_ON(hlist_empty(&user->pre_alloc_mres));
+	mres = hlist_entry(user->pre_alloc_mres.first,
+			    struct scribe_mapped_res, node);
+	hlist_del(&mres->node);
+	user->num_pre_alloc_mres--;
+	return mres;
 }
 
 static struct scribe_resource_handle *get_pre_alloc_hres(
@@ -1157,8 +1212,8 @@ void scribe_lock_object(void *object, struct scribe_resource *res, int flags)
 static int __lock_id(struct scribe_ps *scribe,
 		     struct scribe_res_map *map, int id, int flags)
 {
-	struct scribe_idres *idres;
-	idres = get_mapped_res(map, id, &scribe->resources);
+	struct scribe_mapped_res *mres;
+	mres = get_mapped_res(map, &scribe->resources, (void *)id);
 
 	/*
 	 * FIXME We need an object to be able to find the lock region in
@@ -1169,7 +1224,7 @@ static int __lock_id(struct scribe_ps *scribe,
 	 * time. For now this is not a problem.
 	 */
 
-	return __lock_object(scribe, (void *)id, &idres->res, flags);
+	return __lock_object(scribe, (void *)id, &mres->res, flags);
 }
 
 static void free_resource_handle(struct scribe_handle *handle)
@@ -1633,7 +1688,7 @@ static void lock_pid(pid_t pid, int flags)
 	if (!should_handle_resources(scribe))
 		return;
 
-	__lock_id(scribe, &scribe->ctx->resources->pid_map, pid, flags);
+	__lock_id(scribe, scribe->ctx->resources->pid_map, pid, flags);
 }
 
 void scribe_lock_pid_read(pid_t pid)

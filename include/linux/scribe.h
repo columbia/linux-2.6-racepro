@@ -409,8 +409,8 @@ extern int scribe_bookmark_resume(struct scribe_bookmark *bmark);
 /* Resources */
 
 struct scribe_res_user {
-	struct hlist_head pre_alloc_idres;
-	int num_pre_alloc_idres;
+	struct hlist_head pre_alloc_mres;
+	int num_pre_alloc_mres;
 
 	struct list_head pre_alloc_hres;
 	int num_pre_alloc_hres;
