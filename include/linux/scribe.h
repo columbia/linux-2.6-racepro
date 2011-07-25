@@ -418,6 +418,8 @@ struct scribe_res_user {
 	struct list_head pre_alloc_regions;
 	int num_pre_alloc_regions;
 
+	struct sunaddr *pre_alloc_sunaddr;
+
 	struct list_head locked_regions;
 };
 
@@ -484,6 +486,10 @@ extern void scribe_lock_mmap_write(struct mm_struct *mm);
 
 extern void scribe_lock_ppid_ptr_read(struct task_struct *p);
 extern void scribe_lock_ppid_ptr_write(struct task_struct *p);
+
+struct sockaddr_un;
+extern void scribe_lock_sunaddr_read(struct sockaddr_un *sunaddr, int addr_len);
+extern void scribe_lock_sunaddr_write(struct sockaddr_un *sunaddr, int addr_len);
 
 extern void scribe_unlock(void *object);
 extern void scribe_unlock_discard(void *object);

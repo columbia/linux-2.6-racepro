@@ -18,6 +18,8 @@
 #include <linux/ipc_namespace.h>
 #include <linux/writeback.h>
 #include <linux/magic.h>
+#include <linux/un.h>
+#include <asm/checksum.h>
 #include <asm/cmpxchg.h>
 
 /*
@@ -72,15 +74,21 @@ struct scribe_res_map_ops {
 	char hash_bits;
 	unsigned long (*hash_fn) (struct scribe_res_map *map, void *key);
 	bool (*cmp_keys) (void *key1, void *key2);
+	void * (*dup_key) (struct scribe_res_user *user, void *key);
 	void (*free_key) (void *key);
 };
 
 struct scribe_mapped_res {
-	struct scribe_res_map *map;
-	struct hlist_node node;
+	union {
+		struct hlist_node node;
+		void (*free_key) (void *key);
+	} nf;
+	union {
+		struct scribe_res_map *map;
+		struct rcu_head rcu;
+	} mr;
 	void *key;
 	struct scribe_resource res;
-	struct rcu_head rcu;
 };
 
 static inline int res_map_hash_size(struct scribe_res_map_ops *ops)
@@ -111,21 +119,21 @@ static void free_res_map(struct scribe_res_map *map)
 	kfree(map);
 }
 
-static struct scribe_mapped_res *get_pre_alloc_mres(
-						struct scribe_res_user *user);
-
 static struct scribe_mapped_res *__find_mapped_res(
 	struct scribe_res_map_ops *ops, struct hlist_head *head, void *key)
 {
 	struct scribe_mapped_res *mres;
 	struct hlist_node *node;
 
-	hlist_for_each_entry_rcu(mres, node, head, node) {
+	hlist_for_each_entry_rcu(mres, node, head, nf.node) {
 		if (ops->cmp_keys(mres->key, key))
 			return mres;
 	}
 	return NULL;
 }
+
+static struct scribe_mapped_res *get_pre_alloc_mres(
+						struct scribe_res_user *user);
 
 /*
  * XXX get_mapped_res() must be followed by __lock_object() to add the
@@ -156,11 +164,14 @@ static struct scribe_mapped_res *get_mapped_res(struct scribe_res_map *map,
 	}
 
 	mres = get_pre_alloc_mres(user);
-	mres->map = map;
+	mres->mr.map = map;
 	mres->key = key;
+	if (ops->dup_key)
+		mres->key = ops->dup_key(user, key);
+
 	scribe_init_resource(&mres->res, ops->res_type);
 
-	hlist_add_head_rcu(&mres->node, head);
+	hlist_add_head_rcu(&mres->nf.node, head);
 	spin_unlock_bh(&map->lock);
 
 	return mres;
@@ -169,23 +180,30 @@ static struct scribe_mapped_res *get_mapped_res(struct scribe_res_map *map,
 static void free_rcu_mapped_res(struct rcu_head *rcu)
 {
 	struct scribe_mapped_res *mres;
-	mres = container_of(rcu, struct scribe_mapped_res, rcu);
-	if (mres->map->ops->free_key)
-		mres->map->ops->free_key(mres->key);
+	mres = container_of(rcu, struct scribe_mapped_res, mr.rcu);
+	if (mres->nf.free_key)
+		mres->nf.free_key(mres->key);
 	kfree(mres);
 }
 
 static void remove_mapped_res(struct scribe_mapped_res *mres)
 {
-	struct scribe_res_map *map = mres->map;
+	struct scribe_res_map *map = mres->mr.map;
 
 	spin_lock_bh(&map->lock);
-	hlist_del_rcu(&mres->node);
+	hlist_del_rcu(&mres->nf.node);
 	spin_unlock_bh(&map->lock);
-	call_rcu(&mres->rcu, free_rcu_mapped_res);
+
+	mres->nf.free_key = map->ops->free_key;
+	call_rcu(&mres->mr.rcu, free_rcu_mapped_res);
 }
 
-/* Generic helpers */
+/*
+ * On demand mapping @id -> @resource. The resources are persistent.
+ * The @id is different from the resource id:
+ * e.g. we want to map a pid to a resource, but that resource may have a
+ * totally different id.
+ */
 
 static unsigned long hash_fn_int(struct scribe_res_map *map, void *key)
 {
@@ -197,15 +215,7 @@ static bool cmp_keys_int(void *key1, void *key2)
 	return key1 == key2;
 }
 
-/*
- * On demand mapping @id -> @resource. The resources are persistent.
- * The @id is different from the resource id:
- * e.g. we want to map a pid to a resource, but that resource may have a
- * totally different id.
- */
-
 #define PID_RES_HASH_BITS	10
-
 struct scribe_res_map_ops pid_map_ops = {
 	.res_type = SCRIBE_RES_TYPE_PID,
 	.hash_bits = PID_RES_HASH_BITS,
@@ -213,6 +223,57 @@ struct scribe_res_map_ops pid_map_ops = {
 	.cmp_keys = cmp_keys_int,
 };
 
+/* Mapping of unix abstract path to res */
+struct sunaddr {
+	int len;
+	struct sockaddr_un addr;
+};
+
+static unsigned long hash_fn_sunaddr(struct scribe_res_map *map, void *key)
+{
+	struct sunaddr *sun = key;
+	return hash_long(csum_partial(&sun->addr, sun->len, 0),
+			 map->ops->hash_bits);
+}
+
+static bool cmp_keys_sunaddr(void *key1, void *key2)
+{
+	struct sunaddr *sun1 = key1, *sun2 = key2;
+
+	return sun1->len == sun2->len &&
+		!memcmp(&sun1->addr, &sun2->addr, sun1->len);
+}
+
+static struct sunaddr *get_pre_alloc_sunaddr(struct scribe_res_user *user);
+static void *dup_key_sunaddr(struct scribe_res_user *user, void *key)
+{
+	struct sunaddr *sun = key, *new_sun;
+
+	new_sun = get_pre_alloc_sunaddr(user);
+	new_sun->len = sun->len;
+	memcpy(&new_sun->addr, &sun->addr, sun->len);
+
+	return sun;
+}
+
+static void free_key_sunaddr(void *key)
+{
+	struct sunaddr *sun = key;
+	kfree(sun);
+}
+
+#define SUNADDR_RES_HASH_BITS	4
+struct scribe_res_map_ops upath_map_ops = {
+	.res_type = SCRIBE_RES_TYPE_SUNADDR,
+	.hash_bits = SUNADDR_RES_HASH_BITS,
+	.hash_fn = hash_fn_sunaddr,
+	.cmp_keys = cmp_keys_sunaddr,
+	.dup_key = dup_key_sunaddr,
+	.free_key = free_key_sunaddr,
+};
+
+
+/* scribe_resources is the container per scribe context */
 struct scribe_resources {
 	/*
 	 * Only resources with a potentially > serial will be in that list.
@@ -223,6 +284,7 @@ struct scribe_resources {
 	struct list_head tracked;
 
 	struct scribe_res_map *pid_map;
+	struct scribe_res_map *sunaddr_map;
 };
 
 
@@ -265,6 +327,13 @@ void __init scribe_res_init_caches(void)
 {
 	hres_cache = KMEM_CACHE(scribe_resource_handle,
 				SLAB_HWCACHE_ALIGN | SLAB_PANIC);
+}
+
+static void free_resource_handle(struct scribe_handle *handle)
+{
+	struct scribe_resource_handle *hres;
+	hres = container_of(handle, struct scribe_resource_handle, handle);
+	kmem_cache_free(hres_cache, hres);
 }
 
 static struct resource_ops_struct resource_ops[];
@@ -354,8 +423,8 @@ static void release_mres(struct scribe_resource *res, bool *lock_dropped)
 {
 	struct scribe_mapped_res *mres;
 	mres = container_of(res, struct scribe_mapped_res, res);
-	remove_mapped_res(mres);
 	release_res(res, lock_dropped);
+	remove_mapped_res(mres);
 }
 
 static void release_hres(struct scribe_resource *res, bool *lock_dropped)
@@ -363,7 +432,7 @@ static void release_hres(struct scribe_resource *res, bool *lock_dropped)
 	struct scribe_resource_handle *hres;
 	hres = container_of(res, struct scribe_resource_handle, res);
 	release_res(res, lock_dropped);
-	remove_scribe_handle(&hres->handle);
+	remove_scribe_handle(&hres->handle, free_resource_handle);
 }
 
 static struct inode *__get_inode_from_res(struct scribe_resource *res)
@@ -373,7 +442,7 @@ static struct inode *__get_inode_from_res(struct scribe_resource *res)
 	struct inode *inode;
 
 	hres = container_of(res, struct scribe_resource_handle, res);
-	container = hres->handle.container;
+	container = hres->handle.cr.container;
 	inode = container_of(container, struct inode, i_scribe_resource);
 
 	return inode;
@@ -413,6 +482,8 @@ static struct resource_ops_struct resource_ops[SCRIBE_RES_NUM_TYPES] =
 	[SCRIBE_RES_TYPE_FUTEX]        = { .use_spinlock = true,
 		                           .release = release_hres },
 	[SCRIBE_RES_TYPE_PPID]         = { .use_spinlock = true },
+	[SCRIBE_RES_TYPE_SUNADDR]      = { .use_spinlock = true,
+		                           .release = release_mres },
 };
 
 static void track_resource(struct scribe_context *ctx,
@@ -480,7 +551,8 @@ retry:
 	}
 
 	hres = list_first_entry_rcu(&container->handles,
-				    struct scribe_resource_handle, handle.node);
+				    struct scribe_resource_handle,
+				    handle.nf.node);
 	ctx = hres->res.ctx;
 
 	/*
@@ -611,6 +683,7 @@ void scribe_resource_init_user(struct scribe_res_user *user)
 	user->num_pre_alloc_hres = 0;
 	INIT_LIST_HEAD(&user->pre_alloc_regions);
 	user->num_pre_alloc_regions = 0;
+	user->pre_alloc_sunaddr = NULL;
 	INIT_LIST_HEAD(&user->locked_regions);
 }
 
@@ -627,13 +700,14 @@ int scribe_resource_pre_alloc(struct scribe_res_user *user,
 	struct scribe_lock_region *lock_region;
 	struct scribe_mapped_res *mres;
 	struct scribe_resource_handle *hres;
+	struct sunaddr *sunaddr;
 
 	while (user->num_pre_alloc_mres < MAX_PRE_ALLOC) {
 		mres = kmalloc(sizeof(*mres), GFP_KERNEL);
 		if (!mres)
 			return -ENOMEM;
 
-		hlist_add_head(&mres->node, &user->pre_alloc_mres);
+		hlist_add_head(&mres->nf.node, &user->pre_alloc_mres);
 		user->num_pre_alloc_mres++;
 	}
 
@@ -642,7 +716,7 @@ int scribe_resource_pre_alloc(struct scribe_res_user *user,
 		if (!hres)
 			return -ENOMEM;
 
-		list_add(&hres->handle.node, &user->pre_alloc_hres);
+		list_add(&hres->handle.nf.node, &user->pre_alloc_hres);
 		user->num_pre_alloc_hres++;
 	}
 
@@ -653,6 +727,13 @@ int scribe_resource_pre_alloc(struct scribe_res_user *user,
 
 		list_add(&lock_region->node, &user->pre_alloc_regions);
 		user->num_pre_alloc_regions++;
+	}
+
+	if (!user->pre_alloc_sunaddr) {
+		sunaddr = kmalloc(sizeof(*sunaddr), GFP_KERNEL);
+		if (!sunaddr)
+			return -ENOMEM;
+		user->pre_alloc_sunaddr = sunaddr;
 	}
 
 	return 0;
@@ -695,14 +776,14 @@ void scribe_resource_exit_user(struct scribe_res_user *user)
 	scribe_assert_no_locked_region(user);
 
 	hlist_for_each_entry_safe(mres, tmp1, tmp2,
-				 &user->pre_alloc_mres, node) {
-		hlist_del(&mres->node);
+				  &user->pre_alloc_mres, nf.node) {
+		hlist_del(&mres->nf.node);
 		kfree(mres);
 	}
 
 	list_for_each_entry_safe(hres, htmp,
-				 &user->pre_alloc_hres, handle.node) {
-		list_del(&hres->handle.node);
+				 &user->pre_alloc_hres, handle.nf.node) {
+		list_del(&hres->handle.nf.node);
 		kmem_cache_free(hres_cache, hres);
 	}
 
@@ -711,6 +792,8 @@ void scribe_resource_exit_user(struct scribe_res_user *user)
 		list_del(&lockr->node);
 		free_lock_region(lockr);
 	}
+
+	kfree(user->pre_alloc_sunaddr);
 }
 
 static struct scribe_mapped_res *get_pre_alloc_mres(struct scribe_res_user *user)
@@ -718,8 +801,8 @@ static struct scribe_mapped_res *get_pre_alloc_mres(struct scribe_res_user *user
 	struct scribe_mapped_res *mres;
 	BUG_ON(hlist_empty(&user->pre_alloc_mres));
 	mres = hlist_entry(user->pre_alloc_mres.first,
-			    struct scribe_mapped_res, node);
-	hlist_del(&mres->node);
+			   struct scribe_mapped_res, nf.node);
+	hlist_del(&mres->nf.node);
 	user->num_pre_alloc_mres--;
 	return mres;
 }
@@ -730,10 +813,19 @@ static struct scribe_resource_handle *get_pre_alloc_hres(
 	struct scribe_resource_handle *hres;
 	BUG_ON(list_empty(&user->pre_alloc_hres));
 	hres = list_first_entry(&user->pre_alloc_hres,
-				struct scribe_resource_handle, handle.node);
-	list_del(&hres->handle.node);
+				struct scribe_resource_handle, handle.nf.node);
+	list_del(&hres->handle.nf.node);
 	user->num_pre_alloc_hres--;
 	return hres;
+}
+
+static struct sunaddr *get_pre_alloc_sunaddr(struct scribe_res_user *user)
+{
+	struct sunaddr *new_sun;
+	new_sun = user->pre_alloc_sunaddr;
+	BUG_ON(!new_sun);
+	user->pre_alloc_sunaddr = NULL;
+	return new_sun;
 }
 
 static struct scribe_lock_region *get_pre_alloc_lock_region(
@@ -1227,11 +1319,20 @@ static int __lock_id(struct scribe_ps *scribe,
 	return __lock_object(scribe, (void *)id, &mres->res, flags);
 }
 
-static void free_resource_handle(struct scribe_handle *handle)
+static int __lock_sunaddr(struct scribe_ps *scribe,
+			  struct sockaddr_un *sunaddr, int addr_len, int flags)
 {
-	struct scribe_resource_handle *hres;
-	hres = container_of(handle, struct scribe_resource_handle, handle);
-	kmem_cache_free(hres_cache, hres);
+	struct scribe_res_map *map;
+	struct scribe_mapped_res *mres;
+	struct sunaddr internal_sunaddr;
+
+	internal_sunaddr.len = addr_len;
+	memcpy(&internal_sunaddr.addr, sunaddr, addr_len);
+
+	map = scribe->ctx->resources->sunaddr_map;
+	mres = get_mapped_res(map, &scribe->resources, &internal_sunaddr);
+
+	return __lock_object(scribe, sunaddr, &mres->res, flags);
 }
 
 struct get_new_arg {
@@ -1263,18 +1364,14 @@ static struct scribe_resource_handle *get_resource_handle(
 		int type, struct scribe_res_user *user)
 {
 	struct scribe_handle *handle;
-	struct scribe_handle_ctor ctor;
 	struct get_new_arg arg;
 
 	arg.type = type;
 	arg.user = user;
 	arg.created = 0;
 
-	ctor.get_new = get_new_resource_handle;
-	ctor.arg = &arg;
-	ctor.free = free_resource_handle;
-
-	handle = get_scribe_handle(container, ctx, &ctor);
+	handle = get_scribe_handle(container, ctx,
+				   get_new_resource_handle, &arg);
 
 	return container_of(handle, struct scribe_resource_handle, handle);
 }
@@ -1757,4 +1854,25 @@ void scribe_lock_ppid_ptr_read(struct task_struct *p)
 void scribe_lock_ppid_ptr_write(struct task_struct *p)
 {
 	lock_ppid_ptr(p, SCRIBE_WRITE);
+}
+
+static void lock_sunaddr(struct sockaddr_un *sunaddr, int addr_len,
+			 unsigned long flags)
+{
+	struct scribe_ps *scribe = current->scribe;
+
+	if (!should_handle_resources(scribe))
+		return;
+
+	__lock_sunaddr(scribe, sunaddr, addr_len, flags);
+}
+
+void scribe_lock_sunaddr_read(struct sockaddr_un *sunaddr, int addr_len)
+{
+	lock_sunaddr(sunaddr, addr_len, SCRIBE_READ);
+}
+
+void scribe_lock_sunaddr_write(struct sockaddr_un *sunaddr, int addr_len)
+{
+	lock_sunaddr(sunaddr, addr_len, SCRIBE_WRITE);
 }

@@ -15,7 +15,7 @@ static struct scribe_handle *__get_handle(struct scribe_container *container,
 {
 	struct scribe_handle *handle;
 
-	list_for_each_entry_rcu(handle, &container->handles, node) {
+	list_for_each_entry_rcu(handle, &container->handles, nf.node) {
 		if (handle->ctx == ctx)
 			return handle;
 	}
@@ -35,9 +35,11 @@ struct scribe_handle *find_scribe_handle(struct scribe_container *container,
 	return handle;
 }
 
-struct scribe_handle *get_scribe_handle(struct scribe_container *container,
-					struct scribe_context *ctx,
-					struct scribe_handle_ctor *ctor)
+extern struct scribe_handle *get_scribe_handle(
+				struct scribe_container *container,
+				struct scribe_context *ctx,
+				struct scribe_handle* (*get_new) (void *),
+				void *arg)
 {
 	struct scribe_handle *handle;
 
@@ -52,12 +54,11 @@ struct scribe_handle *get_scribe_handle(struct scribe_container *container,
 		return handle;
 	}
 
-	handle = ctor->get_new(ctor->arg);
-	handle->container = container;
+	handle = get_new(arg);
+	handle->cr.container = container;
 	handle->ctx = ctx;
-	handle->free = ctor->free;
 
-	list_add_rcu(&handle->node, &container->handles);
+	list_add_rcu(&handle->nf.node, &container->handles);
 
 	spin_unlock_bh(&container->lock);
 
@@ -67,16 +68,19 @@ struct scribe_handle *get_scribe_handle(struct scribe_container *container,
 static void free_rcu_handle(struct rcu_head *rcu)
 {
 	struct scribe_handle *handle;
-	handle = container_of(rcu, struct scribe_handle, rcu);
-	handle->free(handle);
+	handle = container_of(rcu, struct scribe_handle, cr.rcu);
+	handle->nf.free(handle);
 }
 
-void remove_scribe_handle(struct scribe_handle *handle)
+void remove_scribe_handle(struct scribe_handle *handle,
+			  void (*free) (struct scribe_handle *))
 {
-	struct scribe_container *container = handle->container;
+	struct scribe_container *container = handle->cr.container;
 
 	spin_lock_bh(&container->lock);
-	list_del_rcu(&handle->node);
+	list_del_rcu(&handle->nf.node);
 	spin_unlock_bh(&container->lock);
-	call_rcu(&handle->rcu, free_rcu_handle);
+
+	handle->nf.free = free;
+	call_rcu(&handle->cr.rcu, free_rcu_handle);
 }
