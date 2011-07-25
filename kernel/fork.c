@@ -291,8 +291,7 @@ static struct task_struct *dup_task_struct(struct task_struct *orig)
 	tsk->splice_pipe = NULL;
 #ifdef CONFIG_SCRIBE
 	tsk->scribe = NULL;
-	scribe_init_resource(&tsk->scribe_ppid_ptr_res,
-			     SCRIBE_RES_TYPE_PPID | SCRIBE_RES_SPINLOCK);
+	scribe_init_resource(&tsk->scribe_ppid_ptr_res, SCRIBE_RES_TYPE_PPID);
 #endif
 
 	account_kernel_stack(ti, 1);

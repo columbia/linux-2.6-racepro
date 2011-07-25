@@ -85,10 +85,6 @@ enum scribe_resource_type {
 	SCRIBE_RES_TYPE_PPID,
 	SCRIBE_RES_NUM_TYPES
 };
-
-#define SCRIBE_RES_TYPE_MASK		0x7f
-#define SCRIBE_RES_SPINLOCK		0x80
-
 #endif /* CONFIG_SCRIBE */
 
 #endif /* _LINUX_SCRIBE_RESOURCE_H_ */

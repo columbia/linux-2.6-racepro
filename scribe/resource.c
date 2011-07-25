@@ -247,6 +247,12 @@ struct scribe_resources *scribe_alloc_resources(void)
 	return resources;
 }
 
+struct resource_ops_struct {
+	bool use_spinlock;
+	void (*acquire) (struct scribe_context *, struct scribe_resource *,
+			 bool *);
+	void (*release) (struct scribe_resource *, bool *);
+};
 
 struct scribe_resource_handle {
 	struct scribe_handle handle;
@@ -261,9 +267,10 @@ void __init scribe_res_init_caches(void)
 				SLAB_HWCACHE_ALIGN | SLAB_PANIC);
 }
 
+static struct resource_ops_struct resource_ops[];
 static inline int use_spinlock(struct scribe_resource *res)
 {
-	return res->type & SCRIBE_RES_SPINLOCK;
+	return resource_ops[res->type].use_spinlock;
 }
 
 #ifdef CONFIG_LOCKDEP
@@ -285,7 +292,7 @@ static struct lock_desc lock_desc[SCRIBE_RES_NUM_TYPES] = {
 };
 
 #define set_lock_class(lock, type) do {					\
-	struct lock_desc *ld = &lock_desc[type & SCRIBE_RES_TYPE_MASK];	\
+	struct lock_desc *ld = &lock_desc[type];	\
 	lockdep_set_class_and_name(lock, &ld->key, ld->name);		\
 } while (0)
 
@@ -396,26 +403,23 @@ static void release_res_inode(struct scribe_resource *res, bool *lock_dropped)
 	iput(inode);
 }
 
-struct resource_ops_struct {
-	void (*acquire) (struct scribe_context *, struct scribe_resource *,
-			 bool *);
-	void (*release) (struct scribe_resource *, bool *);
-};
-
 static struct resource_ops_struct resource_ops[SCRIBE_RES_NUM_TYPES] =
 {
-	[SCRIBE_RES_TYPE_INODE] = { .acquire = acquire_res_inode,
-				    .release = release_res_inode },
-	[SCRIBE_RES_TYPE_FILE]  = { .release = release_hres },
-	[SCRIBE_RES_TYPE_PID]   = { .release = release_mres },
-	[SCRIBE_RES_TYPE_FUTEX] = { .release = release_hres },
+	[SCRIBE_RES_TYPE_INODE]        = { .acquire = acquire_res_inode,
+				           .release = release_res_inode },
+	[SCRIBE_RES_TYPE_FILE]         = { .release = release_hres },
+	[SCRIBE_RES_TYPE_FILES_STRUCT] = { .use_spinlock = true },
+	[SCRIBE_RES_TYPE_PID]          = { .release = release_mres },
+	[SCRIBE_RES_TYPE_FUTEX]        = { .use_spinlock = true,
+		                           .release = release_hres },
+	[SCRIBE_RES_TYPE_PPID]         = { .use_spinlock = true },
 };
 
 static void track_resource(struct scribe_context *ctx,
 			   struct scribe_resource *res)
 {
 	struct scribe_resources *resources;
-	int type = res->type & SCRIBE_RES_TYPE_MASK;
+	int type = res->type;
 	bool lock_dropped = false;
 
 	if (res->ctx) {
@@ -439,7 +443,7 @@ static void track_resource(struct scribe_context *ctx,
 static void __scribe_reset_resource(struct scribe_resource *res,
 				    bool *lock_dropped)
 {
-	int type = res->type & SCRIBE_RES_TYPE_MASK;
+	int type = res->type;
 	if (resource_ops[type].release)
 		resource_ops[type].release(res, lock_dropped);
 	else
@@ -778,13 +782,12 @@ static size_t get_lock_region_desc(struct scribe_ps *scribe,
 				   char *buffer, size_t size,
 				   struct scribe_lock_region *lock_region)
 {
-	int type = lock_region->res->type & SCRIBE_RES_TYPE_MASK;
 	struct file *file;
 	char *tmp, *pathname;
 	struct task_struct *p;
 	ssize_t ret;
 
-	switch (type) {
+	switch (lock_region->res->type) {
 	case SCRIBE_RES_TYPE_FILE:
 		file = lock_region->object;
 
@@ -933,7 +936,7 @@ static int __do_lock_replay(struct scribe_ps *scribe,
 		serial = event->serial;
 		scribe_free_event(event);
 
-		if (type != (res->type & SCRIBE_RES_TYPE_MASK)) {
+		if (type != res->type) {
 			scribe_diverge(scribe,
 				       SCRIBE_EVENT_DIVERGE_RESOURCE_TYPE,
 				       .type = res->type);
@@ -1074,7 +1077,7 @@ static void do_unlock_record(struct scribe_ps *scribe,
 		lock_region->lock_event.extra = NULL;
 		lock_region->unlock_event = NULL;
 
-		lock_event->type = res->type & SCRIBE_RES_TYPE_MASK;
+		lock_event->type = res->type;
 		lock_event->write_access = !!do_write;
 		lock_event->id = res->id;
 		lock_event->serial = serial;

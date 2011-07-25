@@ -913,8 +913,7 @@ static inline void __scribe_lock_hb(struct futex_hash_bucket *hb,
 				    unsigned long flags)
 {
 	scribe_lock_object_handle(hb, &hb->scribe_resource,
-			  SCRIBE_RES_TYPE_FUTEX | SCRIBE_RES_SPINLOCK,
-			  SCRIBE_WRITE | flags);
+				  SCRIBE_RES_TYPE_FUTEX, SCRIBE_WRITE | flags);
 }
 
 static inline void scribe_lock_hb(struct futex_hash_bucket *hb)
