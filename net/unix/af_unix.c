@@ -1313,10 +1313,20 @@ static int unix_socketpair(struct socket *socka, struct socket *sockb)
 
 static int unix_accept(struct socket *sock, struct socket *newsock, int flags)
 {
+	struct scribe_ps *scribe = current->scribe;
 	struct sock *sk = sock->sk;
 	struct sock *tsk;
 	struct sk_buff *skb;
 	int err;
+
+	/*
+	 * If recv_datagram failed during the recording,
+	 * we need to fail as well during the replay
+	 */
+	if (is_scribed(scribe))
+		scribe_need_syscall_ret(scribe);
+	if (is_ps_replaying(current) && scribe->orig_ret)
+		return scribe->orig_ret;
 
 	err = -EOPNOTSUPP;
 	if (sock->type != SOCK_STREAM && sock->type != SOCK_SEQPACKET)
