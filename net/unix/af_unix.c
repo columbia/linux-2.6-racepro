@@ -1266,6 +1266,10 @@ restart:
 		newu->mnt	= mntget(otheru->mnt);
 	}
 
+	/* If it's the same scribe context, it's deterministic */
+	sk->sk_scribe_deterministic = newsk->sk_scribe_deterministic =
+		(sk->sk_scribe_ctx == newsk->sk_scribe_ctx);
+
 	/* Set credentials */
 	sk->sk_peercred = other->sk_peercred;
 
@@ -1340,7 +1344,7 @@ static int unix_accept(struct socket *sock, struct socket *newsock, int flags)
 	 */
 	if (is_scribed(scribe))
 		scribe_need_syscall_ret(scribe);
-	if (is_ps_replaying(current) && scribe->orig_ret)
+	if (is_ps_replaying(current) && scribe->orig_ret < 0)
 		return scribe->orig_ret;
 
 	err = -EOPNOTSUPP;

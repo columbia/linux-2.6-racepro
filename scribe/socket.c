@@ -14,7 +14,6 @@
 #include <linux/net.h>
 #include <net/sock.h>
 #include <linux/syscalls.h>
-#include <net/af_unix.h>
 
 static bool scribe_is_deterministic(struct socket *sock);
 
@@ -315,36 +314,18 @@ static ssize_t scribe_splice_read(struct socket *sock,  loff_t *ppos,
 	return sock->real_ops->splice_read(sock, ppos, pipe, len, flags);
 }
 
-#define unix_peer(sk) (unix_sk(sk)->peer)
-static bool is_unix_sock_deterministic(struct scribe_ps *scribe,
-				       struct sock *sk)
-{
-	if (sk->sk_scribe_ctx != scribe->ctx)
-		return false;
-
-	if (!unix_peer(sk))
-		return false;
-
-	if (unix_peer(sk)->sk_scribe_ctx != scribe->ctx)
-		return false;
-
-	return true;
-}
-
 static bool scribe_is_deterministic(struct socket *sock)
 {
 	struct scribe_ps *scribe = current->scribe;
-	struct sock *sk = sock->sk;
-
 	if (!is_scribed(scribe))
 		return false;
 
-	if (!sk)
-		return false;
-
-	if (sock->real_ops->family == PF_UNIX)
-		return is_unix_sock_deterministic(scribe, sk);
-	return false;
+	/*
+	 * We need to save the value because when the peer disconnect we have
+	 * no way to know after the fact if the socket was deterministic or
+	 * not.
+	 */
+	return sock->sk->sk_scribe_deterministic;
 }
 
 const struct proto_ops scribe_ops = {
@@ -391,7 +372,10 @@ int scribe_interpose_socket(struct socket *sock)
 	sock->real_ops = sock->ops;
 	sock->ops = &scribe_ops;
 
-	/* The value of sock->sk->sk_scribe_ctx is already set in sk_alloc */
+	/*
+	 * The values of sock->sk->sk_scribe_ctx and sk_scribe_deterministic
+	 * are already set in sk_alloc
+	 */
 
 	return 0;
 }
