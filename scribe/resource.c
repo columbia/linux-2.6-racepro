@@ -254,7 +254,7 @@ static void *dup_key_sunaddr(struct scribe_res_user *user, void *key)
 	new_sun->len = sun->len;
 	memcpy(&new_sun->addr, &sun->addr, sun->len);
 
-	return sun;
+	return new_sun;
 }
 
 static void free_key_sunaddr(void *key)
@@ -264,7 +264,7 @@ static void free_key_sunaddr(void *key)
 }
 
 #define SUNADDR_RES_HASH_BITS	4
-struct scribe_res_map_ops upath_map_ops = {
+struct scribe_res_map_ops sunaddr_map_ops = {
 	.res_type = SCRIBE_RES_TYPE_SUNADDR,
 	.hash_bits = SUNADDR_RES_HASH_BITS,
 	.hash_fn = hash_fn_sunaddr,
@@ -302,12 +302,20 @@ struct scribe_resources *scribe_alloc_resources(void)
 	INIT_LIST_HEAD(&resources->tracked);
 
 	resources->pid_map = alloc_res_map(&pid_map_ops);
-	if (!resources->pid_map) {
-		kfree(resources);
-		return NULL;
-	}
+	if (!resources->pid_map)
+		goto err_resources;
+
+	resources->sunaddr_map = alloc_res_map(&sunaddr_map_ops);
+	if (!resources->sunaddr_map)
+		goto err_pid_map;
 
 	return resources;
+
+err_pid_map:
+	free_res_map(resources->pid_map);
+err_resources:
+	kfree(resources);
+	return NULL;
 }
 
 struct resource_ops_struct {
@@ -358,7 +366,8 @@ static struct lock_desc lock_desc[SCRIBE_RES_NUM_TYPES] = {
 	LOCK_DESC(SCRIBE_RES_TYPE_FUTEX),
 	LOCK_DESC(SCRIBE_RES_TYPE_IPC),
 	LOCK_DESC(SCRIBE_RES_TYPE_MMAP),
-	LOCK_DESC(SCRIBE_RES_TYPE_PPID)
+	LOCK_DESC(SCRIBE_RES_TYPE_PPID),
+	LOCK_DESC(SCRIBE_RES_TYPE_SUNADDR)
 };
 
 #define set_lock_class(lock, type) do {					\
@@ -600,6 +609,7 @@ void scribe_free_resources(struct scribe_resources *resources)
 	 */
 
 	free_res_map(resources->pid_map);
+	free_res_map(resources->sunaddr_map);
 	kfree(resources);
 }
 

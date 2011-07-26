@@ -322,6 +322,7 @@ struct sock {
 	void                    (*sk_destruct)(struct sock *sk);
 #ifdef CONFIG_SCRIBE
 	struct scribe_context	*sk_scribe_ctx;
+	int			sk_scribe_deterministic;
 #endif
 };
 
