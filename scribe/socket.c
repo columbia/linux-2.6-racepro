@@ -339,6 +339,9 @@ static bool scribe_is_deterministic(struct socket *sock)
 	if (!is_scribed(scribe))
 		return false;
 
+	if (!sk)
+		return false;
+
 	if (sock->real_ops->family == PF_UNIX)
 		return is_unix_sock_deterministic(scribe, sk);
 	return false;

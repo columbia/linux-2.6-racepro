@@ -374,49 +374,61 @@ static void unix_sock_destructor(struct sock *sk)
 #endif
 }
 
+typedef void *lock_cookie_t;
 static void __scribe_lock_sock_addr(struct unix_sock *u,
+				    lock_cookie_t *lock_cookie,
 			    void (*inode_lock_fn)(struct inode *),
 			    void (*sunaddr_lock_fn)(struct sockaddr_un *, int))
 {
-	if (!u->addr)
+	if (!u->addr) {
+		*lock_cookie = NULL;
 		return;
+	}
 
-	if (u->addr->name->sun_path[0])
+	if (u->addr->name->sun_path[0]) {
+		*lock_cookie = u->dentry->d_inode;
 		inode_lock_fn(u->dentry->d_inode);
-	else
+	} else {
+		*lock_cookie = u->addr->name;
 		sunaddr_lock_fn(u->addr->name, u->addr->len);
+	}
 }
 
-static inline void scribe_lock_sock_addr_read(struct unix_sock *u)
+static inline void scribe_lock_sock_addr_read(struct unix_sock *u,
+					      lock_cookie_t *lock_cookie)
 {
-	__scribe_lock_sock_addr(u, scribe_lock_inode_read,
+	__scribe_lock_sock_addr(u, lock_cookie,
+				scribe_lock_inode_read,
 				scribe_lock_sunaddr_read);
 }
 
-static inline void scribe_lock_sock_addr_write(struct unix_sock *u)
+static inline void scribe_lock_sock_addr_write(struct unix_sock *u,
+					       lock_cookie_t *lock_cookie)
 {
-	__scribe_lock_sock_addr(u, scribe_lock_inode_write,
+	__scribe_lock_sock_addr(u, lock_cookie,
+				scribe_lock_inode_write,
 				scribe_lock_sunaddr_write);
 }
-static void __scribe_unlock_sock_addr(struct unix_sock *u, int err)
-{
-	if (!u->addr)
-		return;
 
-	if (u->addr->name->sun_path[0])
-		scribe_unlock_err(u->dentry->d_inode, err);
-	else
-		scribe_unlock_err(u->addr->name, err);
+static void scribe_unlock_sock_addr_err(struct unix_sock *u,
+					lock_cookie_t *lock_cookie, int err)
+{
+	if (*lock_cookie) {
+		scribe_unlock_err(*lock_cookie, err);
+		*lock_cookie = NULL;
+	}
 }
 
-static void scribe_unlock_sock_addr(struct unix_sock *u)
+static inline void scribe_unlock_sock_addr(struct unix_sock *u,
+					   lock_cookie_t *lock_cookie)
 {
-	__scribe_unlock_sock_addr(u, 0);
+	scribe_unlock_sock_addr_err(u, lock_cookie, 0);
 }
 
-static void scribe_unlock_sock_addr_discard(struct unix_sock *u)
+static inline void scribe_unlock_sock_addr_discard(struct unix_sock *u,
+						   lock_cookie_t *lock_cookie)
 {
-	__scribe_unlock_sock_addr(u, -EAGAIN);
+	scribe_unlock_sock_addr_err(u, lock_cookie, -EAGAIN);
 }
 
 static int unix_release_sock(struct sock *sk, int embrion)
@@ -426,12 +438,13 @@ static int unix_release_sock(struct sock *sk, int embrion)
 	struct vfsmount *mnt;
 	struct sock *skpair;
 	struct sk_buff *skb;
+	lock_cookie_t lock_cookie;
 	int state;
 
 	if (scribe_resource_prepare())
 		return -ENOMEM;
 
-	scribe_lock_sock_addr_write(u);
+	scribe_lock_sock_addr_write(u, &lock_cookie);
 
 	unix_remove_socket(sk);
 
@@ -447,7 +460,7 @@ static int unix_release_sock(struct sock *sk, int embrion)
 	sk->sk_state = TCP_CLOSE;
 	unix_state_unlock(sk);
 
-	scribe_unlock_sock_addr(u);
+	scribe_unlock_sock_addr(u, &lock_cookie);
 
 	wake_up_interruptible_all(&u->peer_wait);
 
@@ -508,6 +521,7 @@ static int unix_listen(struct socket *sock, int backlog)
 	int err;
 	struct sock *sk = sock->sk;
 	struct unix_sock *u = unix_sk(sk);
+	lock_cookie_t lock_cookie;
 
 	err = -EOPNOTSUPP;
 	if (sock->type != SOCK_STREAM && sock->type != SOCK_SEQPACKET)
@@ -520,7 +534,7 @@ static int unix_listen(struct socket *sock, int backlog)
 	if (scribe_resource_prepare())
 		goto out;
 
-	scribe_lock_sock_addr_write(u);
+	scribe_lock_sock_addr_write(u, &lock_cookie);
 	unix_state_lock(sk);
 	if (sk->sk_state != TCP_CLOSE && sk->sk_state != TCP_LISTEN)
 		goto out_unlock;
@@ -535,7 +549,7 @@ static int unix_listen(struct socket *sock, int backlog)
 
 out_unlock:
 	unix_state_unlock(sk);
-	scribe_unlock_sock_addr(u);
+	scribe_unlock_sock_addr(u, &lock_cookie);
 out:
 	return err;
 }
@@ -1104,6 +1118,7 @@ static int unix_stream_connect(struct socket *sock, struct sockaddr *uaddr,
 	struct sock *newsk = NULL;
 	struct sock *other = NULL;
 	struct sk_buff *skb = NULL;
+	lock_cookie_t lock_cookie;
 	unsigned hash;
 	int st;
 	int err;
@@ -1152,13 +1167,13 @@ restart:
 	otheru = unix_sk(other);
 
 	/* Latch state of peer */
-	scribe_lock_sock_addr_read(otheru);
+	scribe_lock_sock_addr_read(otheru, &lock_cookie);
 	unix_state_lock(other);
 
 	/* Apparently VFS overslept socket death. Retry. */
 	if (sock_flag(other, SOCK_DEAD)) {
 		unix_state_unlock(other);
-		scribe_unlock_sock_addr_discard(otheru);
+		scribe_unlock_sock_addr_discard(otheru, &lock_cookie);
 		sock_put(other);
 		goto restart;
 	}
@@ -1178,11 +1193,11 @@ restart:
 
 		err = sock_intr_errno(timeo);
 		if (signal_pending(current)) {
-			scribe_unlock_sock_addr(otheru);
+			scribe_unlock_sock_addr(otheru, &lock_cookie);
 			goto out;
 		}
 
-		scribe_unlock_sock_addr_discard(otheru);
+		scribe_unlock_sock_addr_discard(otheru, &lock_cookie);
 		sock_put(other);
 		goto restart;
 	}
@@ -1218,7 +1233,7 @@ restart:
 	if (sk->sk_state != st) {
 		unix_state_unlock(sk);
 		unix_state_unlock(other);
-		scribe_unlock_sock_addr_discard(otheru);
+		scribe_unlock_sock_addr_discard(otheru, &lock_cookie);
 		sock_put(other);
 		goto restart;
 	}
@@ -1268,7 +1283,7 @@ restart:
 	__skb_queue_tail(&other->sk_receive_queue, skb);
 	spin_unlock(&other->sk_receive_queue.lock);
 	unix_state_unlock(other);
-	scribe_unlock_sock_addr(otheru);
+	scribe_unlock_sock_addr(otheru, &lock_cookie);
 	other->sk_data_ready(other, 0);
 	sock_put(other);
 	return 0;
@@ -1276,7 +1291,7 @@ restart:
 out_unlock:
 	if (other) {
 		unix_state_unlock(other);
-		scribe_unlock_sock_addr(otheru);
+		scribe_unlock_sock_addr(otheru, &lock_cookie);
 	}
 
 out:
@@ -2027,18 +2042,19 @@ static int unix_shutdown(struct socket *sock, int mode)
 	struct sock *sk = sock->sk;
 	struct unix_sock *u = unix_sk(sk);
 	struct sock *other;
+	lock_cookie_t lock_cookie;
 
 	mode = (mode+1)&(RCV_SHUTDOWN|SEND_SHUTDOWN);
 
 	if (mode) {
-		scribe_lock_sock_addr_write(u);
+		scribe_lock_sock_addr_write(u, &lock_cookie);
 		unix_state_lock(sk);
 		sk->sk_shutdown |= mode;
 		other = unix_peer(sk);
 		if (other)
 			sock_hold(other);
 		unix_state_unlock(sk);
-		scribe_unlock_sock_addr(u);
+		scribe_unlock_sock_addr(u, &lock_cookie);
 		sk->sk_state_change(sk);
 
 		if (other &&
