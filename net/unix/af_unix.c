@@ -444,7 +444,8 @@ static int unix_release_sock(struct sock *sk, int embrion)
 	if (scribe_resource_prepare())
 		return -ENOMEM;
 
-	scribe_lock_sock_addr_write(u, &lock_cookie);
+	if (sk->sk_state == TCP_LISTEN)
+		scribe_lock_sock_addr_write(u, &lock_cookie);
 
 	unix_remove_socket(sk);
 
@@ -460,7 +461,8 @@ static int unix_release_sock(struct sock *sk, int embrion)
 	sk->sk_state = TCP_CLOSE;
 	unix_state_unlock(sk);
 
-	scribe_unlock_sock_addr(u, &lock_cookie);
+	if (state == TCP_LISTEN)
+		scribe_unlock_sock_addr(u, &lock_cookie);
 
 	wake_up_interruptible_all(&u->peer_wait);
 
@@ -554,6 +556,7 @@ out:
 	return err;
 }
 
+static bool unix_sync_fput(struct socket *sock);
 static int unix_release(struct socket *);
 static int unix_bind(struct socket *, struct sockaddr *, int);
 static int unix_stream_connect(struct socket *, struct sockaddr *,
@@ -598,6 +601,7 @@ static const struct proto_ops unix_stream_ops = {
 	.recvmsg =	unix_stream_recvmsg,
 	.mmap =		sock_no_mmap,
 	.sendpage =	sock_no_sendpage,
+	.sync_fput =    unix_sync_fput,
 };
 
 static const struct proto_ops unix_dgram_ops = {
@@ -725,6 +729,23 @@ static int unix_create(struct net *net, struct socket *sock, int protocol,
 	}
 
 	return unix_create1(net, sock) ? 0 : -ENOMEM;
+}
+
+static bool unix_sync_fput(struct socket *sock)
+{
+	/*
+	 * We need to synchronize all the fputs when we are listening:
+	 * The last process to close the file will call unix_release() which
+	 * emits a synchronization resource on the address.
+	 * We need to make sure that the one that unix_release() during the
+	 * recording will be the same one during replaying.
+	 */
+
+	struct sock *sk = sock->sk;
+	if (!sk)
+		return false;
+
+	return sk->sk_state == TCP_LISTEN;
 }
 
 static int unix_release(struct socket *sock)

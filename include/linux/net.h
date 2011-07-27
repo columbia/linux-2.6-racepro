@@ -208,6 +208,7 @@ struct proto_ops {
 	ssize_t 	(*splice_read)(struct socket *sock,  loff_t *ppos,
 				       struct pipe_inode_info *pipe, size_t len, unsigned int flags);
 	bool		(*is_deterministic)(struct socket *sock);
+	bool		(*sync_fput)(struct socket *sock);
 };
 
 #define DECLARE_SOCKADDR(type, dst, src)	\

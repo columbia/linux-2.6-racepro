@@ -127,6 +127,7 @@ static ssize_t sock_sendpage(struct file *file, struct page *page,
 static ssize_t sock_splice_read(struct file *file, loff_t *ppos,
 			        struct pipe_inode_info *pipe, size_t len,
 				unsigned int flags);
+static bool sock_sync_fput(struct file *file);
 
 /*
  *	Socket files have a set of 'special' operations as well as the generic file ones. These don't appear
@@ -150,6 +151,7 @@ static const struct file_operations socket_file_ops = {
 	.sendpage =	sock_sendpage,
 	.splice_write = generic_splice_sendpage,
 	.splice_read =	sock_splice_read,
+	.scribe_sync_fput = sock_sync_fput,
 };
 
 /*
@@ -462,6 +464,20 @@ struct socket *sockfd_lookup(int fd, int *err)
 	if (!sock)
 		fput(file);
 	return sock;
+}
+
+static bool sock_sync_fput(struct file *file)
+{
+	struct socket *sock;
+	int err;
+
+	sock = sock_from_file(file, &err);
+	if (!sock)
+		return false;
+
+	if (sock->ops->sync_fput)
+		return sock->ops->sync_fput(sock);
+	return false;
 }
 
 static struct socket *sockfd_lookup_light(int fd, int *err, int *fput_needed)
