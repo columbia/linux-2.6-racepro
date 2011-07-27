@@ -320,9 +320,15 @@ err_resources:
 
 struct resource_ops_struct {
 	bool use_spinlock;
+	bool track_users;
 	void (*acquire) (struct scribe_context *, struct scribe_resource *,
 			 bool *);
 	void (*release) (struct scribe_resource *, bool *);
+
+#ifdef CONFIG_LOCKDEP
+	struct lock_class_key key;
+	const char *name;
+#endif
 };
 
 struct scribe_resource_handle {
@@ -352,34 +358,18 @@ static inline int use_spinlock(struct scribe_resource *res)
 }
 
 #ifdef CONFIG_LOCKDEP
-struct lock_desc {
-	struct lock_class_key key;
-	const char *name;
-};
-
-static struct lock_desc lock_desc[SCRIBE_RES_NUM_TYPES] = {
-#define LOCK_DESC(name_) [name_] = { .name = #name_ }
-	LOCK_DESC(SCRIBE_RES_TYPE_INODE),
-	LOCK_DESC(SCRIBE_RES_TYPE_FILE),
-	LOCK_DESC(SCRIBE_RES_TYPE_FILES_STRUCT),
-	LOCK_DESC(SCRIBE_RES_TYPE_PID),
-	LOCK_DESC(SCRIBE_RES_TYPE_FUTEX),
-	LOCK_DESC(SCRIBE_RES_TYPE_IPC),
-	LOCK_DESC(SCRIBE_RES_TYPE_MMAP),
-	LOCK_DESC(SCRIBE_RES_TYPE_PPID),
-	LOCK_DESC(SCRIBE_RES_TYPE_SUNADDR)
-};
+static struct resource_ops_struct resource_ops[SCRIBE_RES_NUM_TYPES];
 
 #define set_lock_class(lock, type) do {					\
-	struct lock_desc *ld = &lock_desc[type];	\
-	lockdep_set_class_and_name(lock, &ld->key, ld->name);		\
+	struct resource_ops_struct *ops = &resource_ops[type];		\
+	lockdep_set_class_and_name(lock, &ops->key, ops->name);		\
 } while (0)
 
 bool is_scribe_resource_key(struct lock_class_key *key)
 {
 	char *ptr = (char *)key;
-	char *base = (char *)&lock_desc;
-	return base <= ptr && ptr < (base + sizeof(lock_desc));
+	char *base = (char *)&resource_ops;
+	return base <= ptr && ptr < (base + sizeof(resource_ops));
 }
 
 #else
@@ -404,6 +394,10 @@ void scribe_init_resource(struct scribe_resource *res, int type)
 	}
 
 	init_waitqueue_head(&res->wait);
+	atomic_set(&res->priority_users, 0);
+
+	spin_lock_init(&res->lock_regions_lock);
+	INIT_LIST_HEAD(&res->lock_regions);
 }
 
 static void acquire_res(struct scribe_context *ctx, struct scribe_resource *res,
@@ -482,18 +476,27 @@ static void release_res_inode(struct scribe_resource *res, bool *lock_dropped)
 	iput(inode);
 }
 
+#ifdef CONFIG_LOCKDEP
+#define LK(name_, ...) [name_] = { .name = #name_,  __VA_ARGS__ },
+#else
+#define LK(name_, ...) [name_] = { __VA_ARGS__ },
+#endif
+
 static struct resource_ops_struct resource_ops[SCRIBE_RES_NUM_TYPES] =
 {
-	[SCRIBE_RES_TYPE_INODE]        = { .acquire = acquire_res_inode,
-				           .release = release_res_inode },
-	[SCRIBE_RES_TYPE_FILE]         = { .release = release_hres },
-	[SCRIBE_RES_TYPE_FILES_STRUCT] = { .use_spinlock = true },
-	[SCRIBE_RES_TYPE_PID]          = { .release = release_mres },
-	[SCRIBE_RES_TYPE_FUTEX]        = { .use_spinlock = true,
-		                           .release = release_hres },
-	[SCRIBE_RES_TYPE_PPID]         = { .use_spinlock = true },
-	[SCRIBE_RES_TYPE_SUNADDR]      = { .use_spinlock = true,
-		                           .release = release_mres },
+	LK(SCRIBE_RES_TYPE_INODE,	 .acquire = acquire_res_inode,
+					 .release = release_res_inode)
+	LK(SCRIBE_RES_TYPE_FILE,	 .track_users = true,
+					 .release = release_hres)
+	LK(SCRIBE_RES_TYPE_FILES_STRUCT, .use_spinlock = true)
+	LK(SCRIBE_RES_TYPE_PID,		 .release = release_mres)
+	LK(SCRIBE_RES_TYPE_FUTEX,	 .use_spinlock = true,
+					 .release = release_hres)
+	LK(SCRIBE_RES_TYPE_IPC)
+	LK(SCRIBE_RES_TYPE_MMAP)
+	LK(SCRIBE_RES_TYPE_PPID,	 .use_spinlock = true)
+	LK(SCRIBE_RES_TYPE_SUNADDR,	 .use_spinlock = true,
+					 .release = release_mres)
 };
 
 static void track_resource(struct scribe_context *ctx,
@@ -539,6 +542,8 @@ void scribe_reset_resource(struct scribe_resource *res)
 	if (!res->ctx)
 		return;
 	resources = res->ctx->resources;
+
+	BUG_ON(!list_empty(&res->lock_regions));
 
 	spin_lock_bh(&resources->lock);
 	__scribe_reset_resource(res, &lock_dropped);
@@ -614,7 +619,9 @@ void scribe_free_resources(struct scribe_resources *resources)
 }
 
 struct scribe_lock_region {
-	struct list_head node;
+	struct scribe_ps *owner;
+	struct list_head user_node;
+	struct list_head res_node;
 	scribe_insert_point_t ip;
 	union {
 		struct scribe_event *generic;
@@ -736,7 +743,7 @@ int scribe_resource_pre_alloc(struct scribe_res_user *user,
 		if (!lock_region)
 			return -ENOMEM;
 
-		list_add(&lock_region->node, &user->pre_alloc_regions);
+		list_add(&lock_region->user_node, &user->pre_alloc_regions);
 		user->num_pre_alloc_regions++;
 	}
 
@@ -799,8 +806,8 @@ void scribe_resource_exit_user(struct scribe_res_user *user)
 	}
 
 	list_for_each_entry_safe(lockr, ltmp,
-				 &user->pre_alloc_regions, node) {
-		list_del(&lockr->node);
+				 &user->pre_alloc_regions, user_node) {
+		list_del(&lockr->user_node);
 		free_lock_region(lockr);
 	}
 
@@ -845,8 +852,8 @@ static struct scribe_lock_region *get_pre_alloc_lock_region(
 	struct scribe_lock_region *lock_region;
 	BUG_ON(list_empty(&user->pre_alloc_regions));
 	lock_region = list_first_entry(&user->pre_alloc_regions,
-				       struct scribe_lock_region, node);
-	list_del(&lock_region->node);
+				       struct scribe_lock_region, user_node);
+	list_del(&lock_region->user_node);
 	user->num_pre_alloc_regions--;
 	return lock_region;
 }
@@ -1007,19 +1014,122 @@ static void __do_lock_read_serial(struct scribe_resource *res)
 	cmpxchg(&res->first_read_serial, -1, atomic_read(&res->serial));
 }
 
+static void priority_lock(struct scribe_resource *res, int priority)
+{
+	if (priority) {
+		BUG_ON(use_spinlock(res));
+		atomic_inc(&res->priority_users);
+	}
+	else {
+		wait_event(res->wait,
+			   likely(!atomic_read(&res->priority_users)));
+	}
+}
+
+static void priority_unlock(struct scribe_resource *res, int priority)
+{
+	if (priority) {
+		atomic_dec(&res->priority_users);
+		wake_up(&res->wait);
+	}
+}
+
+static void untrack_user(struct scribe_lock_region *lock_region)
+{
+	struct scribe_resource *res = lock_region->res;
+
+	if (!resource_ops[res->type].track_users)
+		return;
+
+	spin_lock(&res->lock_regions_lock);
+	list_del(&lock_region->res_node);
+	spin_unlock(&res->lock_regions_lock);
+}
+
+static void do_unlock_discard(struct scribe_ps *scribe,
+			      struct scribe_lock_region *lock_region);
+static int track_user(struct scribe_ps *scribe,
+		      struct scribe_lock_region *lock_region)
+{
+	struct scribe_resource *res = lock_region->res;
+	int priority = lock_region->flags & SCRIBE_HIGH_PRIORITY;
+
+	if (!resource_ops[res->type].track_users)
+		return 0;
+
+	lock_region->owner = scribe;
+
+	spin_lock(&res->lock_regions_lock);
+	list_add(&lock_region->res_node, &res->lock_regions);
+	spin_unlock(&res->lock_regions_lock);
+
+	/* We need to avoid races with INTERRUPT_OTHERS and the priority */
+	if (!priority && unlikely(atomic_read(&res->priority_users))) {
+		untrack_user(lock_region);
+		do_unlock_discard(scribe, lock_region);
+		return -EAGAIN;
+	}
+	return 0;
+}
+
+static void do_interrupt_users(struct scribe_resource *res)
+{
+	struct scribe_lock_region *lock_region;
+	struct task_struct *p;
+	unsigned long flags;
+
+	spin_lock(&res->lock_regions_lock);
+	list_for_each_entry(lock_region, &res->lock_regions, res_node) {
+		p = lock_region->owner->p;
+
+		if (lock_task_sighand(p, &flags)) {
+			signal_wake_up(p, 0);
+			unlock_task_sighand(p, &flags);
+		}
+	}
+	spin_unlock(&res->lock_regions_lock);
+}
+
 static int do_lock_record(struct scribe_ps *scribe,
 			  struct scribe_lock_region *lock_region,
 			  struct scribe_resource *res)
 {
+	struct scribe_event_resource_lock_extra *lock_event;
 	struct scribe_event_resource_lock_intr *event;
 	int do_intr = lock_region->flags & SCRIBE_INTERRUPTIBLE;
 	int do_write = lock_region->flags & SCRIBE_WRITE;
 	int nested = lock_region->flags & SCRIBE_NESTED;
+	int priority = lock_region->flags & SCRIBE_HIGH_PRIORITY;
+	int interrupt_users = lock_region->flags & SCRIBE_INTERRUPT_USERS;
+	size_t size;
+	int ret;
+
+	if (should_scribe_res_extra(scribe)) {
+		/*
+		 * We want to fill out the description because we can unlock
+		 * object that are dead (and we won't be able to get the
+		 * description).
+		 */
+
+		lock_event = lock_region->lock_event.extra;
+		size = get_lock_region_desc(scribe,
+					    lock_event->desc, RES_DESC_MAX,
+					    lock_region);
+		lock_event->h.size = size;
+	}
+
+	priority_lock(res, priority);
+
+	if (unlikely(interrupt_users))
+		do_interrupt_users(res);
 
 	scribe_create_insert_point(&lock_region->ip, &scribe->queue->stream);
 
-	if (__do_lock_record(scribe, res, do_write, do_intr, nested)) {
+	ret = __do_lock_record(scribe, res, do_write, do_intr, nested);
+	if (unlikely(ret)) {
 		/* Interrupted ... */
+		priority_unlock(res, priority);
+
 		event = lock_region->lock_event.intr;
 		lock_region->lock_event.intr = NULL;
 
@@ -1185,7 +1295,7 @@ static void __do_unlock_record(struct scribe_resource *res, int do_write)
 		else
 			up_read(&res->lock.semaphore);
 
-		/* We need to wake the ones in wait_event_interruptible */
+		/* We need to wake the ones in wait_event_interruptible.  */
 		wake_up(&res->wait);
 	}
 }
@@ -1195,8 +1305,8 @@ static void do_unlock_record(struct scribe_ps *scribe,
 			     struct scribe_resource *res)
 {
 	int do_write = lock_region->flags & SCRIBE_WRITE;
+	int priority = lock_region->flags & SCRIBE_HIGH_PRIORITY;
 	unsigned long serial;
-	size_t size;
 
 	if (do_write) {
 		/*
@@ -1214,6 +1324,7 @@ static void do_unlock_record(struct scribe_ps *scribe,
 	}
 
 	__do_unlock_record(res, do_write);
+	priority_unlock(res, priority);
 
 	if (should_scribe_res_extra(scribe)) {
 		struct scribe_event_resource_lock_extra *lock_event;
@@ -1227,11 +1338,6 @@ static void do_unlock_record(struct scribe_ps *scribe,
 		lock_event->write_access = !!do_write;
 		lock_event->id = res->id;
 		lock_event->serial = serial;
-
-		size = get_lock_region_desc(scribe,
-					    lock_event->desc, RES_DESC_MAX,
-					    lock_region);
-		lock_event->h.size = size;
 
 		scribe_queue_event_at(&lock_region->ip, lock_event);
 		scribe_commit_insert_point(&lock_region->ip);
@@ -1324,6 +1430,7 @@ static int __lock_object(struct scribe_ps *scribe,
 {
 	struct scribe_res_user *user;
 	struct scribe_lock_region *lock_region;
+	int no_lock = flags & SCRIBE_NO_LOCK;
 	int ret = 0;
 
 	/* First we need to check if the resource is tracked */
@@ -1336,13 +1443,22 @@ static int __lock_object(struct scribe_ps *scribe,
 	lock_region->object = object;
 	lock_region->flags = flags;
 
-	if (!(lock_region->flags & SCRIBE_NO_LOCK))
+retry:
+	if (!no_lock) {
 		ret = do_lock(scribe, lock_region);
+		/* do_lock() may change the SCRIBE_NO_LOCK flag */
+		no_lock = lock_region->flags & SCRIBE_NO_LOCK;
+	}
+
+	if (!ret && !no_lock)
+		ret = track_user(scribe, lock_region);
+	if (ret == -EAGAIN)
+		goto retry;
 
 	if (ret)
 		free_lock_region(lock_region);
 	else
-		list_add(&lock_region->node, &user->locked_regions);
+		list_add(&lock_region->user_node, &user->locked_regions);
 	return ret;
 }
 
@@ -1464,7 +1580,7 @@ static struct scribe_lock_region *find_locked_region(
 {
 	struct scribe_lock_region *lock_region;
 
-	list_for_each_entry(lock_region, &user->locked_regions, node) {
+	list_for_each_entry(lock_region, &user->locked_regions, user_node) {
 		if (lock_region->object == object)
 			return lock_region;
 	}
@@ -1477,6 +1593,7 @@ void scribe_unlock_err(void *object, int err)
 	struct scribe_res_user *user;
 	struct scribe_lock_region *lock_region;
 	struct file *file;
+	int no_lock;
 	int put_region_back = 0;
 
 	if (!should_handle_resources(scribe))
@@ -1486,22 +1603,26 @@ void scribe_unlock_err(void *object, int err)
 	lock_region = find_locked_region(user, object);
 	BUG_ON(!lock_region);
 
-	list_del(&lock_region->node);
+	no_lock = lock_region->flags & SCRIBE_NO_LOCK;
 
 	if (lock_region->flags & (SCRIBE_INODE_READ | SCRIBE_INODE_WRITE)) {
 		file = object;
 		scribe_unlock_err(file_inode(file), err);
 	}
 
+	list_del(&lock_region->user_node);
+	if (!no_lock)
+		untrack_user(lock_region);
+
 	if (unlikely(IS_ERR_VALUE(err))) {
-		if (!(lock_region->flags & SCRIBE_NO_LOCK))
+		if (!no_lock)
 			do_unlock_discard(scribe, lock_region);
 		put_region_back = 1;
 	}
 
-	put_region_back |= (lock_region->flags & SCRIBE_NO_LOCK);
+	put_region_back |= no_lock;
 	if (put_region_back) {
-		list_add(&lock_region->node, &user->pre_alloc_regions);
+		list_add(&lock_region->user_node, &user->pre_alloc_regions);
 		user->num_pre_alloc_regions++;
 	} else {
 		do_unlock(scribe, lock_region);
@@ -1524,6 +1645,7 @@ void scribe_downgrade(void *object)
 	struct scribe_ps *scribe = current->scribe;
 	struct scribe_res_user *user;
 	struct scribe_lock_region *lock_region;
+	int no_lock;
 
 	if (!should_handle_resources(scribe))
 		return;
@@ -1532,7 +1654,9 @@ void scribe_downgrade(void *object)
 	lock_region = find_locked_region(user, object);
 	BUG_ON(!lock_region);
 
-	if (!(lock_region->flags & SCRIBE_NO_LOCK))
+	no_lock = lock_region->flags & SCRIBE_NO_LOCK;
+
+	if (!no_lock)
 		do_lock_downgrade(scribe, lock_region);
 }
 
@@ -1630,10 +1754,11 @@ static int lock_file(struct file *file, int flags)
 		user = &scribe->resources;
 		lock_region = find_locked_region(user, file);
 		/* Was in locked_regions */
-		list_del(&lock_region->node);
+		list_del(&lock_region->user_node);
+		untrack_user(lock_region);
 		do_unlock_discard(scribe, lock_region);
-		/* Put back int the pre alloc regions, lock was discarded */
-		list_add(&lock_region->node, &user->pre_alloc_regions);
+		/* Put back in the pre alloc regions, lock was discarded */
+		list_add(&lock_region->user_node, &user->pre_alloc_regions);
 		user->num_pre_alloc_regions++;
 	}
 
@@ -1787,7 +1912,45 @@ int scribe_post_fget(struct files_struct *files, struct file *file,
 	return 0;
 }
 
-void scribe_pre_fput(struct file *file)
+void scribe_pre_fput(struct file *file, unsigned int *flags)
+{
+	bool sync_fput = false;
+	struct scribe_ps *scribe = current->scribe;
+
+	*flags = 0;
+
+	if (!is_scribed(scribe))
+		return;
+
+	if (file->f_op->scribe_sync_fput)
+		sync_fput = file->f_op->scribe_sync_fput(file);
+
+	if (sync_fput) {
+		if (!scribe->locked_file) {
+			lock_file(file, SCRIBE_WRITE | SCRIBE_HIGH_PRIORITY |
+					SCRIBE_INTERRUPT_USERS);
+			scribe->locked_file = file;
+			*flags = SCRIBE_CAN_DOWNGRADE;
+		}
+		/* unlock will happen in post_fput() */
+
+		/*
+		 * XXX If you locked file with the flags
+		 * (SCRIBE_INODE_READ | SCRIBE_INODE_WRITE)
+		 * We are in trouble !
+		 * because file will not exist anymore and file_inode() will
+		 * be called.
+		 */
+		return;
+	}
+
+	if (scribe->locked_file) {
+		scribe_unlock(scribe->locked_file);
+		scribe->locked_file = NULL;
+	}
+}
+
+void scribe_post_fput(struct file *file, unsigned int flags)
 {
 	struct scribe_ps *scribe = current->scribe;
 
@@ -1795,6 +1958,20 @@ void scribe_pre_fput(struct file *file)
 		return;
 
 	if (scribe->locked_file) {
+		/*
+		 * We can use the file variable even though the object might
+		 * be gone: scribe_unlock(file) only uses the pointer value.
+		 */
+
+		if ((flags & SCRIBE_CAN_DOWNGRADE) &&
+		    !(flags & SCRIBE_FILE_IS_GONE)) {
+			/*
+			 * The fput locking is done in a write mode only when
+			 * __fput() was called
+			 */
+			scribe_downgrade(scribe->locked_file);
+		}
+
 		scribe_unlock(scribe->locked_file);
 		scribe->locked_file = NULL;
 	}

@@ -269,10 +269,16 @@ static void __fput(struct file *file)
 
 void fput(struct file *file)
 {
-	scribe_pre_fput(file);
+	unsigned int flags;
 
-	if (atomic_long_dec_and_test(&file->f_count))
+	scribe_pre_fput(file, &flags);
+
+	if (atomic_long_dec_and_test(&file->f_count)) {
+		flags |= SCRIBE_FILE_IS_GONE;
 		__fput(file);
+	}
+
+	scribe_post_fput(file, flags);
 }
 
 EXPORT_SYMBOL(fput);

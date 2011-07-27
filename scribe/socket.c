@@ -328,6 +328,13 @@ static bool scribe_is_deterministic(struct socket *sock)
 	return sock->sk->sk_scribe_deterministic;
 }
 
+static bool scribe_sync_fput(struct socket *sock)
+{
+	if (unlikely(!sock->real_ops->sync_fput))
+		return false;
+	return sock->real_ops->sync_fput(sock);
+}
+
 const struct proto_ops scribe_ops = {
 	.family            = PF_UNSPEC,
 	.owner             = THIS_MODULE,
@@ -356,6 +363,7 @@ const struct proto_ops scribe_ops = {
 	.sendpage          = scribe_sendpage,
 	.splice_read       = scribe_splice_read,
 	.is_deterministic  = scribe_is_deterministic,
+	.sync_fput         = scribe_sync_fput,
 };
 
 /*
