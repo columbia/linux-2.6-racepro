@@ -434,16 +434,16 @@ extern int scribe_resource_pre_alloc(struct scribe_res_user *user,
 extern void scribe_assert_no_locked_region(struct scribe_res_user *user);
 extern int scribe_resource_prepare(void);
 
-#define SCRIBE_INTERRUPTIBLE	0x01
-#define SCRIBE_READ		0x02
-#define SCRIBE_WRITE		0x04
-#define SCRIBE_INODE_READ	0x08
-#define SCRIBE_INODE_WRITE	0x10
-#define SCRIBE_INODE_EXPLICIT	0x20
-#define SCRIBE_NESTED		0x40
-#define SCRIBE_NO_LOCK		0x80
-#define SCRIBE_LOW_PRIORITY	0x0000
+#define SCRIBE_INTERRUPTIBLE	0x0001
+#define SCRIBE_READ		0x0002
+#define SCRIBE_WRITE		0x0004
+#define SCRIBE_INODE_READ	0x0008
+#define SCRIBE_INODE_WRITE	0x0010
+#define SCRIBE_INODE_EXPLICIT	0x0020
+#define SCRIBE_NESTED		0x0040
+#define SCRIBE_NO_LOCK		0x0080
 #define SCRIBE_HIGH_PRIORITY	0x0100
+#define SCRIBE_INTERRUPT_USERS	0x0200
 extern void scribe_lock_object(void *object, struct scribe_resource *res,
 			       int flags);
 extern void scribe_lock_object_handle(void *object,
