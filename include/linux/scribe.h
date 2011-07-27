@@ -442,6 +442,8 @@ extern int scribe_resource_prepare(void);
 #define SCRIBE_INODE_EXPLICIT	0x20
 #define SCRIBE_NESTED		0x40
 #define SCRIBE_NO_LOCK		0x80
+#define SCRIBE_LOW_PRIORITY	0x0000
+#define SCRIBE_HIGH_PRIORITY	0x0100
 extern void scribe_lock_object(void *object, struct scribe_resource *res,
 			       int flags);
 extern void scribe_lock_object_handle(void *object,

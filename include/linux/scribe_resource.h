@@ -56,6 +56,7 @@ struct scribe_resource {
 	} lock;
 
 	wait_queue_head_t wait;
+	atomic_t priority_users;
 };
 
 void scribe_init_resource(struct scribe_resource *res, int type);

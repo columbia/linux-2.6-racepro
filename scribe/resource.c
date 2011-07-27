@@ -392,6 +392,8 @@ void scribe_init_resource(struct scribe_resource *res, int type)
 	}
 
 	init_waitqueue_head(&res->wait);
+
+	atomic_set(&res->priority_users, 0);
 }
 
 static void acquire_res(struct scribe_context *ctx, struct scribe_resource *res,
@@ -959,6 +961,26 @@ static void __do_lock_read_serial(struct scribe_resource *res)
 	cmpxchg(&res->first_read_serial, -1, atomic_read(&res->serial));
 }
 
+static void priority_lock(struct scribe_resource *res, int priority)
+{
+	if (priority) {
+		BUG_ON(use_spinlock(res));
+		atomic_inc(&res->priority_users);
+	}
+	else {
+		wait_event(res->wait,
+			   likely(!atomic_read(&res->priority_users)));
+	}
+}
+
+static void priority_unlock(struct scribe_resource *res, int priority)
+{
+	if (priority) {
+		atomic_dec(&res->priority_users);
+		wake_up(&res->wait);
+	}
+}
+
 static int do_lock_record(struct scribe_ps *scribe,
 			  struct scribe_lock_region *lock_region,
 			  struct scribe_resource *res)
@@ -968,6 +990,7 @@ static int do_lock_record(struct scribe_ps *scribe,
 	int do_intr = lock_region->flags & SCRIBE_INTERRUPTIBLE;
 	int do_write = lock_region->flags & SCRIBE_WRITE;
 	int nested = lock_region->flags & SCRIBE_NESTED;
+	int priority = lock_region->flags & SCRIBE_HIGH_PRIORITY;
 	size_t size;
 
 	if (should_scribe_res_extra(scribe)) {
@@ -984,10 +1007,14 @@ static int do_lock_record(struct scribe_ps *scribe,
 		lock_event->h.size = size;
 	}
 
+	priority_lock(res, priority);
+
 	scribe_create_insert_point(&lock_region->ip, &scribe->queue->stream);
 
 	if (__do_lock_record(scribe, res, do_write, do_intr, nested)) {
 		/* Interrupted ... */
+		priority_unlock(res, priority);
+
 		event = lock_region->lock_event.intr;
 		lock_region->lock_event.intr = NULL;
 
@@ -1143,7 +1170,8 @@ static void do_lock_downgrade(struct scribe_ps *scribe,
 	/* no-op for replay */
 }
 
-static void __do_unlock_record(struct scribe_resource *res, int do_write)
+static void __do_unlock_record(struct scribe_resource *res, int do_write,
+			       int priority)
 {
 	if (use_spinlock(res))
 		spin_unlock(&res->lock.spinlock);
@@ -1153,8 +1181,14 @@ static void __do_unlock_record(struct scribe_resource *res, int do_write)
 		else
 			up_read(&res->lock.semaphore);
 
-		/* We need to wake the ones in wait_event_interruptible */
-		wake_up(&res->wait);
+		/*
+		 * We need to wake the ones in wait_event_interruptible.
+		 *
+		 * If priority is set, then then wake up will happen in
+		 * priority_unlock()
+		 */
+		if (!priority)
+			wake_up(&res->wait);
 	}
 }
 
@@ -1163,6 +1197,7 @@ static void do_unlock_record(struct scribe_ps *scribe,
 			     struct scribe_resource *res)
 {
 	int do_write = lock_region->flags & SCRIBE_WRITE;
+	int priority = lock_region->flags & SCRIBE_HIGH_PRIORITY;
 	unsigned long serial;
 
 	if (do_write) {
@@ -1180,7 +1215,8 @@ static void do_unlock_record(struct scribe_ps *scribe,
 		serial = res->first_read_serial;
 	}
 
-	__do_unlock_record(res, do_write);
+	__do_unlock_record(res, do_write, priority);
+	priority_unlock(res, priority);
 
 	if (should_scribe_res_extra(scribe)) {
 		struct scribe_event_resource_lock_extra *lock_event;
@@ -1272,7 +1308,8 @@ static void do_unlock_discard(struct scribe_ps *scribe,
 
 	if (is_recording(scribe)) {
 		int do_write = lock_region->flags & SCRIBE_WRITE;
-		__do_unlock_record(res, do_write);
+		int priority = lock_region->flags & SCRIBE_HIGH_PRIORITY;
+		__do_unlock_record(res, do_write, priority);
 		scribe_commit_insert_point(&lock_region->ip);
 	} else {
 		WARN(!is_scribe_context_dead(scribe->ctx),
@@ -1764,7 +1801,7 @@ void scribe_pre_fput(struct file *file, unsigned int *flags)
 
 	if (sync_fput) {
 		if (!scribe->locked_file) {
-			lock_file(file, SCRIBE_WRITE);
+			lock_file(file, SCRIBE_WRITE | SCRIBE_HIGH_PRIORITY);
 			scribe->locked_file = file;
 			*flags = SCRIBE_CAN_DOWNGRADE;
 		}
