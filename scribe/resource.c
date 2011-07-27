@@ -322,6 +322,11 @@ struct resource_ops_struct {
 	void (*acquire) (struct scribe_context *, struct scribe_resource *,
 			 bool *);
 	void (*release) (struct scribe_resource *, bool *);
+
+#ifdef CONFIG_LOCKDEP
+	struct lock_class_key key;
+	const char *name;
+#endif
 };
 
 struct scribe_resource_handle {
@@ -351,34 +356,18 @@ static inline int use_spinlock(struct scribe_resource *res)
 }
 
 #ifdef CONFIG_LOCKDEP
-struct lock_desc {
-	struct lock_class_key key;
-	const char *name;
-};
-
-static struct lock_desc lock_desc[SCRIBE_RES_NUM_TYPES] = {
-#define LOCK_DESC(name_) [name_] = { .name = #name_ }
-	LOCK_DESC(SCRIBE_RES_TYPE_INODE),
-	LOCK_DESC(SCRIBE_RES_TYPE_FILE),
-	LOCK_DESC(SCRIBE_RES_TYPE_FILES_STRUCT),
-	LOCK_DESC(SCRIBE_RES_TYPE_PID),
-	LOCK_DESC(SCRIBE_RES_TYPE_FUTEX),
-	LOCK_DESC(SCRIBE_RES_TYPE_IPC),
-	LOCK_DESC(SCRIBE_RES_TYPE_MMAP),
-	LOCK_DESC(SCRIBE_RES_TYPE_PPID),
-	LOCK_DESC(SCRIBE_RES_TYPE_SUNADDR)
-};
+static struct resource_ops_struct resource_ops[SCRIBE_RES_NUM_TYPES];
 
 #define set_lock_class(lock, type) do {					\
-	struct lock_desc *ld = &lock_desc[type];	\
-	lockdep_set_class_and_name(lock, &ld->key, ld->name);		\
+	struct resource_ops_struct *ops = &resource_ops[type];		\
+	lockdep_set_class_and_name(lock, &ops->key, ops->name);		\
 } while (0)
 
 bool is_scribe_resource_key(struct lock_class_key *key)
 {
 	char *ptr = (char *)key;
-	char *base = (char *)&lock_desc;
-	return base <= ptr && ptr < (base + sizeof(lock_desc));
+	char *base = (char *)&resource_ops;
+	return base <= ptr && ptr < (base + sizeof(resource_ops));
 }
 
 #else
@@ -481,18 +470,26 @@ static void release_res_inode(struct scribe_resource *res, bool *lock_dropped)
 	iput(inode);
 }
 
+#ifdef CONFIG_LOCKDEP
+#define LK(name_, ...) [name_] = { .name = #name_,  __VA_ARGS__ },
+#else
+#define LK(name_, ...) [name_] = { __VA_ARGS__ },
+#endif
+
 static struct resource_ops_struct resource_ops[SCRIBE_RES_NUM_TYPES] =
 {
-	[SCRIBE_RES_TYPE_INODE]        = { .acquire = acquire_res_inode,
-				           .release = release_res_inode },
-	[SCRIBE_RES_TYPE_FILE]         = { .release = release_hres },
-	[SCRIBE_RES_TYPE_FILES_STRUCT] = { .use_spinlock = true },
-	[SCRIBE_RES_TYPE_PID]          = { .release = release_mres },
-	[SCRIBE_RES_TYPE_FUTEX]        = { .use_spinlock = true,
-		                           .release = release_hres },
-	[SCRIBE_RES_TYPE_PPID]         = { .use_spinlock = true },
-	[SCRIBE_RES_TYPE_SUNADDR]      = { .use_spinlock = true,
-		                           .release = release_mres },
+	LK(SCRIBE_RES_TYPE_INODE,	 .acquire = acquire_res_inode,
+					 .release = release_res_inode)
+	LK(SCRIBE_RES_TYPE_FILE,	 .release = release_hres)
+	LK(SCRIBE_RES_TYPE_FILES_STRUCT, .use_spinlock = true)
+	LK(SCRIBE_RES_TYPE_PID,		 .release = release_mres)
+	LK(SCRIBE_RES_TYPE_FUTEX,	 .use_spinlock = true,
+					 .release = release_hres)
+	LK(SCRIBE_RES_TYPE_IPC)
+	LK(SCRIBE_RES_TYPE_MMAP)
+	LK(SCRIBE_RES_TYPE_PPID,	 .use_spinlock = true)
+	LK(SCRIBE_RES_TYPE_SUNADDR,	 .use_spinlock = true,
+					 .release = release_mres)
 };
 
 static void track_resource(struct scribe_context *ctx,
