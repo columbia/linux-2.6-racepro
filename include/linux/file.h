@@ -22,16 +22,20 @@ extern struct file *alloc_file(struct path *, fmode_t mode,
 	const struct file_operations *fop);
 
 #ifdef CONFIG_SCRIBE
-extern void scribe_pre_fput(struct file *file);
+#define SCRIBE_CAN_DOWNGRADE	1
+#define SCRIBE_FILE_IS_GONE	2
+extern void scribe_pre_fput(struct file *file, unsigned int *flags);
+extern void scribe_post_fput(struct file *file, unsigned int flags);
 #endif
 
 static inline void fput_light(struct file *file, int fput_needed)
 {
-#ifdef CONFIG_SCRIBE
-	scribe_pre_fput(file);
-#endif
 	if (unlikely(fput_needed))
 		fput(file);
+#ifdef CONFIG_SCRIBE
+	else
+		scribe_post_fput(file, 0);
+#endif
 }
 
 extern struct file *fget(unsigned int fd);

@@ -963,10 +963,26 @@ static int do_lock_record(struct scribe_ps *scribe,
 			  struct scribe_lock_region *lock_region,
 			  struct scribe_resource *res)
 {
+	struct scribe_event_resource_lock_extra *lock_event;
 	struct scribe_event_resource_lock_intr *event;
 	int do_intr = lock_region->flags & SCRIBE_INTERRUPTIBLE;
 	int do_write = lock_region->flags & SCRIBE_WRITE;
 	int nested = lock_region->flags & SCRIBE_NESTED;
+	size_t size;
+
+	if (should_scribe_res_extra(scribe)) {
+		/*
+		 * We want to fill out the description because we can unlock
+		 * object that are dead (and we won't be able to get the
+		 * description).
+		 */
+
+		lock_event = lock_region->lock_event.extra;
+		size = get_lock_region_desc(scribe,
+					    lock_event->desc, RES_DESC_MAX,
+					    lock_region);
+		lock_event->h.size = size;
+	}
 
 	scribe_create_insert_point(&lock_region->ip, &scribe->queue->stream);
 
@@ -1148,7 +1164,6 @@ static void do_unlock_record(struct scribe_ps *scribe,
 {
 	int do_write = lock_region->flags & SCRIBE_WRITE;
 	unsigned long serial;
-	size_t size;
 
 	if (do_write) {
 		/*
@@ -1179,11 +1194,6 @@ static void do_unlock_record(struct scribe_ps *scribe,
 		lock_event->write_access = !!do_write;
 		lock_event->id = res->id;
 		lock_event->serial = serial;
-
-		size = get_lock_region_desc(scribe,
-					    lock_event->desc, RES_DESC_MAX,
-					    lock_region);
-		lock_event->h.size = size;
 
 		scribe_queue_event_at(&lock_region->ip, lock_event);
 		scribe_commit_insert_point(&lock_region->ip);
@@ -1739,7 +1749,44 @@ int scribe_post_fget(struct files_struct *files, struct file *file,
 	return 0;
 }
 
-void scribe_pre_fput(struct file *file)
+void scribe_pre_fput(struct file *file, unsigned int *flags)
+{
+	bool sync_fput = false;
+	struct scribe_ps *scribe = current->scribe;
+
+	*flags = 0;
+
+	if (!is_scribed(scribe))
+		return;
+
+	if (file->f_op->scribe_sync_fput)
+		sync_fput = file->f_op->scribe_sync_fput(file);
+
+	if (sync_fput) {
+		if (!scribe->locked_file) {
+			lock_file(file, SCRIBE_WRITE);
+			scribe->locked_file = file;
+			*flags = SCRIBE_CAN_DOWNGRADE;
+		}
+		/* unlock will happen in post_fput() */
+
+		/*
+		 * XXX If you locked file with the flags
+		 * (SCRIBE_INODE_READ | SCRIBE_INODE_WRITE)
+		 * We are in trouble !
+		 * because file will not exist anymore and file_inode() will
+		 * be called.
+		 */
+		return;
+	}
+
+	if (scribe->locked_file) {
+		scribe_unlock(scribe->locked_file);
+		scribe->locked_file = NULL;
+	}
+}
+
+void scribe_post_fput(struct file *file, unsigned int flags)
 {
 	struct scribe_ps *scribe = current->scribe;
 
@@ -1747,6 +1794,20 @@ void scribe_pre_fput(struct file *file)
 		return;
 
 	if (scribe->locked_file) {
+		/*
+		 * We can use the file variable even though the object might
+		 * be gone: scribe_unlock(file) only uses the pointer value.
+		 */
+
+		if ((flags & SCRIBE_CAN_DOWNGRADE) &&
+		    !(flags & SCRIBE_FILE_IS_GONE)) {
+			/*
+			 * The fput locking is done in a write mode only when
+			 * __fput() was called
+			 */
+			scribe_downgrade(scribe->locked_file);
+		}
+
 		scribe_unlock(scribe->locked_file);
 		scribe->locked_file = NULL;
 	}

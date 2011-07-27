@@ -465,10 +465,15 @@ extern int scribe_track_next_file_explicit_inode_write(void);
 extern int scribe_track_next_file_read_interruptible(void);
 extern int scribe_track_next_file_write_interruptible(void);
 extern bool scribe_was_file_locking_interrupted(void);
+
+
+#define SCRIBE_CAN_DOWNGRADE	1
+#define SCRIBE_FILE_IS_GONE	2
 extern void scribe_pre_fget(struct files_struct *files, int *lock_flags);
 extern int scribe_post_fget(struct files_struct *files, struct file *file,
 			    int lock_flags);
-extern void scribe_pre_fput(struct file *file);
+extern void scribe_pre_fput(struct file *file, unsigned int *flags);
+extern void scribe_post_fput(struct file *file, unsigned int flags);
 
 extern void scribe_lock_files_read(struct files_struct *files);
 extern void scribe_lock_files_write(struct files_struct *files);
