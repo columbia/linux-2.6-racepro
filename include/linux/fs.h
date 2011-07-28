@@ -382,7 +382,7 @@ struct inodes_stat_t {
 #include <linux/capability.h>
 #include <linux/semaphore.h>
 #include <linux/fiemap.h>
-#include <linux/scribe_container.h>
+#include <linux/scribe_resource.h>
 
 #include <asm/atomic.h>
 #include <asm/byteorder.h>
@@ -793,7 +793,7 @@ struct inode {
 	void			*i_private; /* fs or device private pointer */
 
 #ifdef CONFIG_SCRIBE
-	struct scribe_container i_scribe_resource;
+	struct scribe_res_map i_scribe_resource;
 #endif
 };
 
@@ -954,7 +954,7 @@ struct file {
 	unsigned long f_mnt_write_state;
 #endif
 #ifdef CONFIG_SCRIBE
-	struct scribe_container scribe_resource;
+	struct scribe_res_map scribe_resource;
 #endif
 };
 extern spinlock_t files_lock;

@@ -194,7 +194,8 @@ int inode_init_always(struct super_block *sb, struct inode *inode)
 #endif
 
 #ifdef CONFIG_SCRIBE
-	scribe_init_container(&inode->i_scribe_resource);
+	scribe_init_res_map(&inode->i_scribe_resource,
+			    &scribe_context_map_ops);
 #endif
 
 	return 0;
@@ -364,7 +365,7 @@ static void scribe_unmount_inodes(struct list_head *list)
 		if (need_iput_tmp)
 			iput(need_iput_tmp);
 
-		scribe_reset_resource_container(&inode->i_scribe_resource);
+		scribe_reset_res_map(&inode->i_scribe_resource);
 
 		iput(inode);
 
@@ -1358,7 +1359,7 @@ static inline void iput_final(struct inode *inode)
 	void (*drop)(struct inode *) = generic_drop_inode;
 
 #ifdef CONFIG_SCRIBE
-	scribe_exit_container(&inode->i_scribe_resource);
+	scribe_exit_res_map(&inode->i_scribe_resource);
 #endif
 
 	if (op && op->drop_inode)

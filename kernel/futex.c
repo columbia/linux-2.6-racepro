@@ -131,7 +131,7 @@ struct futex_q {
 struct futex_hash_bucket {
 	spinlock_t lock;
 	struct plist_head chain;
-	struct scribe_container scribe_resource;
+	struct scribe_res_map scribe_resource;
 };
 
 static struct futex_hash_bucket futex_queues[1<<FUTEX_HASHBITS];
@@ -912,8 +912,12 @@ double_unlock_hb(struct futex_hash_bucket *hb1, struct futex_hash_bucket *hb2)
 static inline void __scribe_lock_hb(struct futex_hash_bucket *hb,
 				    unsigned long flags)
 {
-	scribe_lock_object_handle(hb, &hb->scribe_resource,
-				  SCRIBE_RES_TYPE_FUTEX, SCRIBE_WRITE | flags);
+	struct scribe_ps *scribe = current->scribe;
+	if (!scribe)
+		return;
+
+	scribe_lock_object_key(hb, &hb->scribe_resource, scribe->ctx,
+			       SCRIBE_RES_TYPE_FUTEX, SCRIBE_WRITE | flags);
 }
 
 static inline void scribe_lock_hb(struct futex_hash_bucket *hb)
@@ -2848,7 +2852,8 @@ static int __init futex_init(void)
 	for (i = 0; i < ARRAY_SIZE(futex_queues); i++) {
 		plist_head_init(&futex_queues[i].chain, &futex_queues[i].lock);
 		spin_lock_init(&futex_queues[i].lock);
-		scribe_init_container(&futex_queues[i].scribe_resource);
+		scribe_init_res_map(&futex_queues[i].scribe_resource,
+				    &scribe_context_map_ops);
 	}
 
 	return 0;

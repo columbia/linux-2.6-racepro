@@ -329,7 +329,7 @@ struct scribe_context {
 	spinlock_t backtrace_lock;
 	struct scribe_backtrace *backtrace;
 
-	struct scribe_resources *resources;
+	struct scribe_res_context *res_ctx;
 
 	atomic_t signal_cookie;
 
@@ -405,104 +405,6 @@ extern void scribe_bookmark_reset(struct scribe_bookmark *bmark);
 extern int scribe_bookmark_request(struct scribe_bookmark *bmark);
 extern void scribe_bookmark_point(unsigned int type);
 extern int scribe_bookmark_resume(struct scribe_bookmark *bmark);
-
-/* Resources */
-
-struct scribe_res_user {
-	struct hlist_head pre_alloc_mres;
-	int num_pre_alloc_mres;
-
-	struct list_head pre_alloc_hres;
-	int num_pre_alloc_hres;
-
-	struct list_head pre_alloc_regions;
-	int num_pre_alloc_regions;
-
-	struct sunaddr *pre_alloc_sunaddr;
-
-	struct list_head locked_regions;
-};
-
-extern struct scribe_resources *scribe_alloc_resources(void);
-extern void scribe_reset_resources(struct scribe_resources *ctx);
-extern void scribe_free_resources(struct scribe_resources *);
-
-extern void scribe_resource_init_user(struct scribe_res_user *user);
-extern void scribe_resource_exit_user(struct scribe_res_user *user);
-extern int scribe_resource_pre_alloc(struct scribe_res_user *user,
-				     int doing_recording, int res_extra);
-extern void scribe_assert_no_locked_region(struct scribe_res_user *user);
-extern int scribe_resource_prepare(void);
-
-#define SCRIBE_INTERRUPTIBLE	0x0001
-#define SCRIBE_READ		0x0002
-#define SCRIBE_WRITE		0x0004
-#define SCRIBE_INODE_READ	0x0008
-#define SCRIBE_INODE_WRITE	0x0010
-#define SCRIBE_INODE_EXPLICIT	0x0020
-#define SCRIBE_NESTED		0x0040
-#define SCRIBE_NO_LOCK		0x0080
-#define SCRIBE_HIGH_PRIORITY	0x0100
-#define SCRIBE_INTERRUPT_USERS	0x0200
-extern void scribe_lock_object(void *object, struct scribe_resource *res,
-			       int flags);
-extern void scribe_lock_object_handle(void *object,
-		struct scribe_container *container, int type, int flags);
-
-extern void scribe_lock_file_no_inode(struct file *file);
-extern void scribe_lock_file_read(struct file *file);
-extern void scribe_lock_file_write(struct file *file);
-extern int scribe_lock_file_read_interruptible(struct file *file);
-extern int scribe_lock_file_write_interruptible(struct file *file);
-
-extern void scribe_lock_inode_read(struct inode *inode);
-extern void scribe_lock_inode_write(struct inode *inode);
-extern void scribe_lock_inode_write_nested(struct inode *inode);
-
-extern int scribe_track_next_file_no_inode(void);
-extern int scribe_track_next_file_read(void);
-extern int scribe_track_next_file_write(void);
-extern int scribe_track_next_file_explicit_inode_read(void);
-extern int scribe_track_next_file_explicit_inode_write(void);
-extern int scribe_track_next_file_read_interruptible(void);
-extern int scribe_track_next_file_write_interruptible(void);
-extern bool scribe_was_file_locking_interrupted(void);
-
-
-#define SCRIBE_CAN_DOWNGRADE	1
-#define SCRIBE_FILE_IS_GONE	2
-extern void scribe_pre_fget(struct files_struct *files, int *lock_flags);
-extern int scribe_post_fget(struct files_struct *files, struct file *file,
-			    int lock_flags);
-extern void scribe_pre_fput(struct file *file, unsigned int *flags);
-extern void scribe_post_fput(struct file *file, unsigned int flags);
-
-extern void scribe_lock_files_read(struct files_struct *files);
-extern void scribe_lock_files_write(struct files_struct *files);
-
-extern void scribe_lock_pid_read(pid_t pid);
-extern void scribe_lock_pid_write(pid_t pid);
-extern void scribe_unlock_pid(pid_t pid);
-extern void scribe_unlock_pid_discard(pid_t pid);
-
-struct ipc_namespace;
-extern void scribe_lock_ipc(struct ipc_namespace *ns);
-
-extern void scribe_lock_mmap_read(struct mm_struct *mm);
-extern void scribe_lock_mmap_write(struct mm_struct *mm);
-
-extern void scribe_lock_ppid_ptr_read(struct task_struct *p);
-extern void scribe_lock_ppid_ptr_write(struct task_struct *p);
-
-struct sockaddr_un;
-extern void scribe_lock_sunaddr_read(struct sockaddr_un *sunaddr, int addr_len);
-extern void scribe_lock_sunaddr_write(struct sockaddr_un *sunaddr, int addr_len);
-
-extern void scribe_unlock(void *object);
-extern void scribe_unlock_discard(void *object);
-extern void scribe_unlock_err(void *object, int err);
-extern void scribe_downgrade(void *object);
-extern void scribe_assert_locked(void *object);
 
 /* Signals */
 
