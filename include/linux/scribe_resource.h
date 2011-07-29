@@ -1,6 +1,4 @@
 /*
- *  Scribe, the record/replay mechanism
- *
  * Copyright (C) 2010 Oren Laadan <orenl@cs.columbia.edu>
  * Copyright (C) 2010 Nicolas Viennot <nicolas@viennot.biz>
  *
@@ -17,8 +15,10 @@
 #ifdef __KERNEL__
 
 #include <linux/spinlock.h>
+#include <linux/list.h>
 #include <linux/rwsem.h>
 #include <linux/wait.h>
+#include <linux/rcupdate.h>
 #include <asm/atomic.h>
 
 /*
@@ -64,12 +64,144 @@ struct scribe_resource {
 
 void scribe_init_resource(struct scribe_resource *res, int type);
 void scribe_reset_resource(struct scribe_resource *res);
-struct scribe_container;
-void scribe_reset_resource_container(struct scribe_container *container);
+struct scribe_res_map;
+void scribe_reset_res_map(struct scribe_res_map *map);
 
 #ifdef CONFIG_LOCKDEP
 bool is_scribe_resource_key(struct lock_class_key *key);
 #endif
+
+struct scribe_res_map_ops;
+extern struct scribe_res_map_ops scribe_context_map_ops;
+extern struct scribe_res_map_ops scribe_pid_map_ops;
+extern struct scribe_res_map_ops scribe_sunaddr_map_ops;
+
+
+/*
+ * scribe_res_map is a generic container for resources.
+ * It provides a mapping key -> resource, which is used for:
+ * - per scribe context resource
+ * - pid -> resource
+ * - unix abstract address -> resource
+ * The elements are defined in scribe/resource/internal.h
+ */
+struct scribe_res_map {
+	spinlock_t lock;
+	struct scribe_res_map_ops *ops;
+
+	/*
+	 * In some case, we don't want a hash table, but a simple list.
+	 * We also want to be able to embbed this struct into another one
+	 */
+	struct hlist_head head[1];
+
+	/*
+	 * We'd love to put the resource type here but we don't for memory
+	 * usage: This struct is embedded in each file struct and inodes.
+	 */
+};
+
+/*
+ * Initializer for a resource mapper without a hash table.
+ * In this case, the key is assumed to be a scribe context.
+ */
+extern void scribe_init_res_map(struct scribe_res_map *map,
+				struct scribe_res_map_ops *ops);
+extern void scribe_exit_res_map(struct scribe_res_map *map);
+
+struct scribe_res_user {
+	struct hlist_head pre_alloc_mres;
+	int num_pre_alloc_mres;
+
+	struct list_head pre_alloc_regions;
+	int num_pre_alloc_regions;
+
+	struct sunaddr *pre_alloc_sunaddr;
+
+	struct list_head locked_regions;
+};
+
+struct scribe_res_context;
+extern struct scribe_res_context *scribe_alloc_res_context(void);
+extern void scribe_reset_resources(struct scribe_res_context *res_ctx);
+extern void scribe_free_res_context(struct scribe_res_context *res_ctx);
+
+extern void scribe_resource_init_user(struct scribe_res_user *user);
+extern void scribe_resource_exit_user(struct scribe_res_user *user);
+extern void scribe_assert_no_locked_region(struct scribe_res_user *user);
+extern int scribe_resource_prepare(void);
+
+#define SCRIBE_INTERRUPTIBLE	0x0001
+#define SCRIBE_READ		0x0002
+#define SCRIBE_WRITE		0x0004
+#define SCRIBE_INODE_READ	0x0008
+#define SCRIBE_INODE_WRITE	0x0010
+#define SCRIBE_INODE_EXPLICIT	0x0020
+#define SCRIBE_NESTED		0x0040
+#define SCRIBE_NO_LOCK		0x0080
+#define SCRIBE_HIGH_PRIORITY	0x0100
+#define SCRIBE_INTERRUPT_USERS	0x0200
+extern void scribe_lock_object(void *object, struct scribe_resource *res,
+			       int flags);
+extern void scribe_lock_object_key(void *object, struct scribe_res_map *map,
+				   void *key, int res_type, int flags);
+
+extern void scribe_lock_file_no_inode(struct file *file);
+extern void scribe_lock_file_read(struct file *file);
+extern void scribe_lock_file_write(struct file *file);
+extern int scribe_lock_file_read_interruptible(struct file *file);
+extern int scribe_lock_file_write_interruptible(struct file *file);
+
+struct inode;
+extern void scribe_lock_inode_read(struct inode *inode);
+extern void scribe_lock_inode_write(struct inode *inode);
+extern void scribe_lock_inode_write_nested(struct inode *inode);
+
+extern int scribe_track_next_file_no_inode(void);
+extern int scribe_track_next_file_read(void);
+extern int scribe_track_next_file_write(void);
+extern int scribe_track_next_file_explicit_inode_read(void);
+extern int scribe_track_next_file_explicit_inode_write(void);
+extern int scribe_track_next_file_read_interruptible(void);
+extern int scribe_track_next_file_write_interruptible(void);
+extern bool scribe_was_file_locking_interrupted(void);
+
+
+#define SCRIBE_CAN_DOWNGRADE	1
+#define SCRIBE_FILE_IS_GONE	2
+struct files_struct;
+extern void scribe_pre_fget(struct files_struct *files, int *lock_flags);
+extern int scribe_post_fget(struct files_struct *files, struct file *file,
+			    int lock_flags);
+extern void scribe_pre_fput(struct file *file, unsigned int *flags);
+extern void scribe_post_fput(struct file *file, unsigned int flags);
+
+extern void scribe_lock_files_read(struct files_struct *files);
+extern void scribe_lock_files_write(struct files_struct *files);
+
+extern void scribe_lock_pid_read(pid_t pid);
+extern void scribe_lock_pid_write(pid_t pid);
+extern void scribe_unlock_pid(pid_t pid);
+extern void scribe_unlock_pid_discard(pid_t pid);
+
+struct ipc_namespace;
+extern void scribe_lock_ipc(struct ipc_namespace *ns);
+
+extern void scribe_lock_mmap_read(struct mm_struct *mm);
+extern void scribe_lock_mmap_write(struct mm_struct *mm);
+
+extern void scribe_lock_ppid_ptr_read(struct task_struct *p);
+extern void scribe_lock_ppid_ptr_write(struct task_struct *p);
+
+struct sockaddr_un;
+extern void scribe_lock_sunaddr_read(struct sockaddr_un *sunaddr, int addr_len);
+extern void scribe_lock_sunaddr_write(struct sockaddr_un *sunaddr, int addr_len);
+
+extern void scribe_unlock(void *object);
+extern void scribe_unlock_discard(void *object);
+extern void scribe_unlock_err(void *object, int err);
+extern void scribe_downgrade(void *object);
+extern void scribe_assert_locked(void *object);
 
 #endif /* __KERNEL__ */
 
