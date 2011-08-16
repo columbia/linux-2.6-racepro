@@ -481,7 +481,6 @@ struct scribe_ps {
 	int waiting_for_serial;
 	struct scribe_res_user resources;
 	int lock_next_file;
-	struct file *locked_file;
 	bool was_file_locking_interrupted;
 	bool do_dpath_scribing;
 

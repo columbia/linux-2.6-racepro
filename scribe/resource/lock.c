@@ -534,9 +534,8 @@ static void do_unlock_discard(struct scribe_ps *scribe,
 }
 
 
-static struct scribe_lock_region *find_locked_region(
-						struct scribe_res_user *user,
-						void *object)
+struct scribe_lock_region *scribe_find_lock_region(struct scribe_res_user *user,
+						   void *object)
 {
 	struct scribe_lock_region *lock_region;
 
@@ -544,6 +543,7 @@ static struct scribe_lock_region *find_locked_region(
 		if (lock_region->object == object)
 			return lock_region;
 	}
+
 	return NULL;
 }
 
@@ -615,7 +615,7 @@ int __scribe_lock_objects(struct scribe_ps *scribe,
 undo:
 	for (i--; i >= 0; i--) {
 		user = &scribe->resources;
-		lock_region = find_locked_region(user, args[i].object);
+		lock_region = scribe_find_lock_region(user, args[i].object);
 		list_del(&lock_region->user_node);
 		untrack_user(lock_region);
 		do_unlock_discard(scribe, lock_region);
@@ -628,21 +628,17 @@ undo:
 	return ret;
 }
 
-void __scribe_unlock_object(struct scribe_ps *scribe,
-			    void *object, bool discard)
+void __scribe_unlock_region(struct scribe_ps *scribe,
+			    struct scribe_lock_region *lock_region,
+			    bool discard)
 {
-	struct scribe_lock_region *lock_region;
-	struct scribe_res_user *user;
-	int no_lock;
+	struct scribe_res_user *user = &scribe->resources;
 	int put_region_back = 0;
-
-	user = &scribe->resources;
-	lock_region = find_locked_region(user, object);
-	BUG_ON(!lock_region);
+	int no_lock;
 
 	if (lock_region->nested_object) {
-		__scribe_unlock_object(scribe,
-				       lock_region->nested_object, discard);
+		__scribe_unlock_object(scribe, lock_region->nested_object,
+				       discard);
 	}
 
 	no_lock = lock_region->flags & SCRIBE_NO_LOCK;
@@ -667,17 +663,10 @@ void __scribe_unlock_object(struct scribe_ps *scribe,
 	}
 }
 
-void __scribe_downgrade_object(struct scribe_ps *scribe, void *object)
+void __scribe_downgrade_region(struct scribe_ps *scribe,
+			       struct scribe_lock_region *lock_region)
 {
-	struct scribe_lock_region *lock_region;
-	struct scribe_res_user *user;
-	int no_lock;
-
-	user = &scribe->resources;
-	lock_region = find_locked_region(user, object);
-	BUG_ON(!lock_region);
-
-	no_lock = lock_region->flags & SCRIBE_NO_LOCK;
+	int no_lock = lock_region->flags & SCRIBE_NO_LOCK;
 
 	if (!no_lock)
 		do_lock_downgrade(scribe, lock_region);
@@ -685,5 +674,5 @@ void __scribe_downgrade_object(struct scribe_ps *scribe, void *object)
 
 void __scribe_assert_locked_object(struct scribe_ps *scribe, void *object)
 {
-	WARN_ON(!find_locked_region(&scribe->resources, object));
+	WARN_ON(!scribe_find_lock_region(&scribe->resources, object));
 }
