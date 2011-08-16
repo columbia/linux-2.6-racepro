@@ -327,6 +327,11 @@ void scribe_pre_fput(struct file *file, unsigned int *flags)
 
 	if (sync_fput) {
 		if (!scribe->locked_file) {
+			if (scribe_resource_prepare()) {
+				scribe_kill(scribe->ctx, -ENOMEM);
+				return;
+			}
+
 			lock_file(file, SCRIBE_WRITE | SCRIBE_HIGH_PRIORITY |
 					SCRIBE_INTERRUPT_USERS);
 			scribe->locked_file = file;

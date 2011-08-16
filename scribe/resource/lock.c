@@ -35,8 +35,8 @@
  *   resource since no other file pointer can exist on the pipe inode).
  *   (In rare cases we may take the inode resource lock -- see in fs/fcntl.c)
  *
- * - TODO use a rw_semaphore instead of a mutex to synchronize accesses (the
- *   resource API already use read/write version, but it does the same thing).
+ * - Taking a lock with a read access is not different from taking it with
+ *   write access during replay.
  */
 
 static bool is_locking_necessary(struct scribe_ps *scribe,
