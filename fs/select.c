@@ -396,6 +396,70 @@ static inline void wait_key_set(poll_table *wait, unsigned long in,
 	}
 }
 
+static int do_select_replay(int n, fd_set_bits *fds)
+{
+	struct scribe_ps *scribe = current->scribe;
+	struct scribe_event *event;
+	int retval, i;
+	/*
+	 * When replaying, we need to do all the fget/fput because
+	 * fput needs some synchronization (scribe_sync_fput file
+	 * operation)
+	 */
+
+	if (scribe_resource_prepare())
+		return -ENOMEM;
+
+	scribe_lock_files_read(current->files);
+	rcu_read_lock();
+	retval = max_select_fd(n, fds);
+	rcu_read_unlock();
+	scribe_unlock(current->files);
+
+	if (retval < 0)
+		return retval;
+	n = retval;
+
+	for (;;) {
+		unsigned long *rinp, *routp, *rexp, *inp, *outp, *exp;
+		inp = fds->in; outp = fds->out; exp = fds->ex;
+		rinp = fds->res_in; routp = fds->res_out; rexp = fds->res_ex;
+
+		for (i = 0; i < n; ++rinp, ++routp, ++rexp) {
+			unsigned long in, out, ex, all_bits, bit = 1, j;
+			struct file *file = NULL;
+
+			in = *inp++; out = *outp++; ex = *exp++;
+			all_bits = in | out | ex;
+			if (all_bits == 0) {
+				i += __NFDBITS;
+				continue;
+			}
+
+			for (j = 0; j < __NFDBITS; ++j, ++i, bit <<= 1) {
+				int fput_needed;
+				if (i >= n)
+					break;
+				if (!(bit & all_bits))
+					continue;
+
+				event = scribe_peek_event(scribe->queue, SCRIBE_WAIT);
+				if (event->type != SCRIBE_EVENT_RESOURCE_LOCK &&
+				    event->type != SCRIBE_EVENT_RESOURCE_LOCK_EXTRA &&
+				    event->type != SCRIBE_EVENT_RESOURCE_LOCK_INTR)
+					return scribe->orig_ret;
+
+				if (scribe_track_next_file(SCRIBE_READ))
+					return -ENOMEM;
+
+				file = fget_light(i, &fput_needed);
+				if (file)
+					fput_light(file, fput_needed);
+			}
+		}
+	}
+}
+
 int do_select(int n, fd_set_bits *fds, struct timespec *end_time)
 {
 	ktime_t expire, *to = NULL;
@@ -404,9 +468,14 @@ int do_select(int n, fd_set_bits *fds, struct timespec *end_time)
 	int retval, i, timed_out = 0;
 	unsigned long slack = 0;
 
+	if (scribe_resource_prepare())
+		return -ENOMEM;
+
+	scribe_lock_files_read(current->files);
 	rcu_read_lock();
 	retval = max_select_fd(n, fds);
 	rcu_read_unlock();
+	scribe_unlock(current->files);
 
 	if (retval < 0)
 		return retval;
@@ -448,6 +517,14 @@ int do_select(int n, fd_set_bits *fds, struct timespec *end_time)
 					break;
 				if (!(bit & all_bits))
 					continue;
+
+				if (scribe_track_next_file(
+					SCRIBE_READ | SCRIBE_HIGH_PRIORITY |
+					SCRIBE_INTERRUPT_USERS)) {
+					retval = -ENOMEM;
+					break;
+				}
+
 				file = fget_light(i, &fput_needed);
 				if (file) {
 					f_op = file->f_op;
@@ -578,7 +655,7 @@ int core_sys_select(int n, fd_set __user *inp, fd_set __user *outp,
 		return -ENOMEM;
 
 	if (is_replaying(scribe))
-		ret = scribe->orig_ret;
+		ret = do_select_replay(n, &fds);
 	else
 		ret = do_select(n, &fds, end_time);
 

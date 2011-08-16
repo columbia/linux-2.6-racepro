@@ -217,7 +217,7 @@ void scribe_lock_inode_write_nested(struct inode *inode)
 	lock_inode(inode, SCRIBE_WRITE | SCRIBE_NESTED);
 }
 
-static int __track_next_file(int flags)
+int scribe_track_next_file(int flags)
 {
 	struct scribe_ps *scribe = current->scribe;
 
@@ -234,41 +234,41 @@ static int __track_next_file(int flags)
 
 int scribe_track_next_file_no_inode(void)
 {
-	return __track_next_file(SCRIBE_WRITE);
+	return scribe_track_next_file(SCRIBE_WRITE);
 }
 
 int scribe_track_next_file_read(void)
 {
-	return __track_next_file(SCRIBE_WRITE | SCRIBE_INODE_READ);
+	return scribe_track_next_file(SCRIBE_WRITE | SCRIBE_INODE_READ);
 }
 
 int scribe_track_next_file_write(void)
 {
-	return __track_next_file(SCRIBE_WRITE | SCRIBE_INODE_WRITE);
+	return scribe_track_next_file(SCRIBE_WRITE | SCRIBE_INODE_WRITE);
 }
 
 int scribe_track_next_file_explicit_inode_read(void)
 {
-	return __track_next_file(SCRIBE_WRITE | SCRIBE_INODE_EXPLICIT |
-				 SCRIBE_INODE_READ);
+	return scribe_track_next_file(SCRIBE_WRITE | SCRIBE_INODE_EXPLICIT |
+				      SCRIBE_INODE_READ);
 }
 
 int scribe_track_next_file_explicit_inode_write(void)
 {
-	return __track_next_file(SCRIBE_WRITE | SCRIBE_INODE_EXPLICIT |
-				 SCRIBE_INODE_WRITE);
+	return scribe_track_next_file(SCRIBE_WRITE | SCRIBE_INODE_EXPLICIT |
+				      SCRIBE_INODE_WRITE);
 }
 
 int scribe_track_next_file_read_interruptible(void)
 {
-	return __track_next_file(SCRIBE_INTERRUPTIBLE |
-				 SCRIBE_WRITE | SCRIBE_INODE_READ);
+	return scribe_track_next_file(SCRIBE_INTERRUPTIBLE |
+				      SCRIBE_WRITE | SCRIBE_INODE_READ);
 }
 
 int scribe_track_next_file_write_interruptible(void)
 {
-	return __track_next_file(SCRIBE_INTERRUPTIBLE |
-				 SCRIBE_WRITE | SCRIBE_INODE_WRITE);
+	return scribe_track_next_file(SCRIBE_INTERRUPTIBLE |
+				      SCRIBE_WRITE | SCRIBE_INODE_WRITE);
 }
 
 void scribe_pre_fget(struct files_struct *files, int *lock_flags)

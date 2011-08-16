@@ -158,6 +158,7 @@ extern void scribe_lock_inode_read(struct inode *inode);
 extern void scribe_lock_inode_write(struct inode *inode);
 extern void scribe_lock_inode_write_nested(struct inode *inode);
 
+extern int scribe_track_next_file(int flags);
 extern int scribe_track_next_file_no_inode(void);
 extern int scribe_track_next_file_read(void);
 extern int scribe_track_next_file_write(void);
