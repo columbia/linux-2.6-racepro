@@ -226,7 +226,7 @@ EXPORT_SYMBOL_GPL(drop_file_write_access);
 
 /* the real guts of fput() - releasing the last reference to file
  */
-static void __fput(struct file *file)
+static void __fput(struct file *file, struct scribe_fput_context *ctx)
 {
 	struct dentry *dentry = file->f_path.dentry;
 	struct vfsmount *mnt = file->f_path.mnt;
@@ -259,7 +259,10 @@ static void __fput(struct file *file)
 		drop_file_write_access(file);
 	file->f_path.dentry = NULL;
 	file->f_path.mnt = NULL;
+
 #ifdef CONFIG_SCRIBE
+	ctx->file_has_been_destroyed = true;
+	scribe_post_fput(file, ctx);
 	scribe_reset_res_map(&file->scribe_resource);
 	scribe_exit_res_map(&file->scribe_resource);
 #endif
@@ -274,12 +277,10 @@ void fput(struct file *file)
 
 	scribe_pre_fput(file, &ctx);
 
-	if (atomic_long_dec_and_test(&file->f_count)) {
-		__fput(file);
-		ctx.file_has_been_destroyed = true;
-	}
-
-	scribe_post_fput(file, &ctx);
+	if (atomic_long_dec_and_test(&file->f_count))
+		__fput(file, &ctx);
+	else
+		scribe_post_fput(file, &ctx);
 }
 
 EXPORT_SYMBOL(fput);
