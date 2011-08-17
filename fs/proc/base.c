@@ -2092,7 +2092,7 @@ static struct dentry *__proc_fdinfo_instantiate(struct inode *dir,
 static struct dentry *proc_fdinfo_instantiate(struct inode *dir,
 	struct dentry *dentry, struct task_struct *task, const void *ptr)
 {
-	return proc_fdinfo_instantiate(dir, dentry, task, ptr);
+	return __proc_fdinfo_instantiate(dir, dentry, task, ptr, false);
 }
 
 static struct dentry *proc_lookupfdinfo(struct inode *dir,
@@ -2161,7 +2161,7 @@ out:
 static struct dentry *proc_pident_instantiate(struct inode *dir,
 	struct dentry *dentry, struct task_struct *task, const void *ptr)
 {
-	return proc_pident_instantiate(dir, dentry, task, ptr);
+	return __proc_pident_instantiate(dir, dentry, task, ptr, false);
 }
 
 static struct dentry *proc_pident_lookup(struct inode *dir, 
