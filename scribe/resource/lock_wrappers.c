@@ -341,8 +341,8 @@ void scribe_pre_fput(struct file *file, struct scribe_fput_context *fput_ctx)
 			return;
 		}
 
-		lock_file(file, SCRIBE_WRITE | SCRIBE_HIGH_PRIORITY |
-				SCRIBE_INTERRUPT_USERS);
+		lock_file(file, SCRIBE_WRITE | SCRIBE_CAN_DOWNGRADE |
+			        SCRIBE_HIGH_PRIORITY | SCRIBE_INTERRUPT_USERS);
 
 		/* TODO Optimize so that we don't need to search for the lock region */
 		lock_region = scribe_find_lock_region(user, file);
@@ -361,9 +361,10 @@ void scribe_pre_fput(struct file *file, struct scribe_fput_context *fput_ctx)
 
 void scribe_post_fput(struct file *file, struct scribe_fput_context *fput_ctx)
 {
+	struct scribe_lock_region *lock_region = fput_ctx->lock_region;
 	struct scribe_ps *scribe;
 
-	if (!fput_ctx->lock_region)
+	if (!lock_region)
 		return;
 
 	scribe = current->scribe;
@@ -372,10 +373,11 @@ void scribe_post_fput(struct file *file, struct scribe_fput_context *fput_ctx)
 	 * The fput locking is done in a write mode only when __fput()
 	 * was called.
 	 */
-	if (!fput_ctx->file_has_been_destroyed)
-		__scribe_downgrade_object(scribe, fput_ctx->lock_region);
+	if (!fput_ctx->file_has_been_destroyed &&
+	    (lock_region->flags & SCRIBE_CAN_DOWNGRADE))
+		__scribe_downgrade_region(scribe, lock_region);
 
-	__scribe_unlock_region(scribe, fput_ctx->lock_region, false);
+	__scribe_unlock_region(scribe, lock_region, false);
 }
 
 bool scribe_was_file_locking_interrupted(void)

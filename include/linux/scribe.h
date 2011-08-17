@@ -71,10 +71,12 @@ struct scribe_stream {
 	wait_queue_head_t *wait;
 };
 
-#define SCRIBE_REGION_SIGNAL		0
-#define SCRIBE_REGION_SIG_COOKIE	1
-#define SCRIBE_REGION_MEM		2
-#define SCRIBE_REGION_NUM		4
+enum scribe_region_type {
+	SCRIBE_REGION_SIGNAL,
+	SCRIBE_REGION_SIG_COOKIE,
+	SCRIBE_REGION_MEM,
+	SCRIBE_REGION_NUM
+};
 
 /*
  * scribe_queues are used for the per process queue whereas scribe_streams are

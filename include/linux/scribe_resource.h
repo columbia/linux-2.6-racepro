@@ -142,6 +142,7 @@ extern int scribe_resource_prepare(void);
 #define SCRIBE_HIGH_PRIORITY	0x0100
 #define SCRIBE_INTERRUPT_USERS	0x0200
 #define SCRIBE_IMPLICIT_UNLOCK	0x0400
+#define SCRIBE_CAN_DOWNGRADE	0x0800
 extern void scribe_lock_object(void *object, struct scribe_resource *res,
 			       int flags);
 extern void scribe_lock_object_key(void *object, struct scribe_res_map *map,
