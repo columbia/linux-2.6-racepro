@@ -270,16 +270,16 @@ static void __fput(struct file *file)
 
 void fput(struct file *file)
 {
-	unsigned int flags;
+	struct scribe_fput_context ctx;
 
-	scribe_pre_fput(file, &flags);
+	scribe_pre_fput(file, &ctx);
 
 	if (atomic_long_dec_and_test(&file->f_count)) {
-		flags |= SCRIBE_FILE_IS_GONE;
 		__fput(file);
+		ctx.file_has_been_destroyed = true;
 	}
 
-	scribe_post_fput(file, flags);
+	scribe_post_fput(file, &ctx);
 }
 
 EXPORT_SYMBOL(fput);

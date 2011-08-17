@@ -144,10 +144,13 @@ struct scribe_lock_region {
 	} lock_event;
 	struct scribe_event_resource_unlock *unlock_event;
 	void *object;
-	void *nested_object; /* Used when using __lock_objects() */
+	void *nested_object; /* Used with __lock_objects() */
 	struct scribe_resource *res;
 	int flags;
 };
+
+extern struct scribe_lock_region *scribe_find_lock_region(
+				struct scribe_res_user *user, void *object);
 
 struct scribe_lock_arg {
 	void *object;
@@ -188,9 +191,39 @@ extern int __scribe_lock_object(struct scribe_ps *scribe,
 				struct scribe_lock_arg *arg);
 extern int __scribe_lock_objects(struct scribe_ps *scribe,
 				 struct scribe_lock_arg *args, int count);
-extern void __scribe_unlock_object(struct scribe_ps *scribe,
-				   void *object, bool discard);
-extern void __scribe_downgrade_object(struct scribe_ps *scribe, void *object);
+extern void __scribe_unlock_region(struct scribe_ps *scribe,
+				   struct scribe_lock_region *lock_region,
+				   bool discard);
+
+static inline void __scribe_unlock_object(struct scribe_ps *scribe,
+					  void *object, bool discard)
+{
+	struct scribe_lock_region *lock_region;
+	struct scribe_res_user *user;
+
+	user = &scribe->resources;
+	lock_region = scribe_find_lock_region(user, object);
+	BUG_ON(!lock_region);
+
+	__scribe_unlock_region(scribe, lock_region, discard);
+}
+
+extern void __scribe_downgrade_region(struct scribe_ps *scribe,
+				      struct scribe_lock_region *lock_region);
+
+static inline void __scribe_downgrade_object(struct scribe_ps *scribe,
+					     void *object)
+{
+	struct scribe_lock_region *lock_region;
+	struct scribe_res_user *user;
+
+	user = &scribe->resources;
+	lock_region = scribe_find_lock_region(user, object);
+	BUG_ON(!lock_region);
+
+	__scribe_downgrade_region(scribe, lock_region);
+}
+
 extern void __scribe_assert_locked_object(struct scribe_ps *scribe,
 					  void *object);
 extern struct scribe_lock_region *scribe_alloc_lock_region(int doing_recording,

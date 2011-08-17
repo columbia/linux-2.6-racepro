@@ -217,7 +217,7 @@ void scribe_lock_inode_write_nested(struct inode *inode)
 	lock_inode(inode, SCRIBE_WRITE | SCRIBE_NESTED);
 }
 
-static int __track_next_file(int flags)
+int scribe_track_next_file(int flags)
 {
 	struct scribe_ps *scribe = current->scribe;
 
@@ -234,41 +234,41 @@ static int __track_next_file(int flags)
 
 int scribe_track_next_file_no_inode(void)
 {
-	return __track_next_file(SCRIBE_WRITE);
+	return scribe_track_next_file(SCRIBE_WRITE);
 }
 
 int scribe_track_next_file_read(void)
 {
-	return __track_next_file(SCRIBE_WRITE | SCRIBE_INODE_READ);
+	return scribe_track_next_file(SCRIBE_WRITE | SCRIBE_INODE_READ);
 }
 
 int scribe_track_next_file_write(void)
 {
-	return __track_next_file(SCRIBE_WRITE | SCRIBE_INODE_WRITE);
+	return scribe_track_next_file(SCRIBE_WRITE | SCRIBE_INODE_WRITE);
 }
 
 int scribe_track_next_file_explicit_inode_read(void)
 {
-	return __track_next_file(SCRIBE_WRITE | SCRIBE_INODE_EXPLICIT |
-				 SCRIBE_INODE_READ);
+	return scribe_track_next_file(SCRIBE_WRITE | SCRIBE_INODE_EXPLICIT |
+				      SCRIBE_INODE_READ);
 }
 
 int scribe_track_next_file_explicit_inode_write(void)
 {
-	return __track_next_file(SCRIBE_WRITE | SCRIBE_INODE_EXPLICIT |
-				 SCRIBE_INODE_WRITE);
+	return scribe_track_next_file(SCRIBE_WRITE | SCRIBE_INODE_EXPLICIT |
+				      SCRIBE_INODE_WRITE);
 }
 
 int scribe_track_next_file_read_interruptible(void)
 {
-	return __track_next_file(SCRIBE_INTERRUPTIBLE |
-				 SCRIBE_WRITE | SCRIBE_INODE_READ);
+	return scribe_track_next_file(SCRIBE_INTERRUPTIBLE |
+				      SCRIBE_WRITE | SCRIBE_INODE_READ);
 }
 
 int scribe_track_next_file_write_interruptible(void)
 {
-	return __track_next_file(SCRIBE_INTERRUPTIBLE |
-				 SCRIBE_WRITE | SCRIBE_INODE_WRITE);
+	return scribe_track_next_file(SCRIBE_INTERRUPTIBLE |
+				      SCRIBE_WRITE | SCRIBE_INODE_WRITE);
 }
 
 void scribe_pre_fget(struct files_struct *files, int *lock_flags)
@@ -281,7 +281,7 @@ void scribe_pre_fget(struct files_struct *files, int *lock_flags)
 		return;
 
 	if (scribe->lock_next_file) {
-		*lock_flags = scribe->lock_next_file;
+		*lock_flags = scribe->lock_next_file | SCRIBE_IMPLICIT_UNLOCK;
 		scribe->lock_next_file = 0;
 
 		/*
@@ -308,73 +308,74 @@ int scribe_post_fget(struct files_struct *files, struct file *file,
 		return -EINTR;
 	}
 
-	current->scribe->locked_file = file;
 	return 0;
 }
 
-void scribe_pre_fput(struct file *file, unsigned int *flags)
+void scribe_pre_fput(struct file *file, struct scribe_fput_context *fput_ctx)
 {
 	bool sync_fput = false;
 	struct scribe_ps *scribe = current->scribe;
+	struct scribe_lock_region *lock_region;
+	struct scribe_res_user *user;
 
-	*flags = 0;
+	fput_ctx->lock_region = NULL;
 
 	if (!is_scribed(scribe))
 		return;
+
+	user = &scribe->resources;
+	lock_region = scribe_find_lock_region(user, file);
 
 	if (file->f_op->scribe_sync_fput)
 		sync_fput = file->f_op->scribe_sync_fput(file);
 
 	if (sync_fput) {
-		if (!scribe->locked_file) {
-			lock_file(file, SCRIBE_WRITE | SCRIBE_HIGH_PRIORITY |
-					SCRIBE_INTERRUPT_USERS);
-			scribe->locked_file = file;
-			*flags = SCRIBE_CAN_DOWNGRADE;
+		/* unlock will be done in post_fput() */
+		if (lock_region) {
+			fput_ctx->lock_region = lock_region;
+			return;
 		}
-		/* unlock will happen in post_fput() */
 
+		if (scribe_resource_prepare()) {
+			scribe_kill(scribe->ctx, -ENOMEM);
+			return;
+		}
+
+		lock_file(file, SCRIBE_WRITE | SCRIBE_HIGH_PRIORITY |
+				SCRIBE_INTERRUPT_USERS);
+
+		/* TODO Optimize so that we don't need to search for the lock region */
+		lock_region = scribe_find_lock_region(user, file);
+		fput_ctx->lock_region = lock_region;
+	} else {
 		/*
-		 * XXX If you locked file with the flags
-		 * (SCRIBE_INODE_READ | SCRIBE_INODE_WRITE)
-		 * We are in trouble !
-		 * because file will not exist anymore and file_inode() will
-		 * be called.
+		 * We don't need to sync fput, so we can unlock before fput().
 		 */
-		return;
-	}
+		if (!lock_region)
+			return;
 
-	if (scribe->locked_file) {
-		__scribe_unlock_object(scribe, scribe->locked_file, false);
-		scribe->locked_file = NULL;
+		if (lock_region->flags & SCRIBE_IMPLICIT_UNLOCK)
+			__scribe_unlock_region(scribe, lock_region, false);
 	}
 }
 
-void scribe_post_fput(struct file *file, unsigned int flags)
+void scribe_post_fput(struct file *file, struct scribe_fput_context *fput_ctx)
 {
-	struct scribe_ps *scribe = current->scribe;
+	struct scribe_ps *scribe;
 
-	if (!is_scribed(scribe))
+	if (!fput_ctx->lock_region)
 		return;
 
-	if (scribe->locked_file) {
-		/*
-		 * We can use the file variable even though the object might
-		 * be gone: scribe_unlock(file) only uses the pointer value.
-		 */
+	scribe = current->scribe;
 
-		if ((flags & SCRIBE_CAN_DOWNGRADE) &&
-		    !(flags & SCRIBE_FILE_IS_GONE)) {
-			/*
-			 * The fput locking is done in a write mode only when
-			 * __fput() was called
-			 */
-			__scribe_downgrade_object(scribe, scribe->locked_file);
-		}
+	/*
+	 * The fput locking is done in a write mode only when __fput()
+	 * was called.
+	 */
+	if (!fput_ctx->file_has_been_destroyed)
+		__scribe_downgrade_object(scribe, fput_ctx->lock_region);
 
-		__scribe_unlock_object(scribe, scribe->locked_file, false);
-		scribe->locked_file = NULL;
-	}
+	__scribe_unlock_region(scribe, fput_ctx->lock_region, false);
 }
 
 bool scribe_was_file_locking_interrupted(void)

@@ -141,6 +141,7 @@ extern int scribe_resource_prepare(void);
 #define SCRIBE_NO_LOCK		0x0080
 #define SCRIBE_HIGH_PRIORITY	0x0100
 #define SCRIBE_INTERRUPT_USERS	0x0200
+#define SCRIBE_IMPLICIT_UNLOCK	0x0400
 extern void scribe_lock_object(void *object, struct scribe_resource *res,
 			       int flags);
 extern void scribe_lock_object_key(void *object, struct scribe_res_map *map,
@@ -157,6 +158,7 @@ extern void scribe_lock_inode_read(struct inode *inode);
 extern void scribe_lock_inode_write(struct inode *inode);
 extern void scribe_lock_inode_write_nested(struct inode *inode);
 
+extern int scribe_track_next_file(int flags);
 extern int scribe_track_next_file_no_inode(void);
 extern int scribe_track_next_file_read(void);
 extern int scribe_track_next_file_write(void);
@@ -166,15 +168,19 @@ extern int scribe_track_next_file_read_interruptible(void);
 extern int scribe_track_next_file_write_interruptible(void);
 extern bool scribe_was_file_locking_interrupted(void);
 
+struct scribe_fput_context {
+	struct scribe_lock_region *lock_region;
+	bool file_has_been_destroyed;
+};
 
-#define SCRIBE_CAN_DOWNGRADE	1
-#define SCRIBE_FILE_IS_GONE	2
 struct files_struct;
 extern void scribe_pre_fget(struct files_struct *files, int *lock_flags);
 extern int scribe_post_fget(struct files_struct *files, struct file *file,
 			    int lock_flags);
-extern void scribe_pre_fput(struct file *file, unsigned int *flags);
-extern void scribe_post_fput(struct file *file, unsigned int flags);
+extern void scribe_pre_fput(struct file *file,
+			    struct scribe_fput_context *fput_ctx);
+extern void scribe_post_fput(struct file *file,
+			     struct scribe_fput_context *fput_ctx);
 
 extern void scribe_lock_files_read(struct files_struct *files);
 extern void scribe_lock_files_write(struct files_struct *files);

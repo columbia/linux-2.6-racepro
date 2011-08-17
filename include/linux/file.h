@@ -8,6 +8,7 @@
 #include <linux/compiler.h>
 #include <linux/types.h>
 #include <linux/posix_types.h>
+#include <linux/scribe_resource.h>
 
 struct file;
 
@@ -21,20 +22,16 @@ struct path;
 extern struct file *alloc_file(struct path *, fmode_t mode,
 	const struct file_operations *fop);
 
-#ifdef CONFIG_SCRIBE
-#define SCRIBE_CAN_DOWNGRADE	1
-#define SCRIBE_FILE_IS_GONE	2
-extern void scribe_pre_fput(struct file *file, unsigned int *flags);
-extern void scribe_post_fput(struct file *file, unsigned int flags);
-#endif
-
 static inline void fput_light(struct file *file, int fput_needed)
 {
 	if (unlikely(fput_needed))
 		fput(file);
 #ifdef CONFIG_SCRIBE
-	else
-		scribe_post_fput(file, 0);
+	else {
+		struct scribe_fput_context ctx;
+		scribe_pre_fput(file, &ctx);
+		scribe_post_fput(file, &ctx);
+	}
 #endif
 }
 
