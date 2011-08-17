@@ -373,7 +373,7 @@ void scribe_post_fput(struct file *file, struct scribe_fput_context *fput_ctx)
 	 * was called.
 	 */
 	if (!fput_ctx->file_has_been_destroyed)
-		__scribe_downgrade_object(scribe, fput_ctx->lock_region);
+		__scribe_downgrade_region(scribe, fput_ctx->lock_region);
 
 	__scribe_unlock_region(scribe, fput_ctx->lock_region, false);
 }
