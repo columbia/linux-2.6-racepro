@@ -1665,6 +1665,17 @@ static int unix_stream_sendmsg(struct kiocb *kiocb, struct socket *sock,
 	int sent = 0;
 	struct scm_cookie tmp_scm;
 	bool fds_sent = false;
+	bool can_epipe = true;
+
+	if (is_ps_replaying(current)) {
+		/*
+		 * If we failed during the recording, we have to fail during
+		 * the replay. But if we didn't, we must not fail.
+		 */
+		can_epipe = false;
+		if (current->scribe->orig_ret == -EPIPE)
+			return -EPIPE;
+	}
 
 	if (NULL == siocb->scm)
 		siocb->scm = &tmp_scm;
@@ -1688,7 +1699,7 @@ static int unix_stream_sendmsg(struct kiocb *kiocb, struct socket *sock,
 			goto out_err;
 	}
 
-	if (sk->sk_shutdown & SEND_SHUTDOWN)
+	if ((sk->sk_shutdown & SEND_SHUTDOWN) && can_epipe)
 		goto pipe_err;
 
 	while (sent < len) {
@@ -1744,8 +1755,8 @@ static int unix_stream_sendmsg(struct kiocb *kiocb, struct socket *sock,
 
 		unix_state_lock(other);
 
-		if (sock_flag(other, SOCK_DEAD) ||
-		    (other->sk_shutdown & RCV_SHUTDOWN))
+		if ((sock_flag(other, SOCK_DEAD) ||
+		    (other->sk_shutdown & RCV_SHUTDOWN)) && can_epipe)
 			goto pipe_err_free;
 
 		skb_queue_tail(&other->sk_receive_queue, skb);
