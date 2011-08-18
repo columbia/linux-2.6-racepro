@@ -1666,15 +1666,19 @@ static int unix_stream_sendmsg(struct kiocb *kiocb, struct socket *sock,
 	struct scm_cookie tmp_scm;
 	bool fds_sent = false;
 	bool can_epipe = true;
+	struct scribe_ps *scribe = current->scribe;
 
-	if (is_ps_replaying(current)) {
+	scribe_data_need_info();
+
+	if (is_replaying(scribe)) {
 		/*
 		 * If we failed during the recording, we have to fail during
 		 * the replay. But if we didn't, we must not fail.
 		 */
 		can_epipe = false;
-		if (current->scribe->orig_ret == -EPIPE)
-			return -EPIPE;
+		if (scribe->orig_ret == -EPIPE ||
+		    scribe->orig_ret == -ECONNRESET)
+			return scribe->orig_ret;
 	}
 
 	if (NULL == siocb->scm)
@@ -1699,8 +1703,12 @@ static int unix_stream_sendmsg(struct kiocb *kiocb, struct socket *sock,
 			goto out_err;
 	}
 
-	if ((sk->sk_shutdown & SEND_SHUTDOWN) && can_epipe)
-		goto pipe_err;
+	if (sk->sk_shutdown & SEND_SHUTDOWN) {
+		if (can_epipe)
+			goto pipe_err;
+		else
+			goto fake_user_copy;
+	}
 
 	while (sent < len) {
 		/*
@@ -1720,12 +1728,15 @@ static int unix_stream_sendmsg(struct kiocb *kiocb, struct socket *sock,
 		/*
 		 *	Grab a buffer
 		 */
-
 		skb = sock_alloc_send_skb(sk, size, msg->msg_flags&MSG_DONTWAIT,
 					  &err);
 
-		if (skb == NULL)
-			goto out_err;
+		if (skb == NULL) {
+			if (can_epipe)
+				goto out_err;
+			else
+				goto fake_user_copy;
+		}
 
 		/*
 		 *	If you pass two values to the sock_alloc_send_skb
@@ -1755,9 +1766,20 @@ static int unix_stream_sendmsg(struct kiocb *kiocb, struct socket *sock,
 
 		unix_state_lock(other);
 
-		if ((sock_flag(other, SOCK_DEAD) ||
-		    (other->sk_shutdown & RCV_SHUTDOWN)) && can_epipe)
-			goto pipe_err_free;
+		if (sock_flag(other, SOCK_DEAD) ||
+		    (other->sk_shutdown & RCV_SHUTDOWN)) {
+			if (can_epipe) {
+				/*
+				 * We have to account for the read bytes from
+				 * userspace here, otherwise we won't be able
+				 * to replay them when coming from sys_write()
+				 */
+				if (is_recording(scribe))
+					sent += size;
+				goto pipe_err_free;
+			} else
+				goto fake_user_copy_free;
+		}
 
 		skb_queue_tail(&other->sk_receive_queue, skb);
 		unix_state_unlock(other);
@@ -1768,6 +1790,7 @@ static int unix_stream_sendmsg(struct kiocb *kiocb, struct socket *sock,
 	scm_destroy(siocb->scm);
 	siocb->scm = NULL;
 
+	scribe_data_pop_flags();
 	return sent;
 
 pipe_err_free:
@@ -1780,7 +1803,17 @@ pipe_err:
 out_err:
 	scm_destroy(siocb->scm);
 	siocb->scm = NULL;
+
+	scribe_data_pop_flags();
 	return sent ? : err;
+
+fake_user_copy_free:
+	unix_state_unlock(other);
+	kfree_skb(skb);
+fake_user_copy:
+	err = 0;
+	sent += scribe_emul_copy_from_user(scribe, NULL, len-sent);
+	goto out_err;
 }
 
 static int unix_seqpacket_sendmsg(struct kiocb *kiocb, struct socket *sock,
