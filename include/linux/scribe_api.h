@@ -113,6 +113,8 @@
 #define SCRIBE_BOOKMARK_PRE_SYSCALL	0x00
 #define SCRIBE_BOOKMARK_POST_SYSCALL	0x01
 
+#define SCRIBE_REAPED			0x80000000
+
 /*
  * Syscalls offsets for multiplexed calls
  */

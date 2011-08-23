@@ -1278,6 +1278,7 @@ struct wait_opts {
 	enum pid_type		wo_type;
 	int			wo_flags;
 	struct pid		*wo_pid;
+	bool			wo_scribe_reaped;
 	pid_t			wo_scribe_pid;
 	scribe_insert_point_t	wo_scribe_pid_ip;
 	bool			wo_scribe_pid_locked;
@@ -1519,6 +1520,8 @@ static int wait_task_zombie(struct wait_opts *wo, struct task_struct *p)
 	}
 	if (p != NULL)
 		release_task(p);
+
+	wo->wo_scribe_reaped = true;
 
 	return retval;
 }
@@ -1965,6 +1968,7 @@ static int scribe_pre_wait(struct wait_opts *wo, long *ret, int options)
 	pid_t pid;
 	int orig_ret;
 
+	wo->wo_scribe_reaped = false;
 	wo->wo_scribe_pid = 0;
 	wo->wo_scribe_pid_locked = false;
 
@@ -1991,6 +1995,8 @@ static int scribe_pre_wait(struct wait_opts *wo, long *ret, int options)
 	if (is_replaying(scribe) &&
 	    !is_scribe_context_dead(scribe->ctx)) {
 		*ret = scribe_value(&pid);
+		pid &= ~SCRIBE_REAPED;
+
 		if (*ret)
 			return -1;
 		if (!pid) {
@@ -2025,6 +2031,8 @@ static void scribe_post_wait(struct wait_opts *wo, long ret)
 
 	if (is_recording(scribe)) {
 		pid_ip = &wo->wo_scribe_pid_ip;
+
+		pid |= wo->wo_scribe_reaped ? SCRIBE_REAPED : 0;
 
 		if (scribe_value_at(&pid, pid_ip))
 			scribe_kill(scribe->ctx, -ENOMEM);
