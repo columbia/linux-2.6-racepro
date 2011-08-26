@@ -1458,7 +1458,7 @@ static void scribe_double_lock(struct dentry *p1, struct dentry *p2)
 	mutex_unlock(&p1->d_inode->i_sb->s_vfs_rename_mutex);
 }
 
-static void scribe_double_unlock(struct dentry *p1, struct dentry *p2)
+static void scribe_double_downgrade(struct dentry *p1, struct dentry *p2)
 {
 	if (!is_ps_scribed(current))
 		return;
@@ -1466,6 +1466,16 @@ static void scribe_double_unlock(struct dentry *p1, struct dentry *p2)
 	scribe_unlock(p1->d_inode);
 	if (p1 != p2)
 		scribe_unlock(p2->d_inode);
+}
+
+static void scribe_double_unlock(struct dentry *p1, struct dentry *p2)
+{
+	if (!is_ps_scribed(current))
+		return;
+
+	scribe_downgrade(p1->d_inode);
+	if (p1 != p2)
+		scribe_downgrade(p2->d_inode);
 }
 
 int vfs_create(struct inode *dir, struct dentry *dentry, int mode,
@@ -2150,6 +2160,8 @@ out_dput:
 	dput(dentry);
 out_unlock:
 	mutex_unlock(&nd.path.dentry->d_inode->i_mutex);
+	if (error)
+		scribe_downgrade(nd.path.dentry->d_inode);
 	scribe_unlock(nd.path.dentry->d_inode);
 	path_put(&nd.path);
 	putname(tmp);
@@ -2216,6 +2228,9 @@ out_dput:
 	dput(dentry);
 out_unlock:
 	mutex_unlock(&nd.path.dentry->d_inode->i_mutex);
+	if (error)
+		scribe_downgrade(nd.path.dentry->d_inode);
+
 	scribe_unlock(nd.path.dentry->d_inode);
 	path_put(&nd.path);
 	putname(tmp);
@@ -2333,6 +2348,8 @@ exit3:
 	dput(dentry);
 exit2:
 	mutex_unlock(&nd.path.dentry->d_inode->i_mutex);
+	if (error)
+		scribe_downgrade(nd.path.dentry->d_inode);
 	scribe_unlock(nd.path.dentry->d_inode);
 exit1:
 	path_put(&nd.path);
@@ -2425,6 +2442,8 @@ exit3:
 		dput(dentry);
 	}
 	mutex_unlock(&nd.path.dentry->d_inode->i_mutex);
+	if (error)
+		scribe_downgrade(nd.path.dentry->d_inode);
 	scribe_unlock(nd.path.dentry->d_inode);
 	if (inode)
 		iput(inode);	/* truncate the inode here */
@@ -2512,6 +2531,8 @@ out_dput:
 	dput(dentry);
 out_unlock:
 	mutex_unlock(&nd.path.dentry->d_inode->i_mutex);
+	if (error)
+		scribe_downgrade(nd.path.dentry->d_inode);
 	scribe_unlock(nd.path.dentry->d_inode);
 	path_put(&nd.path);
 	putname(to);
@@ -2614,6 +2635,8 @@ out_dput:
 	dput(new_dentry);
 out_unlock:
 	mutex_unlock(&nd.path.dentry->d_inode->i_mutex);
+	if (error)
+		scribe_downgrade(nd.path.dentry->d_inode);
 	scribe_unlock(nd.path.dentry->d_inode);
 out_release:
 	path_put(&nd.path);
@@ -2864,6 +2887,8 @@ exit4:
 	dput(old_dentry);
 exit3:
 	unlock_rename(new_dir, old_dir);
+	if (error)
+		scribe_double_downgrade(new_dir, old_dir);
 	scribe_double_unlock(new_dir, old_dir);
 exit2:
 	path_put(&newnd.path);
